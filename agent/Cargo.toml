@@ -1,0 +1,38 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[package]
+name = "loglab-agent"
+version = "0.0.0"
+description = "LogLab Station Agent: owns the radios and shares them through one common rig model."
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+authors = ["Brian Krenzin, K9KSU"]
+repository = "https://github.com/ckarc/loglab"
+publish = false
+
+[dependencies]
+
+[lints.rust]
+# `unsafe` is denied (not forbidden) so a hardware or platform interface that
+# truly needs it can allow it locally — isolated, documented, and justified in
+# the pull request, per the constitution's Station Agent constraints.
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
