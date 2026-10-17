@@ -2,8 +2,8 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 0.6.0                                                                                  |
-| **Status**     | `DRAFT`                                                                                |
+| **Version**    | 1.0.0                                                                                  |
+| **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
 | **Home**       | github.com/ckarc/loglab (Central Kansas Amateur Radio Club)                            |
@@ -537,11 +537,12 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 0.4.0   | 2026-10-17 | Added Principle XV (The Log Survives The Loss Of Any One Machine): two independent durable copies before a QSO counts as logged, client journals, continuous replication, unique QSO identifiers, tested recovery. Renumbered later principles. |
 | 0.5.0   | 2026-10-17 | Set the project's home: the `ckarc` GitHub organization. |
 | 0.6.0   | 2026-10-17 | Named the project LogLab, at github.com/ckarc/loglab. All open items closed. |
+| 1.0.0   | 2026-10-17 | Ratified by the maintainer, Brian Krenzin, K9KSU. Status `STABLE`. No principle changed from 0.6.0. The post-1.0.0 versioning rules now apply. |
 
 ---
 
 ## Ratification
 
-All open items are closed. This constitution becomes version 1.0.0, status
-`STABLE`, when the maintainer approves it as the first commit to the LogLab
-repository. From then on, the post-1.0.0 versioning rules apply.
+Ratified by the maintainer, Brian Krenzin, K9KSU, on 2026-10-17 as version
+1.0.0, status `STABLE`. The post-1.0.0 versioning rules now apply: every
+further change is an amendment under the Governance section above.

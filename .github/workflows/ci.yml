@@ -1,0 +1,112 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Merge gates (CONSTITUTION.md, Development Workflow). Job names are the status
+# check names that branch protection on `main` requires — rename a job only
+# together with the branch protection settings.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+  RUSTDOCFLAGS: -D warnings
+
+jobs:
+  engine:
+    name: Engine (type check, lint, test)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: engine
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Format check
+        run: uv run ruff format --check
+      - name: Lint
+        run: uv run ruff check
+      - name: Strict type check
+        run: uv run mypy
+      - name: Tests
+        run: uv run pytest
+
+  agent:
+    name: Agent (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: agent
+      - name: Format check
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Build (warnings are errors)
+        run: cargo build --locked --all-targets
+      - name: Tests
+        run: cargo test --locked
+      - name: Run
+        run: cargo run --locked
+
+  licenses:
+    name: License check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Every source file carries the license notice
+        run: |
+          missing=0
+          while IFS= read -r file; do
+            if ! head -n 5 "$file" | grep -q 'SPDX-License-Identifier: AGPL-3.0-only'; then
+              echo "::error file=$file::missing 'SPDX-License-Identifier: AGPL-3.0-only' in the first five lines"
+              missing=1
+            fi
+          done < <(git ls-files '*.py' '*.rs' '*.toml' '*.yml' '*.yaml')
+          exit "$missing"
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+      - name: Engine dependency licenses
+        working-directory: engine
+        run: |
+          uv sync --locked
+          uv run python scripts/check_licenses.py
+      - name: Install pinned Rust toolchain
+        working-directory: agent
+        run: rustup toolchain install
+      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+        with:
+          tool: cargo-deny
+      - name: Agent dependency licenses
+        working-directory: agent
+        run: cargo deny --locked check licenses

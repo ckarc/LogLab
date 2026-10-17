@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Pinned so a new compiler or Clippy release can't change the gates under an
+# unchanged commit. Bump deliberately, in its own pull request.
+[toolchain]
+channel = "1.97.0"
+components = ["clippy", "rustfmt"]
+profile = "minimal"

@@ -1,0 +1,95 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+[project]
+name = "loglab-engine"
+version = "0.0.0"
+description = "LogLab Engine: owns the log, contest templates, reference data, operator identities, and the event stream."
+readme = "README.md"
+requires-python = ">=3.12"
+license = "AGPL-3.0-only"
+authors = [{ name = "Brian Krenzin, K9KSU" }]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/ckarc/loglab"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.18",
+    "pytest>=8.4",
+    "ruff>=0.14",
+]
+
+[build-system]
+requires = ["uv_build>=0.11,<0.12"]
+build-backend = "uv_build"
+
+# --- Strict type checking (merge gate) ------------------------------------
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests", "scripts"]
+mypy_path = "scripts"
+warn_unreachable = true
+enable_error_code = [
+    "explicit-override",
+    "ignore-without-code",
+    "possibly-undefined",
+    "redundant-expr",
+    "redundant-self",
+    "truthy-bool",
+    "unused-awaitable",
+]
+
+# --- Linting and formatting (merge gate) ----------------------------------
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "A",    # builtins shadowing
+    "ANN",  # annotations everywhere
+    "ARG",  # unused arguments
+    "B",    # bugbear
+    "BLE",  # no blind except
+    "C4",   # comprehensions
+    "D",    # docstrings
+    "DTZ",  # naive datetimes (Principle VIII: UTC is the only clock)
+    "E",    # pycodestyle errors
+    "ERA",  # commented-out code
+    "F",    # pyflakes
+    "FBT",  # boolean traps
+    "I",    # import sorting
+    "N",    # naming
+    "PL",   # pylint
+    "PT",   # pytest style
+    "PTH",  # pathlib
+    "RET",  # returns
+    "RUF",  # ruff-specific
+    "S",    # security
+    "SIM",  # simplify
+    "T20",  # no print
+    "TRY",  # exception handling
+    "UP",   # modern syntax
+    "W",    # pycodestyle warnings
+]
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]  # pytest uses assert
+
+# --- Tests (merge gate) ---------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["scripts"]
+addopts = ["--strict-markers", "--strict-config"]
+xfail_strict = true
+filterwarnings = ["error"]

@@ -1,0 +1,18 @@
+# Engine (Python)
+__pycache__/
+*.py[cod]
+.venv/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+dist/
+build/
+
+# Agent (Rust)
+agent/target/
+
+# Editors and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
