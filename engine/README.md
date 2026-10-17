@@ -16,3 +16,17 @@ uv run ruff check
 uv run mypy
 uv run pytest
 ```
+
+## ADIF tools
+
+`loglab-adif` reads and writes ADI files (ADIF 3.1.7) losslessly and generates
+ghost QSOs, synthetic test contacts that can never pass for real ones.
+
+```sh
+uv run loglab-adif ghosts -o ghosts.adi          # 1000 ghost QSOs (-n to change)
+uv run loglab-adif check ghosts.adi              # validate and summarize
+uv run loglab-adif roundtrip ghosts.adi -o copy.adi   # read, rewrite, prove nothing changed
+```
+
+Ghost files are test data. Never import them into a real log or upload them to
+any service.
