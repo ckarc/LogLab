@@ -1,0 +1,64 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The overlay editor: the list of overlays, and the form that makes or changes one. */
+
+.ov-dialog { width: min(720px, calc(100vw - 32px)); }
+.ov-dialog .menu-head { margin-bottom: 8px; }
+.ov-top { margin: 6px 0 12px; }
+.ov-list { margin: 0; padding: 0; list-style: none; }
+.ov-list li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--glass-line);
+}
+.ov-summary { display: block; margin-top: 3px; }
+.ov-buttons { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
+.ov-dialog fieldset {
+  margin: 0 0 14px;
+  padding: 12px 14px 4px;
+  border: 1px solid var(--glass-line);
+  border-radius: 14px;
+}
+.ov-dialog legend { padding: 0 6px; font-size: 13px; font-weight: 700; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+.ov-dialog fieldset > label, .ov-dialog #ov-dupes > label { margin-bottom: 12px; }
+.ov-dialog fieldset > .hint { margin: 0 0 10px; }
+.ov-dialog fieldset > button { margin-bottom: 12px; }
+.ov-dialog h4 { margin: 6px 0 8px; font-size: 13px; color: var(--muted); }
+.ov-dialog textarea {
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--field);
+  border: 1px solid var(--glass-line);
+  border-radius: 10px;
+  padding: 9px 11px;
+  width: 100%;
+  resize: vertical;
+}
+.ov-band-way { flex-direction: column; margin-bottom: 10px; }
+.ov-bands { display: grid; grid-template-columns: repeat(auto-fill, minmax(84px, 1fr)); gap: 4px 10px; margin-bottom: 12px; }
+.ov-bands label { font-size: 14px; color: var(--text); }
+.ov-bands input, .ov-dialog label.inline input { width: auto; }
+.ov-parts { display: flex; flex-direction: column; gap: 10px; margin-bottom: 10px; }
+.ov-part {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 12px;
+  padding: 10px 12px;
+  background: var(--field);
+  border-radius: 12px;
+}
+.ov-part .ov-remove, .ov-row .ov-remove { justify-self: start; align-self: end; color: var(--danger); }
+.ov-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
+.ov-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
+.ov-fields { margin: 0 0 12px; padding: 0; list-style: none; columns: 2 240px; }
+.ov-fields li { display: flex; align-items: center; gap: 6px; padding: 2px 0; break-inside: avoid; }
+.ov-fields li label { flex: 1; font-size: 14px; color: var(--text); }
+.ov-fields li button { padding: 2px 9px; }
+.ov-dialog form > .error { margin-top: 10px; }
+.ov-dialog .actions label.inline { flex: 0 0 auto; }
+.ov-dialog .actions input[type="checkbox"] { flex: 0 0 auto; width: auto; }

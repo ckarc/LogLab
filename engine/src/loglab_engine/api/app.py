@@ -51,6 +51,7 @@ from pydantic import (
     Field,
     StringConstraints,
     ValidationError,
+    field_validator,
     model_validator,
 )
 
@@ -61,9 +62,8 @@ from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
-from loglab_engine.contests import Earlier, Overlay, Worked, overlays, sent_problems
+from loglab_engine.contests import EVERYDAY, Earlier, Overlay, Worked, overlays, sent_problems
 from loglab_engine.contests import check as contest_check
-from loglab_engine.contests import overlay as find_overlay
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.lotw import (
     CertificateError,
@@ -101,6 +101,7 @@ from loglab_engine.store.operation import (
     OperationSetup,
     OperationStore,
 )
+from loglab_engine.store.overlay import OverlayStore
 from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 
 if TYPE_CHECKING:
@@ -547,6 +548,36 @@ class ContestCheckOut(BaseModel):
     message: str
 
 
+class OverlayOut(Overlay):
+    """An overlay, and where it comes from.
+
+    ``builtin`` overlays ship with the Engine and can only be copied; the
+    others were made in the editor, and carry their ``version``, whether they
+    are ``retired``, and who saved them last.
+    """
+
+    builtin: bool
+    version: int = 0
+    retired: bool = False
+    saved_by: str | None = None
+    saved_at: datetime | None = None
+
+
+class OverlaySave(_Strict):
+    """An overlay from the editor, and the version it was opened at (0 when new)."""
+
+    definition: Overlay
+    base_version: Annotated[int, Field(ge=0)]
+
+    @field_validator("definition", mode="before")
+    @classmethod
+    def _as_json(cls, value: object) -> object:
+        """Read the definition as JSON, as the shipped overlay files are read."""
+        if isinstance(value, dict):
+            return Overlay.model_validate(value, strict=False)
+        return value
+
+
 class StatusOut(BaseModel):
     """What this Engine is, and where its source is (AGPL-3.0, Licensing)."""
 
@@ -873,8 +904,8 @@ def list_sections(who: Signed, conn: Conn) -> SectionsOut:
     )
 
 
-def _operation_out(op: Operation) -> OperationOut:
-    found = find_overlay(op.overlay)
+def _operation_out(conn: Conn, op: Operation) -> OperationOut:
+    found = _find(conn, op.overlay, include_retired=True)
     return OperationOut(
         id=op.id,
         overlay=op.overlay,
@@ -894,10 +925,10 @@ def _station(conn: Conn, who: Actor, ref: OperationRef) -> tuple[Overlay, Statio
     op = OperationStore(conn).get(ref.id)
     if op.ended:
         raise HTTPException(status.HTTP_409_CONFLICT, f"the operation {op.name} has ended")
-    found = find_overlay(op.overlay)
+    found = _find(conn, op.overlay)
     if found is None:
         raise HTTPException(
-            status.HTTP_409_CONFLICT, f"the operation {op.name} uses an overlay this Engine lacks"
+            status.HTTP_409_CONFLICT, f"the operation {op.name} uses an overlay that was retired"
         )
     if ref.gota and op.gota_call is None:
         raise HTTPException(
@@ -907,8 +938,8 @@ def _station(conn: Conn, who: Actor, ref: OperationRef) -> tuple[Overlay, Statio
     return found, Station(station_call=call, operator=who.operator, sent=op.sent)
 
 
-def _setup(body: OperationIn) -> OperationSetup:
-    found = _overlay(body.overlay)
+def _setup(conn: Conn, body: OperationIn) -> OperationSetup:
+    found = _overlay(conn, body.overlay)
     problems = sent_problems(found, body.sent)
     unknown = set(body.sent) - {p.key for p in (found.exchange.sent if found.exchange else ())}
     if problems or unknown:
@@ -954,14 +985,16 @@ def list_operations(
 ) -> list[OperationOut]:
     """The operations operators can log in, newest first; ended ones on request."""
     _require(conn, who, Permission.VIEW)
-    return [_operation_out(op) for op in OperationStore(conn).list(include_ended=include_ended)]
+    return [
+        _operation_out(conn, op) for op in OperationStore(conn).list(include_ended=include_ended)
+    ]
 
 
 @api.get("/operations/{operation_id}")
 def get_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationOut:
     """One operation."""
     _require(conn, who, Permission.VIEW)
-    return _operation_out(OperationStore(conn).get(operation_id))
+    return _operation_out(conn, OperationStore(conn).get(operation_id))
 
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
@@ -972,7 +1005,7 @@ def create_operation(body: OperationIn, who: Signed, conn: Conn) -> OperationOut
     administrator can; under your own call, anyone who may log.
     """
     _may_set_up(conn, who, body)
-    return _operation_out(OperationStore(conn).create(who, _setup(body)))
+    return _operation_out(conn, OperationStore(conn).create(who, _setup(conn, body)))
 
 
 @api.put("/operations/{operation_id}")
@@ -986,28 +1019,153 @@ def update_operation(
         and OperationStore(conn).get(operation_id).station_call != who.operator
     ):
         raise NotAuthorizedError("only an administrator changes a club's operation")
-    return _operation_out(OperationStore(conn).update(who, operation_id, _setup(body)))
+    return _operation_out(conn, OperationStore(conn).update(who, operation_id, _setup(conn, body)))
 
 
-@api.get("/overlays")
-def list_overlays(who: Signed, conn: Conn) -> list[Overlay]:
-    """Every operation overlay: Everyday first, then the contests (Principle III)."""
-    _require(conn, who, Permission.VIEW)
-    return list(overlays())
+def _catalog(conn: Conn) -> list[OverlayOut]:
+    """Every overlay: the Engine's own, then those made in the editor, retired ones too."""
+    out = [OverlayOut.model_validate({**o.model_dump(), "builtin": True}) for o in overlays()]
+    shipped = {o.id for o in out}
+    for saved in OverlayStore(conn).current():
+        if saved.overlay_id in shipped:
+            continue  # a built-in overlay always wins its id
+        definition = saved.definition
+        if definition is None:
+            previous = OverlayStore(conn).latest_definition(saved.overlay_id)
+            if previous is None:
+                continue
+            definition = previous
+        try:
+            found = Overlay.model_validate(definition, strict=False)
+        except ValidationError:
+            continue  # saved under rules this Engine no longer accepts
+        out.append(
+            OverlayOut.model_validate(
+                {
+                    **found.model_dump(),
+                    "builtin": False,
+                    "version": saved.version,
+                    "retired": saved.retired,
+                    "saved_by": saved.saved_by,
+                    "saved_at": saved.saved_at,
+                }
+            )
+        )
+    out.sort(key=lambda o: (o.id != EVERYDAY, o.retired, o.is_contest, o.name.lower()))
+    return out
 
 
-def _overlay(overlay_id: str) -> Overlay:
-    found = find_overlay(overlay_id)
+def _find(conn: Conn, overlay_id: str, *, include_retired: bool = False) -> OverlayOut | None:
+    return next(
+        (o for o in _catalog(conn) if o.id == overlay_id and (include_retired or not o.retired)),
+        None,
+    )
+
+
+def _overlay(conn: Conn, overlay_id: str) -> OverlayOut:
+    found = _find(conn, overlay_id)
     if found is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"there is no overlay called {overlay_id}")
     return found
 
 
-@api.get("/overlays/{overlay_id}")
-def get_overlay(overlay_id: str, who: Signed, conn: Conn) -> Overlay:
-    """One operation overlay."""
+@api.get("/overlays")
+def list_overlays(
+    who: Signed,
+    conn: Conn,
+    include_retired: Annotated[bool, Query()] = False,  # noqa: FBT002
+) -> list[OverlayOut]:
+    """Every operation overlay: Everyday first, then the others (Principle III).
+
+    ``builtin`` overlays ship with the Engine and cannot be changed, only copied.
+    """
     _require(conn, who, Permission.VIEW)
-    return _overlay(overlay_id)
+    return [o for o in _catalog(conn) if include_retired or not o.retired]
+
+
+@api.get("/overlays/{overlay_id}")
+def get_overlay(overlay_id: str, who: Signed, conn: Conn) -> OverlayOut:
+    """One operation overlay, retired or not."""
+    _require(conn, who, Permission.VIEW)
+    found = _find(conn, overlay_id, include_retired=True)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"there is no overlay called {overlay_id}")
+    return found
+
+
+def _editable(conn: Conn, overlay_id: str) -> OverlayOut | None:
+    """The editor's overlay ``overlay_id`` as it stands, refusing a built-in one."""
+    found = _find(conn, overlay_id, include_retired=True)
+    if found is not None and found.builtin:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{found.name} is built in and cannot be changed; save a copy under another name",
+        )
+    return found
+
+
+@api.put("/overlays/{overlay_id}")
+def save_overlay(overlay_id: str, body: OverlaySave, who: Signed, conn: Conn) -> OverlayOut:
+    """Save an overlay made in the editor, as a new version. Administrators only.
+
+    ``base_version`` is the version it was opened at (0 for a new overlay); a
+    save over someone else's newer one is refused. Built-in overlays are
+    refused: copy one under a new id instead.
+    """
+    _require(conn, who, Permission.ADMIN)
+    if body.definition.id != overlay_id:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "the overlay's id must match its address"
+        )
+    current = _editable(conn, overlay_id)
+    name = body.definition.name.strip().lower()
+    if any(
+        o.id != overlay_id and not o.retired and o.name.strip().lower() == name
+        for o in _catalog(conn)
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"another overlay is already called {body.definition.name}; give this one its own name",
+        )
+    if (current.version if current else 0) != body.base_version:
+        raise StaleVersionError(
+            f"the overlay {overlay_id} was changed by someone else; open it again"
+        )
+    OverlayStore(conn).save(
+        who, overlay_id, body.base_version + 1, body.definition.model_dump(mode="json")
+    )
+    return _overlay(conn, overlay_id)
+
+
+@api.delete("/overlays/{overlay_id}")
+def retire_overlay(
+    overlay_id: str,
+    who: Signed,
+    conn: Conn,
+    base_version: Annotated[int, Query(ge=1)],
+) -> OverlayOut:
+    """Retire an overlay made in the editor. Its versions are kept; saving it again brings it back.
+
+    An overlay an operation still uses can't be retired until that operation ends.
+    """
+    _require(conn, who, Permission.ADMIN)
+    current = _editable(conn, overlay_id)
+    if current is None or current.retired:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"there is no overlay called {overlay_id}")
+    if current.version != base_version:
+        raise StaleVersionError(
+            f"the overlay {overlay_id} was changed by someone else; open it again"
+        )
+    using = [op.name for op in OperationStore(conn).list() if op.overlay == overlay_id]
+    if using:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{current.name} is in use by {', '.join(using)}; end that operation first",
+        )
+    OverlayStore(conn).save(who, overlay_id, base_version + 1, None)
+    found = _find(conn, overlay_id, include_retired=True)
+    assert found is not None  # noqa: S101 - just saved
+    return found
 
 
 def _year(qso_date: str | None) -> int:
@@ -1036,7 +1194,7 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
     Field Days, the band and the mode group). Nothing is stored.
     """
     _require(conn, who, Permission.VIEW)
-    found = _overlay(overlay_id)
+    found = _overlay(conn, overlay_id)
     fields: dict[str, str] = {}
     for f in body.fields:
         fields.setdefault(f.name.upper(), f.value)
