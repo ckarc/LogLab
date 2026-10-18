@@ -12,6 +12,8 @@
   border: 1px solid var(--accent);
   border-radius: 999px;
 }
+.op-countdown { margin-left: 4px; font-size: 12px; font-weight: 600; color: var(--muted); font-variant-numeric: tabular-nums; }
+.op-countdown.soon { color: var(--danger); }
 .dupe-note { margin: 10px 0 0; font-size: 14px; color: var(--muted); }
 .dupe-note.warn {
   padding: 8px 12px;
