@@ -1,0 +1,146 @@
+{
+  "format": 1,
+  "id": "wfd",
+  "name": "Winter Field Day",
+  "summary": "Exchange your category and class (like 2O) and ARRL or RAC section. Each station counts once per band and mode (CW, Phone, Digital). No FT8, FT4 or other WSJT modes.",
+  "contest_id": "WFD",
+  "rules": {
+    "title": "Winter Field Day 2026 Rules, V3",
+    "url": "https://winterfieldday.org/downloads/2026-rules-v3.pdf",
+    "revised": "2025-09-08",
+    "period": "Last full weekend of January, 1600 UTC Saturday to 2159 UTC Sunday (2026 rules)."
+  },
+  "bands": {
+    "excluded": [
+      "60m",
+      "30m",
+      "17m",
+      "12m"
+    ],
+    "satellite": true
+  },
+  "modes": {
+    "cw": [
+      "CW"
+    ],
+    "phone": [
+      "SSB",
+      "AM",
+      "FM",
+      "DIGITALVOICE"
+    ],
+    "excluded": [
+      "FT8",
+      "FT4",
+      "FST4",
+      "FST4W",
+      "JT4",
+      "JT6M",
+      "JT9",
+      "JT44",
+      "JT65",
+      "ISCAT",
+      "JTMS",
+      "MSK144",
+      "Q65",
+      "WSPR"
+    ]
+  },
+  "dupes": {
+    "per": [
+      "band",
+      "mode"
+    ],
+    "rule": "You may only contact other field day stations once per band-mode combination, for a maximum of three times per band. Modes are Phone, CW and Digital; WSJT modes (FT8, FT4 and others) are not allowed."
+  },
+  "exchange": {
+    "sent": [
+      {
+        "key": "class",
+        "label": "Your category and class",
+        "hint": "Transmitters and class (H, I, O or M), like 2O",
+        "pattern": "^[1-9][0-9]?[HIOM]$"
+      },
+      {
+        "key": "section",
+        "label": "Your section",
+        "hint": "ARRL or RAC section, like KS, or MX or DX",
+        "sections": true,
+        "also": [
+          "MX",
+          "DX"
+        ]
+      }
+    ],
+    "sent_fields": {
+      "MY_ARRL_SECT": "{section}",
+      "STX_STRING": "{class} {section}"
+    },
+    "received": [
+      {
+        "key": "class",
+        "field": "CLASS",
+        "label": "Category and class",
+        "hint": "Like 2O",
+        "pattern": "^[1-9][0-9]?[HIOM]$"
+      },
+      {
+        "key": "section",
+        "field": "ARRL_SECT",
+        "label": "Section",
+        "hint": "Like KS, or MX or DX",
+        "sections": true,
+        "also": [
+          "MX",
+          "DX"
+        ]
+      }
+    ]
+  },
+  "entry": {
+    "fields": [
+      "CALL",
+      "CLASS",
+      "ARRL_SECT",
+      "BAND",
+      "MODE",
+      "FREQ",
+      "QSO_DATE",
+      "TIME_ON",
+      "COMMENT"
+    ],
+    "live": true
+  },
+  "layout": {
+    "modules": [
+      {
+        "id": "entry",
+        "width": "half",
+        "side": "left"
+      },
+      {
+        "id": "map",
+        "width": "half",
+        "side": "right"
+      },
+      {
+        "id": "journal"
+      },
+      {
+        "id": "log"
+      },
+      {
+        "id": "detail"
+      }
+    ],
+    "log_columns": [
+      "time",
+      "call",
+      "band",
+      "mode",
+      "field:CLASS",
+      "field:ARRL_SECT",
+      "operator"
+    ]
+  }
+}
