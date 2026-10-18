@@ -90,6 +90,29 @@ uv run loglab-operator whoami
   and when (Principle VII). The database enforces all of this, so no code path
   can skip it.
 
+## The web page and the API
+
+```sh
+uv run loglab-engine serve                        # http://127.0.0.1:8073
+```
+
+The Engine serves LogLab's HTTP API at `/api/v1` and a web page at `/` that
+uses only that API (Principle I). Open the page, sign in with your callsign,
+PIN, and station name, and you can enter QSOs, search the log, edit a QSO
+(each save is a new version), delete and restore one, and read its full
+history. The page loads nothing from the internet (Principle V). The API's
+own reference is at `/api/docs`.
+
+- Every request except `/api/v1/status` needs a signed-in operator; reads need
+  `view` and changes need `log`. Every request body is checked against a
+  strict model before it reaches the log (Principle XII).
+- Times go in and come out in UTC (Principle VIII).
+- A stored QSO is reported as "stored, not yet logged": LogLab calls a QSO
+  logged only once it is in two independent places (Principle XV), and the
+  second copy is not built yet.
+- The server listens only on this computer by default. `--host` and `--port`
+  change that; there is no HTTPS yet, so do not open it to the internet.
+
 Migrations are numbered SQL files in `src/loglab_engine/store/migrations`.
 Each runs in its own transaction and is recorded with its SHA-256; if an
 applied file is ever changed, every later run refuses to start. Never edit an

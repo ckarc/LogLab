@@ -572,8 +572,13 @@ class LogStore:
         call: str | None = None,
         limit: int = 20,
         include_deleted: bool = False,
+        newest_first: bool = False,
     ) -> tuple[QsoVersion, ...]:
-        """Current QSOs in the order they were entered, optionally only those with ``call``."""
+        """Current QSOs in the order they were entered, optionally only those with ``call``.
+
+        With ``newest_first``, the most recently entered come first: the
+        ``limit`` latest QSOs rather than the earliest.
+        """
         rows = self._conn.execute(
             f"""
             SELECT {_VERSION_COLUMNS}
@@ -582,10 +587,15 @@ class LogStore:
             {_VERSION_JOINS}
             WHERE (%(call)s::text IS NULL OR v.call = upper(btrim(%(call)s::text)))
               AND (%(deleted)s OR NOT q.deleted)
-            ORDER BY q.entry_seq
+            ORDER BY CASE WHEN %(newest)s THEN -q.entry_seq ELSE q.entry_seq END
             LIMIT %(limit)s
             """,  # noqa: S608 - constant fragments only; values are parameters
-            {"call": call, "deleted": include_deleted, "limit": max(limit, 0)},
+            {
+                "call": call,
+                "deleted": include_deleted,
+                "limit": max(limit, 0),
+                "newest": newest_first,
+            },
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
