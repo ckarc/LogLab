@@ -54,8 +54,7 @@
 .map-insets text { font-size: 8px; fill: var(--muted); }
 
 #map-info { min-height: 1.5em; margin: 8px 0 0; }
-#map-note { margin-top: 10px; }
-#map-missing-head { margin: 14px 0 6px; font-size: 13px; color: var(--muted); }
+#map-missing-head { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
 #map-missing { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; padding: 0; list-style: none; }
 #map-missing li {
   padding: 1px 8px;
