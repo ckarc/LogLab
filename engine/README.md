@@ -181,12 +181,15 @@ own reference is at `/api/docs`.
   API key (and, for a club logbook, its callsign) from the **QRZ.com** link
   (`GET`/`PUT`/`DELETE /api/v1/logbook/qrz`; the key is never sent back).
   QSOs entered from then on whose STATION_CALLSIGN, or else whose operator,
-  is that callsign are copied to the logbook in the background; edits replace
+  is that callsign are copied to the logbook in the background; an edit swaps
   the copy, deletes remove it, and a restore sends it again. Logging never
   waits on this (Principle V): with no internet, QSOs wait and go out once
   QRZ.com can be reached, retried every five minutes and whenever a QSO
   changes. Each callsign has one key, so nothing is sent twice. What was sent
-  is kept in the `workspace` schema, apart from the log.
+  is kept in the `workspace` schema, apart from the log. LogLab only ever
+  removes its own copies, by the id QRZ.com gave them, and never asks QRZ.com
+  to replace a QSO, so QSOs QRZ.com got another way (from LoTW, say) are
+  never changed or removed.
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

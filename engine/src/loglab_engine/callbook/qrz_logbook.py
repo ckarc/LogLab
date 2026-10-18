@@ -47,7 +47,6 @@ class InsertOutcome(StrEnum):
     """What QRZ.com did with a QSO it was sent."""
 
     INSERTED = "inserted"
-    REPLACED = "replaced"
     REFUSED = "refused"
 
 
@@ -143,25 +142,21 @@ class QrzLogbookClient:
         if answer["RESULT"].upper() != "OK":
             raise QrzKeyError(answer.get("REASON") or "QRZ.com did not accept the API key")
 
-    def insert(self, key: str, adif: str, *, replace: bool = False) -> InsertResult:
-        """Add one ADIF record to the logbook; with ``replace``, overwrite a duplicate.
+    def insert(self, key: str, adif: str) -> InsertResult:
+        """Add one ADIF record to the logbook. A duplicate is refused, never overwritten.
 
         Raises:
             QrzKeyError: QRZ.com refused the key.
             QrzUnreachableError: QRZ.com could not be reached.
             QrzReplyError: The answer could not be read.
         """
-        fields = {"KEY": key, "ACTION": "INSERT", "ADIF": adif}
-        if replace:
-            fields["OPTION"] = "REPLACE"
-        answer = self._ask(fields)
+        # No OPTION=REPLACE, ever: it would overwrite a QSO LogLab did not send.
+        answer = self._ask({"KEY": key, "ACTION": "INSERT", "ADIF": adif})
         result = answer["RESULT"].upper()
         # The guide documents LOGID; its own example answers with LOGIDS.
         logid = _logid(answer.get("LOGID") or answer.get("LOGIDS"))
         if result == "OK":
             return InsertResult(InsertOutcome.INSERTED, logid, None)
-        if result == "REPLACE":
-            return InsertResult(InsertOutcome.REPLACED, logid, None)
         if result == "FAIL" and "invalid api key" in answer.get("REASON", "").lower():
             raise QrzKeyError(answer["REASON"])
         return InsertResult(InsertOutcome.REFUSED, None, answer.get("REASON") or result)
