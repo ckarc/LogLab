@@ -33,6 +33,8 @@
   const byId = (list, id) => list.find((x) => x.id === id) || null;
   const everyday = () => byId(overlays, EVERYDAY);
   const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
+  // Who may change an operation, ended or not, until it is archived.
+  const mayChange = (op) => !op.archived_at && (isAdmin() || (op.station_call === LogLab.session()?.operator && !op.gota_call));
 
   // -- Loading -------------------------------------------------------------
 
@@ -157,7 +159,7 @@
     $("#op-gota").checked = Boolean(LogLab.layout().operation?.gota);
     $("#op-gota-call").textContent = operation?.gota_call ? `(logs as ${operation.gota_call})` : "";
     $("#op-current").textContent = operation ? describe(operation) : "Everyday logging: QSOs are made as your own call, with no dupe check.";
-    $("#op-edit").hidden = !operation || !(isAdmin() || operation.station_call === LogLab.session()?.operator);
+    $("#op-edit").hidden = !operation || !mayChange(operation);
   }
 
   function describe(op) {
@@ -216,6 +218,18 @@
     if (summary.outside) parts.push(`${summary.outside} outside its hours`);
     if (summary.not_counted) parts.push(`${summary.not_counted} on a band or mode that doesn't count`);
     head.textContent = `${parts.join(", ")}.`;
+    const op = byId(everyOperation, id);
+    if (op?.archived_at) {
+      head.append(" ", Object.assign(document.createElement("span"), {
+        className: "hint", textContent: `Archived ${utc(op.archived_at)} UTC: it and its QSOs can't be changed.`,
+      }));
+    } else if (op && mayChange(op)) {
+      const change = Object.assign(document.createElement("button"), {
+        type: "button", className: "link", textContent: op.ended ? "Change or archive" : "Change",
+      });
+      change.addEventListener("click", () => openSetup(op));
+      head.append(" ", change);
+    }
     box.append(head);
     if (summary.by_band_mode.length) box.append(tallyTable(summary.by_band_mode));
     if (summary.by_operator.length) {
@@ -255,7 +269,7 @@
 
   function openSetup(op) {
     editing = op;
-    $("#op-title").textContent = op ? `Change ${op.name}` : "Set up an operation";
+    $("#op-title").textContent = op ? `Change ${op.name}${op.ended ? " (ended)" : ""}` : "Set up an operation";
     setup.querySelector(".error").textContent = "";
     const select = setup.overlay;
     select.replaceChildren();
@@ -269,7 +283,8 @@
     setup.name.value = op ? op.name : "";
     setup.station_call.value = op ? op.station_call : (isAdmin() ? "" : LogLab.session()?.operator || "");
     setup.gota_call.value = op?.gota_call || "";
-    $("#op-end").hidden = !op;
+    $("#op-end").hidden = !op || op.ended;
+    $("#op-archive").hidden = !op?.ended;
     for (const end of ["starts", "ends"]) {
       const at = op?.[`${end}_at`] || "";
       setup[`${end}_day`].value = at.slice(0, 10);
@@ -322,7 +337,7 @@
       station_call: setup.station_call.value.trim().toUpperCase(),
       gota_call: chosen?.gota && setup.gota_call.value.trim() ? setup.gota_call.value.trim().toUpperCase() : null,
       sent,
-      ended,
+      ended: ended || Boolean(editing?.ended),
       starts_at,
       ends_at,
     };
@@ -333,8 +348,32 @@
         LogLab.api("GET", "/operations"),
         LogLab.api("GET", "/operations?include_ended=true"),
       ]);
-      if (ended) useOperation(null, false);
+      const current = !editing || editing.id === operation?.id;
+      if (!current) refreshLog(); // changed from the Log: whatever you log as stays
+      else if (saved.ended) useOperation(null, false);
       else useOperation(byId(operations, saved.id), LogLab.layout().operation?.gota);
+    } catch (e) {
+      error.textContent = e.message;
+    }
+  }
+
+  // The Log shows the change at once; the operation logged in stays as it was.
+  function refreshLog() {
+    renderLogChoice();
+    showTally();
+  }
+
+  // Archiving locks an ended operation and its QSOs for good, so they always
+  // match the log that was sent in.
+  async function archive() {
+    const error = setup.querySelector(".error");
+    error.textContent = "";
+    if (!editing || !confirm(`Archive ${editing.name}? Its settings and QSOs are locked for good and can't be changed or unlocked. Do this once its log has been submitted, and after any LoTW or QRZ upload.`)) return;
+    try {
+      await LogLab.api("POST", `/operations/${editing.id}/archive`);
+      dialog.close();
+      everyOperation = await LogLab.api("GET", "/operations?include_ended=true");
+      refreshLog();
     } catch (e) {
       error.textContent = e.message;
     }
@@ -447,5 +486,6 @@
   $("#op-end").addEventListener("click", (event) => {
     if (editing && confirm(`End ${editing.name}? Its QSOs stay in the log; no new QSOs can be logged in it.`)) saveSetup(event, true);
   });
+  $("#op-archive").addEventListener("click", archive);
   $("#op-cancel").addEventListener("click", () => dialog.close());
 })();

@@ -5,7 +5,9 @@
 
 The API validates an operation's overlay and exchange before it arrives here
 (Principle XII); the database checks that only a signed-in administrator
-sets one up (Principle XIII). An operation is never erased: it is ended.
+sets one up (Principle XIII). An operation is never erased: it is ended, and
+once its log is submitted it can be archived, after which neither it nor its
+QSOs ever change.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ from typing import TYPE_CHECKING, cast
 from psycopg import errors
 from psycopg.types.json import Jsonb
 
-from loglab_engine.store.log import NotAuthorizedError, StoreError
+from loglab_engine.store.log import ArchivedError, NotAuthorizedError, StoreError
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -48,6 +50,7 @@ class Operation:
     changed_at: datetime
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    archived_at: datetime | None = None
 
     def open_at(self, when: datetime) -> bool:
         """Whether ``when`` falls within the operation's hours (open ends always do)."""
@@ -62,7 +65,7 @@ class Operation:
 
 _COLUMNS = (
     "id, overlay, name, station_call, gota_call, sent, ended, created_at, changed_at,"
-    " starts_at, ends_at"
+    " starts_at, ends_at, archived_at"
 )
 
 
@@ -80,6 +83,7 @@ def _operation(row: TupleRow) -> Operation:
         changed_at=row[8],
         starts_at=row[9],
         ends_at=row[10],
+        archived_at=row[11],
     )
 
 
@@ -133,6 +137,8 @@ class OperationStore:
                 row = self._conn.execute(sql, params).fetchone()
         except errors.InsufficientPrivilege as error:
             raise NotAuthorizedError(str(error).splitlines()[0]) from error
+        except errors.ObjectNotInPrerequisiteState as error:
+            raise ArchivedError(str(error).splitlines()[0]) from error
         if row is None:
             raise OperationNotFoundError("no such operation")
         return _operation(row)
@@ -169,6 +175,7 @@ class OperationStore:
         """Change an operation, or end it.
 
         Raises:
+            ArchivedError: The operation is archived.
             NotAuthorizedError: The actor is not a signed-in administrator.
             OperationNotFoundError: There is no such operation.
         """
@@ -192,4 +199,24 @@ class OperationStore:
                 setup.ends_at,
                 operation_id,
             ),
+        )
+
+    def archive(self, actor: Actor, operation_id: uuid.UUID) -> Operation:
+        """End an operation, if it is not already, and archive it, for good.
+
+        From then on neither the operation nor any QSO logged in it can change.
+
+        Raises:
+            ArchivedError: The operation is already archived.
+            NotAuthorizedError: The actor may not change this operation.
+            OperationNotFoundError: There is no such operation.
+        """
+        return self._write(
+            f"""
+            UPDATE workspace.operation
+            SET ended = true, archived_at = transaction_timestamp(), session_id = %s
+            WHERE id = %s
+            RETURNING {_COLUMNS}
+            """,  # noqa: S608 - constant columns
+            (actor.session_id, operation_id),
         )

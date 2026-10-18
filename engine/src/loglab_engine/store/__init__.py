@@ -16,6 +16,7 @@ from loglab_engine.store.identity import (
 from loglab_engine.store.log import (
     Action,
     Actor,
+    ArchivedError,
     DuplicateImportError,
     ImportBatch,
     ImportSummary,
@@ -43,6 +44,7 @@ __all__ = [
     "Action",
     "Actor",
     "AppliedMigration",
+    "ArchivedError",
     "DuplicateImportError",
     "IdentityError",
     "IdentityStore",
