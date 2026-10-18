@@ -75,6 +75,8 @@ def test_the_web_client_is_served_with_a_strict_policy(client: TestClient) -> No
     assert client.get("/static/app.css").status_code == 200
     assert client.get("/static/lookup.js").status_code == 200
     assert client.get("/static/lookup.css").status_code == 200
+    assert client.get("/static/overlay.js").status_code == 200
+    assert client.get("/static/overlay.css").status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -266,6 +268,7 @@ LAYOUT = {
     "detail": {"fields": ["CALL", "QSO_DATE", "NAME", "MY_GRIDSQUARE", "APP_LOGLAB_X"]},
     "theme": "dark",
     "operation": None,
+    "by_overlay": {},
 }
 
 
@@ -288,7 +291,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
         "layout": {**changed, "tables": {}, "panels": {}, "detail": None, "theme": "auto"}
-        | {"operation": None}
+        | {"operation": None, "by_overlay": {}}
     }
 
 
@@ -426,3 +429,16 @@ def test_the_whole_log_sorts_by_any_column(client: TestClient, k9ksu: dict[str, 
 def test_an_unknown_sort_is_refused(client: TestClient, k9ksu: dict[str, str], sort: str) -> None:
     """Only known columns and ADIF field names can sort the log (Principle XII)."""
     assert client.get("/api/v1/qsos", headers=k9ksu, params={"sort": sort}).status_code == 422
+
+
+def test_a_layout_keeps_each_overlays_arrangement(
+    client: TestClient, k9ksu: dict[str, str]
+) -> None:
+    """How the page was arranged in Field Day comes back after a spell of everyday logging."""
+    kept = {"modules": [{"id": "map", "width": "half", "side": "right"}]}
+    layout = {"modules": [{"id": "log"}], "by_overlay": {"arrl-fd": kept}}
+    assert client.put("/api/v1/layout", headers=k9ksu, json=layout).status_code == 200
+    saved = client.get("/api/v1/layout", headers=k9ksu).json()["layout"]
+    assert saved["by_overlay"]["arrl-fd"]["modules"][0]["side"] == "right"
+    bad = {"modules": [{"id": "log"}], "by_overlay": {"Not An Id": kept}}
+    assert client.put("/api/v1/layout", headers=k9ksu, json=bad).status_code == 422

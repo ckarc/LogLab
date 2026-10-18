@@ -195,3 +195,32 @@ def test_the_chosen_operation_is_saved_in_the_layout(
     assert client.put("/api/v1/layout", headers=k9ksu, json=layout).status_code == 200
     saved = client.get("/api/v1/layout", headers=k9ksu).json()["layout"]
     assert saved["operation"] == {"id": field_day["id"], "gota": True}
+
+
+def test_an_operator_sets_up_field_day_under_their_own_call(
+    client: TestClient, w0xyz: dict[str, str], k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """Field Day from home as 1D needs no administrator; a club call or a GOTA call does."""
+    home = {"overlay": "arrl-fd", "name": "FD at home", "station_call": "W0XYZ"}
+    home["sent"] = {"class": "1D", "section": "KS"}  # type: ignore[assignment]
+    response = client.post("/api/v1/operations", headers=w0xyz, json=home)
+    assert response.status_code == 201, response.text
+    mine = response.json()
+    assert _values(_log(client, w0xyz, mine))["STATION_CALLSIGN"] == "W0XYZ"
+    gota = client.post("/api/v1/operations", headers=w0xyz, json={**home, "gota_call": "K0GTA"})
+    assert gota.status_code == 403
+    club = client.put(f"/api/v1/operations/{field_day['id']}", headers=w0xyz, json=home)
+    assert club.status_code == 403
+    ended = client.put(
+        f"/api/v1/operations/{mine['id']}", headers=w0xyz, json={**home, "ended": True}
+    )
+    assert ended.status_code == 200, ended.text
+    del k9ksu
+
+
+def test_only_field_day_has_a_gota_call(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """Winter Field Day has no GOTA station, so its operations take no GOTA call."""
+    wfd = {**FIELD_DAY, "overlay": "wfd", "sent": {"class": "2O", "section": "KS"}}
+    response = client.post("/api/v1/operations", headers=k9ksu, json=wfd)
+    assert response.status_code == 422
+    assert "GOTA" in response.json()["detail"]

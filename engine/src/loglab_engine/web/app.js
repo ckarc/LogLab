@@ -37,6 +37,8 @@
     panels: {},
     detail: null,
     theme: "auto",
+    operation: null,
+    by_overlay: {},
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -114,7 +116,17 @@
   }
 
   // lookup.js (the QRZ.com lookup) reaches the Engine through the same API.
-  window.LogLab = Object.freeze({ api });
+  // overlay.js (operation overlays) also reads and changes the layout, reads
+  // the New QSO form, and gives the page its overlay's default layout.
+  let overlayDefault = null; // the operator's overlay's starting layout, if it has one
+  window.LogLab = Object.freeze({
+    api,
+    session: () => session,
+    layout: () => layout,
+    useLayout,
+    entryFields: () => entryFields($("#entry")),
+    setDefaultLayout: (saved) => { overlayDefault = saved; },
+  });
 
   function describe(data) {
     if (!data || data.detail === undefined) return "";
@@ -214,11 +226,18 @@
       : `This browser is holding ${entries.length} QSOs the Engine has not logged yet. Sign in to send them.`;
   }
 
+  // What the Engine is sent for a QSO: in an operation, the Engine adds its
+  // club call, the operator and the contest's fields (overlay.js).
+  function body(entry) {
+    return entry.operation ? { id: entry.id, fields: entry.fields, operation: entry.operation }
+      : { id: entry.id, fields: entry.fields };
+  }
+
   // Send one journal entry. True when the Engine has logged it.
   async function send(entry) {
     sending.add(entry.id);
     try {
-      const result = await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
+      const result = await api("POST", "/qsos", body(entry));
       sending.delete(entry.id);
       updateEntry(entry.id, null);
       return result;
@@ -312,7 +331,16 @@
       if (PLACES.includes(place)) panels[id] = place;
     }
     const theme = saved && saved.theme in THEMES ? saved.theme : "auto";
-    return { version: 1, modules, tables, panels, detail, theme };
+    const op = saved && saved.operation;
+    const operation = op && typeof op.id === "string" ? { id: op.id, gota: op.gota === true } : null;
+    // Each overlay's own arrangement, kept while another overlay is in use (overlay.js).
+    const by_overlay = {};
+    for (const [id, kept] of Object.entries((saved && saved.by_overlay) || {})) {
+      if (!/^[a-z][a-z0-9-]{0,31}$/.test(id) || !kept || !Array.isArray(kept.modules)) continue;
+      const inner = normalize({ modules: kept.modules, tables: kept.tables });
+      by_overlay[id] = { modules: inner.modules, tables: inner.tables };
+    }
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay };
   }
 
   function applyTheme(theme) {
@@ -331,6 +359,14 @@
     } catch {
       return "auto";
     }
+  }
+
+  // Change part of the layout, show it, and save it (overlay.js).
+  function useLayout(change) {
+    layout = normalize({ ...layout, ...change });
+    applyLayout();
+    saveLayout();
+    for (const table of Object.values(TABLES)) table.refresh();
   }
 
   function chooseTheme(theme) {
@@ -463,6 +499,7 @@
     applyTheme(layout.theme);
     applyLayout();
     for (const table of Object.values(TABLES)) table.refresh();
+    document.dispatchEvent(new CustomEvent("loglab:layout-loaded"));
   }
 
   // Locked is the normal state. Unlocked, every box shows a handle to move it.
@@ -1281,6 +1318,7 @@
     form.TIME_ON.value = time;
     showCallZeros(form.CALL);
     form.CALL.focus();
+    document.dispatchEvent(new CustomEvent("loglab:entry-reset"));
   }
 
   // The Call box shows zeros slashed as they are typed. An input can only
@@ -1295,6 +1333,8 @@
   function entryFields(form) {
     const fields = [];
     const add = (name, value) => {
+      // A box the operator's overlay leaves out is not sent (overlay.js).
+      if (form[name] && form[name].closest("label").hidden) return;
       const text = value.trim();
       if (text) fields.push({ name, value: text, type: null });
     };
@@ -1341,11 +1381,12 @@
       fields: entryFields(form),
       typedAt: new Date().toISOString(),
       problem: null,
+      operation: layout.operation,
     };
     // Into the journal before it goes anywhere (Principle XV).
     const journaled = writeJournal([...readJournal(), entry]);
     try {
-      const result = journaled ? await send(entry) : await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
+      const result = journaled ? await send(entry) : await api("POST", "/qsos", body(entry));
       if (result === null) {
         // Not confirmed yet: this stays on screen (Principle XV).
         notice.textContent = `${summary(entry)} is saved in this browser but not logged yet: ` +
@@ -1850,7 +1891,9 @@
     $("#arrange-reset").addEventListener("click", () => {
       // Columns and a QSO's fields have their own resets.
       // Panels go back to their places with the boxes.
-      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables, detail: layout.detail, theme: layout.theme };
+      // An overlay's own layout is its starting point (overlay.js).
+      const base = normalize(overlayDefault || DEFAULT_LAYOUT);
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay };
       applyLayout();
       saveLayout();
     });

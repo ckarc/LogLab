@@ -4,6 +4,7 @@
   "name": "ARRL Field Day",
   "summary": "Exchange your class and ARRL or RAC section. Each station counts once per band and mode (CW, Phone, Digital).",
   "contest_id": "ARRL-FD",
+  "gota": true,
   "rules": {
     "title": "2026 ARRL Field Day Rules",
     "url": "https://www.arrl.org/files/file/Field-Day/2026/2026-Field-Day-Rules.pdf",
