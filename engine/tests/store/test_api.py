@@ -252,6 +252,13 @@ LAYOUT = {
         {"id": "entry", "width": "half", "hidden": False},
         {"id": "journal", "width": "half", "hidden": True},
     ],
+    "tables": {
+        "log": {
+            "columns": ["call", "date", "field:FREQ", "band"],
+            "sort": "field:FREQ",
+            "descending": False,
+        },
+    },
 }
 
 
@@ -269,7 +276,9 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.get("/api/v1/layout", headers=w0xyz).json() == {"layout": None}
     changed = {"version": 1, "modules": [{"id": "log", "width": "full", "hidden": False}]}
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
-    assert client.get("/api/v1/layout", headers=k9ksu).json() == {"layout": changed}
+    assert client.get("/api/v1/layout", headers=k9ksu).json() == {
+        "layout": {**changed, "tables": {}}
+    }
 
 
 @pytest.mark.parametrize(
@@ -281,6 +290,38 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 1, "modules": [{"id": "log", "width": "wide"}]}, "width"),
         ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
         ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
+        (
+            {"version": 1, "modules": [{"id": "log"}], "tables": {"radar": {"columns": ["call"]}}},
+            "tables",
+        ),
+        (
+            {"version": 1, "modules": [{"id": "log"}], "tables": {"log": {"columns": []}}},
+            "at least 1",
+        ),
+        (
+            {
+                "version": 1,
+                "modules": [{"id": "log"}],
+                "tables": {"log": {"columns": ["call", "CALL"]}},
+            },
+            "pattern",
+        ),
+        (
+            {
+                "version": 1,
+                "modules": [{"id": "log"}],
+                "tables": {"log": {"columns": ["field:FREQ", "field:freq"]}},
+            },
+            "only once",
+        ),
+        (
+            {
+                "version": 1,
+                "modules": [{"id": "log"}],
+                "tables": {"log": {"columns": ["call"], "sort": "1; drop"}},
+            },
+            "pattern",
+        ),
     ],
 )
 def test_a_bad_layout_is_refused(
@@ -300,3 +341,54 @@ def test_a_layout_needs_a_signed_in_operator(client: TestClient) -> None:
     """No session, no layout (Principle XIII)."""
     assert client.get("/api/v1/layout").status_code == 401
     assert client.put("/api/v1/layout", json=LAYOUT).status_code == 401
+
+
+def _calls(client: TestClient, headers: dict[str, str], **params: str) -> list[str | None]:
+    return [q["call"] for q in client.get("/api/v1/qsos", headers=headers, params=params).json()]
+
+
+def test_the_whole_log_sorts_by_any_column(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """The Engine sorts the log, not just the rows on the page (Principle II)."""
+    for call, band, freq, time in (
+        ("K1B", "2m", "146.52", "0300"),
+        ("K1C", "160m", "1.84", "0100"),
+        ("K1A", "20m", "14.2", "0200"),
+        ("K1D", "70cm", "", "0000"),
+    ):
+        fields = [
+            {"name": "CALL", "value": call},
+            {"name": "QSO_DATE", "value": "20261018"},
+            {"name": "TIME_ON", "value": time},
+            {"name": "BAND", "value": band},
+            {"name": "MODE", "value": "FM"},
+        ]
+        if freq:
+            fields.append({"name": "FREQ", "value": freq})
+        assert client.post("/api/v1/qsos", headers=k9ksu, json={"fields": fields}).is_success
+    assert _calls(client, k9ksu) == ["K1D", "K1A", "K1C", "K1B"]
+    assert _calls(client, k9ksu, sort="call", newest_first="false") == ["K1A", "K1B", "K1C", "K1D"]
+    assert _calls(client, k9ksu, sort="call") == ["K1D", "K1C", "K1B", "K1A"]
+    # Bands go by frequency, not by their names' spelling.
+    assert _calls(client, k9ksu, sort="band", newest_first="false") == ["K1C", "K1A", "K1B", "K1D"]
+    assert _calls(client, k9ksu, sort="qso_start", newest_first="false") == [
+        "K1D",
+        "K1C",
+        "K1A",
+        "K1B",
+    ]
+    # A number sorts as a number; a QSO without the field comes last either way.
+    assert _calls(client, k9ksu, sort="field:freq", newest_first="false") == [
+        "K1C",
+        "K1A",
+        "K1B",
+        "K1D",
+    ]
+    assert _calls(client, k9ksu, sort="field:FREQ") == ["K1B", "K1A", "K1C", "K1D"]
+    # The sort covers the whole log before the limit is applied.
+    assert _calls(client, k9ksu, sort="call", newest_first="false", limit="1") == ["K1A"]
+
+
+@pytest.mark.parametrize("sort", ["dxcc", "field:", "field:FREQ;", "call DESC", "field:1X"])
+def test_an_unknown_sort_is_refused(client: TestClient, k9ksu: dict[str, str], sort: str) -> None:
+    """Only known columns and ADIF field names can sort the log (Principle XII)."""
+    assert client.get("/api/v1/qsos", headers=k9ksu, params={"sort": sort}).status_code == 422

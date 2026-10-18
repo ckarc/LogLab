@@ -39,6 +39,54 @@ _HEX_PREFIX: Final = re.compile(r"^[0-9a-f-]{8,36}$")
 _MAX_CALLSIGN: Final = 20
 _MAX_NOTE: Final = 1000
 
+# What the log can be sorted by: a fixed column, or ``field:NAME`` for any ADIF
+# field. Each maps to a constant SQL expression; a field's name is passed as a
+# parameter, never written into the SQL.
+_SORT_SQL: Final = {
+    "entered": "q.entry_seq",
+    "qso_start": "v.qso_start",
+    "call": "v.call",
+    # Bands by frequency, lowest first: by wavelength, longest first.
+    "band": (
+        "-(CASE WHEN v.band ~ '^[0-9]+([.][0-9]+)?mm$' THEN rtrim(v.band, 'm')::numeric / 1000"
+        " WHEN v.band ~ '^[0-9]+([.][0-9]+)?cm$' THEN rtrim(v.band, 'cm')::numeric / 100"
+        " WHEN v.band ~ '^[0-9]+([.][0-9]+)?m$' THEN rtrim(v.band, 'm')::numeric END)"
+    ),
+    "mode": "v.mode",
+    "operator": "o.callsign",
+    "station": "s.name",
+    "version": "q.current_version",
+    "changed_at": "c.changed_at",
+}
+# Numbers (such as FREQ) sort as numbers; everything else as text.
+_FIELD_SORT_SQL: Final = (
+    "(CASE WHEN log.field_value(v.fields, %(field)s) ~ '^-?[0-9]+([.][0-9]+)?$'"
+    " THEN log.field_value(v.fields, %(field)s)::numeric END) {dir} NULLS LAST,"
+    " upper(log.field_value(v.fields, %(field)s)) {dir} NULLS LAST"
+)
+_SORT_FIELD: Final = re.compile(r"^field:([A-Za-z][A-Za-z0-9_]{0,63})$")
+
+
+def _order_by(sort: str, *, descending: bool) -> tuple[str, str | None]:
+    """The ORDER BY clause for ``sort``, and the ADIF field name it sorts by, if any.
+
+    Ties keep the order the QSOs were entered.
+
+    Raises:
+        StoreError: ``sort`` is not something the log can be sorted by.
+    """
+    direction = "DESC" if descending else "ASC"
+    tiebreak = f"q.entry_seq {direction}"
+    if sort in _SORT_SQL:
+        if sort == "entered":
+            return tiebreak, None
+        return f"{_SORT_SQL[sort]} {direction} NULLS LAST, {tiebreak}", None
+    match = _SORT_FIELD.match(sort)
+    if match is None:
+        raise StoreError(f"the log cannot be sorted by {sort!r}")
+    return f"{_FIELD_SORT_SQL.format(dir=direction)}, {tiebreak}", match.group(1).upper()
+
+
 _VERSION_COLUMNS: Final = """
     v.qso_id, v.version, v.action, v.deleted, v.fields, v.call, v.qso_start, v.band, v.mode,
     c.changed_at, o.callsign, s.name, c.note, b.id, b.file_name
@@ -618,12 +666,19 @@ class LogStore:
         limit: int = 20,
         include_deleted: bool = False,
         newest_first: bool = False,
+        sort: str = "entered",
     ) -> tuple[QsoVersion, ...]:
         """Current QSOs in the order they were entered, optionally only those with ``call``.
 
         With ``newest_first``, the most recently entered come first: the
-        ``limit`` latest QSOs rather than the earliest.
+        ``limit`` latest QSOs rather than the earliest. ``sort`` orders them by
+        another column instead (``call``, ``band``, ``qso_start``, ...) or by
+        any ADIF field (``field:FREQ``); ``newest_first`` then reverses it.
+
+        Raises:
+            StoreError: ``sort`` is not something the log can be sorted by.
         """
+        order_by, sort_field = _order_by(sort, descending=newest_first)
         rows = self._conn.execute(
             f"""
             SELECT {_VERSION_COLUMNS}
@@ -632,14 +687,14 @@ class LogStore:
             {_VERSION_JOINS}
             WHERE (%(call)s::text IS NULL OR v.call = upper(btrim(%(call)s::text)))
               AND (%(deleted)s OR NOT q.deleted)
-            ORDER BY CASE WHEN %(newest)s THEN -q.entry_seq ELSE q.entry_seq END
+            ORDER BY {order_by}
             LIMIT %(limit)s
             """,  # noqa: S608 - constant fragments only; values are parameters
             {
                 "call": call,
                 "deleted": include_deleted,
                 "limit": max(limit, 0),
-                "newest": newest_first,
+                "field": sort_field,
             },
         ).fetchall()
         return tuple(_version(row) for row in rows)

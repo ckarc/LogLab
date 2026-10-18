@@ -121,6 +121,13 @@ own reference is at `/api/docs`.
   apart from the log, so it follows them to any workstation or tablet
   (`GET`/`PUT /api/v1/layout`). "Not logged yet" can be moved but never
   hidden.
+- Every table can be shaped the same way, and its shape is saved with the
+  layout. **Columns** picks which columns show (any ADIF field can be added
+  by name) and their order; a heading can also be dragged to move it.
+  Clicking a heading sorts by it, a second click reverses, and a third goes
+  back to the order entered. The Engine does the sorting, over the whole log
+  (`GET /api/v1/qsos?sort=call`, `sort=band` by frequency, or
+  `sort=field:FREQ`; `newest_first` sets the direction).
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

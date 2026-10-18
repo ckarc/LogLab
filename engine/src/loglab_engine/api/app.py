@@ -136,6 +136,21 @@ class QsoChange(_Strict):
 
 
 ModuleId = Literal["entry", "journal", "log", "detail"]
+# A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
+_FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
+ColumnId = Annotated[
+    str,
+    StringConstraints(
+        pattern=rf"^(date|time|call|band|mode|operator|station|version|changed_at|{_FIELD_COLUMN})$",
+    ),
+]
+SortKey = Annotated[
+    str,
+    StringConstraints(
+        pattern=rf"^(entered|qso_start|call|band|mode|operator|station|version|changed_at|{_FIELD_COLUMN})$",
+    ),
+]
+TableId = Literal["log"]
 
 
 class ModuleLayout(_Strict):
@@ -146,11 +161,27 @@ class ModuleLayout(_Strict):
     hidden: bool = False
 
 
+class TableLayout(_Strict):
+    """One table's columns, in the order shown, and how it is sorted."""
+
+    columns: Annotated[list[ColumnId], Field(min_length=1, max_length=40)]
+    sort: SortKey = "entered"
+    descending: bool = True
+
+    @model_validator(mode="after")
+    def _each_column_once(self) -> Self:
+        if len(self.columns) != len({c.lower() for c in self.columns}):
+            msg = "each column may appear only once"
+            raise ValueError(msg)
+        return self
+
+
 class Layout(_Strict):
-    """An operator's workspace: the modules in the order they appear."""
+    """An operator's workspace: the modules in the order they appear, and their tables."""
 
     version: Literal[1] = 1
     modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
+    tables: dict[TableId, TableLayout] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
@@ -311,6 +342,7 @@ class QsoQuery(_Strict):
     limit: Annotated[int, Field(ge=1, le=MAX_LIST)] = 50
     include_deleted: bool = False
     newest_first: bool = True
+    sort: SortKey = "entered"
 
 
 # -- Operations ---------------------------------------------------------------
@@ -372,13 +404,19 @@ def put_layout(body: Layout, who: Signed, conn: Conn) -> LayoutOut:
 
 @api.get("/qsos")
 def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> list[QsoOut]:
-    """Current QSOs, newest first by default."""
+    """Current QSOs, newest first by default.
+
+    ``sort`` orders the whole log by a column (``call``, ``band``,
+    ``qso_start``, ...) or any ADIF field (``field:FREQ``); ``newest_first``
+    then means descending.
+    """
     _require(conn, who, Permission.VIEW)
     found = LogStore(conn).find(
         call=query.call or None,
         limit=query.limit,
         include_deleted=query.include_deleted,
         newest_first=query.newest_first,
+        sort=query.sort,
     )
     return [_qso_out(v) for v in found]
 
