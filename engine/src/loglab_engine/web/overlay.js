@@ -63,12 +63,20 @@
 
   function show() {
     if (!overlay) return;
+    // The boxes are put in the overlay's order on the page itself, not only
+    // drawn in it, so Tab moves through them in that order too.
     const fields = overlay.entry.fields;
-    for (const label of form.querySelectorAll(".grid > label")) {
+    const grid = $(".grid", form);
+    const place = (label) => {
       const input = label.querySelector("input[name], select[name]");
       const at = input ? fields.indexOf(input.name) : -1;
-      label.hidden = at < 0;
-      label.style.order = at < 0 ? "" : String(at);
+      return at < 0 ? fields.length : at;
+    };
+    const labels = [...grid.children].filter((el) => el.tagName === "LABEL");
+    labels.sort((a, b) => place(a) - place(b)); // stable: hidden boxes keep their order
+    for (const label of labels) {
+      label.hidden = place(label) === fields.length;
+      grid.append(label);
     }
     for (const part of overlay.exchange?.received || []) {
       const input = form[part.field];

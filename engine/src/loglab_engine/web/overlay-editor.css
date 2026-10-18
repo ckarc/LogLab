@@ -55,10 +55,13 @@
 .ov-part .ov-remove, .ov-row .ov-remove { justify-self: start; align-self: end; color: var(--danger); }
 .ov-rows { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; }
 .ov-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; align-items: center; }
-.ov-fields { margin: 0 0 12px; padding: 0; list-style: none; columns: 2 240px; }
+.ov-fields { margin: 0 0 12px; padding: 0; list-style: none; max-width: 420px; }
 .ov-fields li { display: flex; align-items: center; gap: 6px; padding: 2px 0; break-inside: avoid; }
 .ov-fields li label { flex: 1; font-size: 14px; color: var(--text); }
 .ov-fields li button { padding: 2px 9px; }
 .ov-dialog form > .error { margin-top: 10px; }
 .ov-dialog .actions label.inline { flex: 0 0 auto; }
 .ov-dialog .actions input[type="checkbox"] { flex: 0 0 auto; width: auto; }
+.ov-fields li { cursor: grab; border-radius: 8px; }
+.ov-fields li.dragging { opacity: 0.5; background: var(--field); }
+.ov-grip { color: var(--muted); padding: 0 4px; user-select: none; }

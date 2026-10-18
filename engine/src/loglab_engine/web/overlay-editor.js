@@ -124,7 +124,7 @@
 
       <fieldset>
         <legend>New QSO</legend>
-        <p class="hint">Tick the boxes New QSO asks for, and put them in order.</p>
+        <p class="hint">Tick the boxes New QSO asks for, and drag them into order. Tab moves through them in this order.</p>
         <ol id="ov-fields" class="ov-fields"></ol>
         <label class="inline"><input type="checkbox" name="live"> Stamp each QSO with the time it is stored, unless a time was typed</label>
       </fieldset>
@@ -400,9 +400,41 @@
       up.setAttribute("aria-label", `Move ${choice.label} up`);
       const down = button("↓", () => item.nextElementSibling?.after(item), "secondary small");
       down.setAttribute("aria-label", `Move ${choice.label} down`);
+      const grip = document.createElement("span");
+      grip.className = "ov-grip";
+      grip.textContent = "⠿";
+      grip.setAttribute("aria-hidden", "true");
+      item.draggable = true;
+      item.prepend(grip);
       item.append(label, up, down);
       list.append(item);
     }
+  }
+
+  // New QSO's boxes are dragged into order by their grip; ↑ and ↓ do the same
+  // from the keyboard. This order is also the order Tab moves through them.
+  let dragged = null;
+  function wireFieldDrag(list) {
+    list.addEventListener("dragstart", (event) => {
+      dragged = event.target.closest("li");
+      if (!dragged) return;
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", dragged.dataset.field);
+      dragged.classList.add("dragging");
+    });
+    list.addEventListener("dragover", (event) => {
+      const over = event.target.closest("li");
+      if (!dragged || !over || over === dragged) return;
+      event.preventDefault();
+      const box = over.getBoundingClientRect();
+      if (event.clientY < box.top + box.height / 2) over.before(dragged);
+      else over.after(dragged);
+    });
+    list.addEventListener("drop", (event) => event.preventDefault());
+    list.addEventListener("dragend", () => {
+      dragged?.classList.remove("dragging");
+      dragged = null;
+    });
   }
 
   function showLayout() {
@@ -542,6 +574,7 @@
   });
   form.dupes.addEventListener("change", () => { $("#ov-dupes", dialog).hidden = !form.dupes.checked; });
   form.addEventListener("submit", save);
+  wireFieldDrag($("#ov-fields", dialog));
   $("#ov-retired", dialog).addEventListener("change", openList);
   dialog.addEventListener("click", (event) => {
     const action = event.target.closest("[data-ov]")?.dataset.ov;
