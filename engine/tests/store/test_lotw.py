@@ -17,11 +17,13 @@ from loglab_engine.store import IdentityStore, LogStore, Permission
 
 from ..lotw.fake import CERT_PASSWORD, LOTW_PASSWORD, FakeLotw, make_p12, report
 from .conftest import ADMIN_SECRET, VISITOR_SECRET, conninfo
+from .test_qrz_logbook import KEY, FakeLogbook
 
 if TYPE_CHECKING:
     import psycopg
     from psycopg.rows import TupleRow
 
+    from loglab_engine.callbook.logbook_sync import LogbookSync
     from loglab_engine.store import Actor
 
 KANSAS = {"grid": "EM18", "ituz": 7, "cqz": 4, "us_state": "KS", "us_county": "Ellis"}
@@ -399,3 +401,53 @@ def test_a_background_edit_never_overwrites_an_operator_s_edit(
     assert store.current(three.qso_id).version == 1
     assert store.edit_many([], actor=shack) == ()
     del conn
+
+
+def test_lotw_marks_never_send_a_qso_to_qrz_again(
+    database: str, shack: Actor, lotw: FakeLotw
+) -> None:
+    """QRZ.com's copy, with what QRZ.com got from LoTW itself, is left alone (Brian's rule).
+
+    A real edit is still sent.
+    """
+    del shack
+    qrz = FakeLogbook()
+    app = create_app(conninfo(database), qrz_post=qrz, lotw_transport=lotw)
+    client = TestClient(app)
+    sync: LogbookSync = app.state.logbook
+    k9ksu = _sign_in(client, "K9KSU", ADMIN_SECRET, "shack")
+    assert (
+        client.put("/api/v1/logbook/qrz", headers=k9ksu, json={"api_key": KEY}).status_code == 200
+    )
+    _set_up(client, k9ksu)
+    qso_id = _log(client, k9ksu, qso())
+    sync.run_once()
+    inserts = [a for a in qrz.asked if a["ACTION"] == "INSERT"]
+    assert len(inserts) == 1
+    lotw.report = report(
+        {
+            "CALL": "W1AW",
+            "BAND": "20M",
+            "MODE": "SSB",
+            "QSO_DATE": "20261017",
+            "TIME_ON": "1805",
+            "QSL_RCVD": "Y",
+        }
+    )
+    assert _post(client, k9ksu, "upload")["sent"] == 1
+    assert _post(client, k9ksu, "download")["confirmed"] == 1
+    sync.run_once()
+    assert [a for a in qrz.asked if a["ACTION"] in {"INSERT", "DELETE"}] == inserts
+    assert client.get("/api/v1/logbook/qrz", headers=k9ksu).json()["sent"] == 1
+    # A change of the operator's own is still sent.
+    version = client.get(f"/api/v1/qsos/{qso_id}", headers=k9ksu).json()["version"]
+    fields = [{"name": k, "value": v} for k, v in _fields(client, k9ksu, qso_id).items()] + [
+        {"name": "NAME", "value": "Hiram"}
+    ]
+    edited = client.put(
+        f"/api/v1/qsos/{qso_id}", headers=k9ksu, json={"base_version": version, "fields": fields}
+    )
+    assert edited.status_code == 200, edited.text
+    sync.run_once()
+    (copy,) = qrz.books[KEY].values()
+    assert copy["NAME"] == "Hiram"

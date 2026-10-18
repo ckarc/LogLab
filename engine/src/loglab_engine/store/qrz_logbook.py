@@ -68,6 +68,7 @@ class PendingQso:
     version: int
     deleted: bool
     logid: int | None
+    sent_version: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -167,11 +168,11 @@ class LogbookStore:
     def pending(self, book: Logbook, limit: int = MAX_BATCH) -> list[PendingQso]:
         """QSOs for ``book`` whose current version QRZ.com does not have, oldest first."""
         rows = self._conn.execute(
-            f"SELECT q.id, q.current_version, q.deleted, u.logid {_PENDING}"
+            f"SELECT q.id, q.current_version, q.deleted, u.logid, u.version {_PENDING}"
             " ORDER BY q.entry_seq LIMIT %(limit)s",
             {"from_seq": book.from_entry_seq, "book": book.book_call, "limit": limit},
         ).fetchall()
-        return [PendingQso(uuid.UUID(str(r[0])), r[1], r[2], r[3]) for r in rows]
+        return [PendingQso(uuid.UUID(str(r[0])), r[1], r[2], r[3], r[4]) for r in rows]
 
     def record(
         self,

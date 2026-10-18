@@ -8,7 +8,10 @@ commits it (Principle XV), and only afterwards does this copy it to QRZ.com.
 It works from what the log says now, so nothing is queued that could be lost:
 each run sends every QSO whose current version QRZ.com does not have yet. A
 new QSO is inserted; an edited one replaces its earlier copy; a deleted one is
-removed from the QRZ logbook, and sent again if it is restored.
+removed from the QRZ logbook, and sent again if it is restored. A QSO whose
+only change is LogLab marking it sent to or confirmed by LoTW is not sent
+again: QRZ.com's copy, and anything QRZ.com received from LoTW for it, is left
+alone.
 
 It runs when a QSO changes, and while anything is still waiting, again every
 few minutes. With no internet it makes one try, then waits; nothing is lost.
@@ -54,6 +57,11 @@ def _adif(record: Record, book_call: str) -> str:
     if not any(f.name.upper() == "STATION_CALLSIGN" for f in fields):
         fields = (*fields, Field("STATION_CALLSIGN", book_call))
     return write_adi(AdifDocument(None, (Record(fields),))).decode("utf-8").strip()
+
+
+def _without_lotw(record: Record) -> list[tuple[str, str]]:
+    """The record's fields, leaving out the LOTW_ fields LogLab's LoTW sending writes."""
+    return [(f.key, f.value) for f in record.fields if not f.key.startswith("LOTW_")]
 
 
 class LogbookSync:
@@ -143,6 +151,13 @@ class LogbookSync:
             store.record(qso, book, outcome="deleted", logid=None)
             return
         record = log.current(qso.qso_id).record
+        if qso.logid is not None and qso.sent_version is not None:
+            sent = log.history(qso.qso_id)[qso.sent_version - 1].record
+            if _without_lotw(sent) == _without_lotw(record):
+                # Only LogLab's own LoTW marks changed. QRZ.com keeps its copy as it
+                # is, with whatever it merged from LoTW itself (the maintainer's rule).
+                store.record(qso, book, outcome="sent", logid=qso.logid)
+                return
         answer = self.client.insert(
             book.api_key, _adif(record, book.book_call), replace=qso.logid is not None
         )
