@@ -5,8 +5,9 @@
 
 Migrate the schema, import ADI files, look at QSOs and their history, edit,
 delete, and restore them through the audited path (Principle VII), and export
-ADI. Every change names an operator and a station (Principle XIII; placeholders
-until operator sign-in). All times are shown in UTC (Principle VIII).
+ADI. Every change is made by the operator signed in with ``loglab-operator
+sign-in``, at their station (Principle XIII). All times are shown in UTC
+(Principle VIII).
 
 Storing a QSO is not the same as logging it: a QSO counts as logged only when
 two independent copies exist (Principle XV), which is not built yet.
@@ -37,10 +38,13 @@ from loglab_engine.adif import (
     write_adi,
 )
 from loglab_engine.cli.adif import write_atomically
+from loglab_engine.cli.operator import RefusedError, check_schema, signed_in
 from loglab_engine.store import (
     Actor,
+    IdentityStore,
     LogStore,
     MigrationError,
+    Permission,
     QsoVersion,
     StoreError,
     connect,
@@ -114,7 +118,8 @@ def _changes(before: Record, after: Record) -> list[str]:
 
 
 def _actor(args: argparse.Namespace) -> Actor:
-    return Actor(args.operator.upper(), args.station)
+    actor: Actor = args.actor
+    return actor
 
 
 def _edited(record: Record, sets: Sequence[str], removes: Sequence[str]) -> Record:
@@ -143,14 +148,6 @@ def _edited(record: Record, sets: Sequence[str], removes: Sequence[str]) -> Reco
     if not fields:
         raise _RefusedError("a QSO must keep at least one field")
     return Record(tuple(fields))
-
-
-def _check_schema(conn: psycopg.Connection[TupleRow]) -> None:
-    pending = pending_migrations(conn, load_migrations())
-    if pending:
-        raise _RefusedError(
-            f"the database needs {len(pending)} migration(s); run 'loglab-log migrate' first",
-        )
 
 
 # -- Commands ----------------------------------------------------------------
@@ -192,7 +189,7 @@ def _import(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
     )
     out.write(
         f"Imported {len(summary.qso_ids)} QSOs ({document.field_count} fields) from {path.name} "
-        f"as import {summary.import_id}, by {args.operator.upper()} at {args.station}.\n",
+        f"as import {summary.import_id}, by {args.actor.operator} at {args.actor.station}.\n",
     )
     if write_adi(document) == data:
         out.write("The file is canonical ADI, so exporting this import reproduces it exactly.\n")
@@ -310,6 +307,14 @@ def _restore(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
     return EXIT_OK
 
 
+# Changes need the log permission (the database checks it too); reading needs view.
+_NEEDS: Final = {
+    "import": Permission.LOG,
+    "edit": Permission.LOG,
+    "delete": Permission.LOG,
+    "restore": Permission.LOG,
+}
+
 _STORE_COMMANDS: Final[dict[str, Callable[[LogStore, argparse.Namespace, TextIO], int]]] = {
     "import": _import,
     "export": _export,
@@ -323,9 +328,6 @@ _STORE_COMMANDS: Final[dict[str, Callable[[LogStore, argparse.Namespace, TextIO]
 
 
 def _add_actor(parser: argparse.ArgumentParser) -> None:
-    group = parser.add_argument_group("who is making this change (required)")
-    group.add_argument("--operator", required=True, help="operator callsign, e.g. K9KSU")
-    group.add_argument("--station", required=True, help="station name, e.g. shack")
     parser.add_argument("--note", help="why, recorded with the change")
 
 
@@ -398,9 +400,12 @@ def main(
         with connect(args.database or default_database()) as conn:
             if args.command == "migrate":
                 return _migrate(conn, args, out)
-            _check_schema(conn)
+            check_schema(conn)
+            identity = IdentityStore(conn)
+            args.actor = signed_in(identity)
+            identity.require(args.actor, _NEEDS.get(args.command, Permission.VIEW))
             return _STORE_COMMANDS[args.command](LogStore(conn), args, out)
-    except (_RefusedError, StoreError, MigrationError, AdifModelError) as error:
+    except (_RefusedError, RefusedError, StoreError, MigrationError, AdifModelError) as error:
         err.write(f"refused: {error}\n")
     except psycopg.Error as error:
         err.write(f"database error: {str(error).strip()}\n")

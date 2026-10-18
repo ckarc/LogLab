@@ -14,31 +14,19 @@ from loglab_engine.adif.adi import write_adi
 from loglab_engine.adif.ghosts import generate
 from loglab_engine.cli.log import EXIT_DIFFERENT, EXIT_OK, EXIT_REFUSED, main
 
-from .conftest import conninfo
+from .conftest import Terminal
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-ME = ("--operator", "k9ksu", "--station", "shack")
-
-
-class _Cli:
-    def __init__(self, database: str) -> None:
-        self.database = conninfo(database)
-
-    def __call__(self, *argv: str) -> tuple[int, str, str]:
-        out, err = io.StringIO(), io.StringIO()
-        code = main(["--database", self.database, *argv], out, err)
-        return code, out.getvalue(), err.getvalue()
 
 
 def _ids(listing: str) -> list[str]:
     return re.findall(r"^([0-9a-f-]{36})  v", listing, flags=re.MULTILINE)
 
 
-def test_migrate_command(empty_database: str) -> None:
+def test_migrate_command(empty_database: str, tmp_path: Path) -> None:
     """Nothing runs on an unmigrated database; migrate applies once and then has nothing to do."""
-    cli = _Cli(empty_database)
+    cli = Terminal(empty_database, tmp_path / "session")
     code, _, err = cli("find")
     assert code == EXIT_REFUSED
     assert "run 'loglab-log migrate' first" in err
@@ -46,24 +34,24 @@ def test_migrate_command(empty_database: str) -> None:
     code, out, _ = cli("migrate")
     assert code == EXIT_OK
     assert "applied  0002_log" in out
+    assert "applied  0003_identity" in out
     assert cli("migrate")[1].endswith("(0 applied now)\n")
     assert cli("migrate", "--check")[0] == EXIT_OK
 
 
-def test_the_demo(database: str, tmp_path: Path) -> None:
+def test_the_demo(cli: Terminal, visitor_cli: Terminal, tmp_path: Path) -> None:
     """Import ghosts, edit, delete, read history, restore, and round-trip."""
-    cli = _Cli(database)
     ghosts = tmp_path / "ghosts.adi"
     ghosts.write_bytes(write_adi(generate(200)))
 
-    code, out, _ = cli("import", str(ghosts), *ME)
+    code, out, _ = cli("import", str(ghosts))
     assert code == EXIT_OK
     assert "Imported 200 QSOs" in out
     assert "as import 1, by K9KSU at shack" in out
     assert "reproduces it exactly" in out
     assert "not yet logged" in out
     assert " logged." not in out  # Principle XV is not claimed.
-    code, _, err = cli("import", str(ghosts), *ME)
+    code, _, err = cli("import", str(ghosts))
     assert code == EXIT_REFUSED
     assert "already imported, as import 1" in err
 
@@ -74,11 +62,11 @@ def test_the_demo(database: str, tmp_path: Path) -> None:
     original = cli("show", first[:8])[1]
     rst = re.search(r"<RST_RCVD> '([^']*)'", original)
     assert rst is not None
-    code, out, _ = cli("edit", first[:8], "--set", "RST_RCVD=339", *ME, "--note", "typo")
+    code, out, _ = cli("edit", first[:8], "--set", "RST_RCVD=339", "--note", "typo")
     assert code == EXIT_OK
     assert "now version 2" in out
     assert f"- <RST_RCVD> '{rst[1]}'" in out
-    code, out, _ = cli("delete", second, "--operator", "W0XYZ", "--station", "fd-2")
+    code, out, _ = visitor_cli("delete", second)
     assert code == EXIT_OK
     assert "restore' brings it back" in out
 
@@ -96,20 +84,19 @@ def test_the_demo(database: str, tmp_path: Path) -> None:
     assert code == EXIT_DIFFERENT
     assert "(199 QSOs)" in out
 
-    assert cli("restore", second, *ME)[0] == EXIT_OK
-    assert cli("edit", first[:8], "--set", f"RST_RCVD={rst[1]}", *ME)[0] == EXIT_OK
+    assert cli("restore", second)[0] == EXIT_OK
+    assert cli("edit", first[:8], "--set", f"RST_RCVD={rst[1]}")[0] == EXIT_OK
     code, out, _ = cli("export", "--import", "1", "-o", str(copy))
     assert code == EXIT_OK
     assert "Identical to the imported file ghosts.adi" in out
     assert copy.read_bytes() == ghosts.read_bytes()
 
 
-def test_whole_log_export_has_a_loglab_header(database: str, tmp_path: Path) -> None:
+def test_whole_log_export_has_a_loglab_header(cli: Terminal, tmp_path: Path) -> None:
     """Exporting the whole log writes LogLab's own header over the stored QSOs."""
-    cli = _Cli(database)
     ghosts = tmp_path / "ghosts.adi"
     ghosts.write_bytes(write_adi(generate(20)))
-    assert cli("import", str(ghosts), *ME)[0] == EXIT_OK
+    assert cli("import", str(ghosts))[0] == EXIT_OK
     whole = tmp_path / "whole.adi"
     code, out, _ = cli("export", "-o", str(whole))
     assert code == EXIT_OK
@@ -121,31 +108,29 @@ def test_whole_log_export_has_a_loglab_header(database: str, tmp_path: Path) -> 
     assert exported.records == parse_adi(ghosts.read_bytes()).document.records
 
 
-def test_refusals_are_explained(database: str, tmp_path: Path) -> None:
+def test_refusals_are_explained(cli: Terminal, tmp_path: Path) -> None:
     """Bad input and impossible changes exit 2 with the reason; nothing is written."""
-    cli = _Cli(database)
     bad = tmp_path / "bad.adi"
     bad.write_bytes(b"<CALL:3>Q1A")
-    code, _, err = cli("import", str(bad), *ME)
+    code, _, err = cli("import", str(bad))
     assert code == EXIT_REFUSED
     assert "not terminated by <EOR>" in err
-    code, _, err = cli("import", str(tmp_path / "missing.adi"), *ME)
+    code, _, err = cli("import", str(tmp_path / "missing.adi"))
     assert code == EXIT_REFUSED
 
     good = tmp_path / "one.adi"
     good.write_bytes(b"<CALL:3>Q1A <QSO_DATE:8>20260627 <EOR>")
-    code, out, _ = cli("import", str(good), *ME)
+    code, out, _ = cli("import", str(good))
     assert "not canonical ADI" in out
     qso = _ids(cli("find")[1])[0]
     for argv, reason in [
-        (("edit", qso, *ME), "changes nothing"),
-        (("edit", qso, "--set", "NOEQUALS", *ME), "not NAME=VALUE"),
-        (("edit", qso, "--set", "BAD<NAME=1", *ME), "forbidden character"),
-        (("edit", qso, "--remove", "FREQ", *ME), "no such field"),
-        (("edit", qso, "--remove", "CALL", "--remove", "QSO_DATE", *ME), "at least one field"),
-        (("restore", qso, *ME), "is not deleted"),
+        (("edit", qso), "changes nothing"),
+        (("edit", qso, "--set", "NOEQUALS"), "not NAME=VALUE"),
+        (("edit", qso, "--set", "BAD<NAME=1"), "forbidden character"),
+        (("edit", qso, "--remove", "FREQ"), "no such field"),
+        (("edit", qso, "--remove", "CALL", "--remove", "QSO_DATE"), "at least one field"),
+        (("restore", qso), "is not deleted"),
         (("show", "00000000"), "no QSO ID starts"),
-        (("edit", qso, "--set", "A=1", "--operator", "K9 KSU", "--station", "shack"), "callsign"),
         (("export", "--import", "7", "-o", str(tmp_path / "x.adi")), "no import 7"),
     ]:
         code, _, err = cli(*argv)
@@ -161,3 +146,33 @@ def test_unreachable_database_is_reported(tmp_path: Path) -> None:
     code = main(["--database", f"host={tmp_path} dbname=nowhere", "find"], out, err)
     assert code == EXIT_REFUSED
     assert err.getvalue().startswith("database error:")
+
+
+def test_every_command_needs_a_signed_in_operator(
+    cli: Terminal, database: str, tmp_path: Path
+) -> None:
+    """With no session, nothing is read or changed (Principle XIII)."""
+    stranger = Terminal(database, tmp_path / "nobody.session")
+    for argv in (("find",), ("import", str(tmp_path / "x.adi")), ("export", "-o", "x.adi")):
+        code, _, err = stranger(*argv)
+        assert code == EXIT_REFUSED, argv
+        assert "not signed in" in err
+    assert cli.operator("sign-out")[1] == "Signed out.\n"
+    code, _, err = cli("find")
+    assert code == EXIT_REFUSED
+    assert "not signed in" in err
+
+
+def test_logging_needs_the_log_permission(
+    cli: Terminal,
+    visitor_cli: Terminal,
+    tmp_path: Path,
+) -> None:
+    """An operator who may view but not log can read the log and change nothing."""
+    ghosts = tmp_path / "ghosts.adi"
+    ghosts.write_bytes(write_adi(generate(3)))
+    assert cli.operator("revoke", "W0XYZ", "log")[0] == EXIT_OK
+    code, _, err = visitor_cli("import", str(ghosts))
+    assert code == EXIT_REFUSED
+    assert "does not have the log permission" in err
+    assert visitor_cli("find")[0] == EXIT_OK
