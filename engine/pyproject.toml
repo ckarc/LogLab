@@ -18,6 +18,7 @@ Homepage = "https://github.com/ckarc/loglab"
 
 [project.scripts]
 loglab-adif = "loglab_engine.cli.adif:run"
+loglab-log = "loglab_engine.cli.log:run"
 
 [dependency-groups]
 dev = [
