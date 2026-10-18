@@ -7,8 +7,13 @@ Logging never waits on this (Principle V): a QSO is logged when the Engine
 commits it (Principle XV), and only afterwards does this copy it to QRZ.com.
 It works from what the log says now, so nothing is queued that could be lost:
 each run sends every QSO whose current version QRZ.com does not have yet. A
-new QSO is inserted; an edited one replaces its earlier copy; a deleted one is
+new QSO is inserted; an edited one takes the place of its earlier copy; a deleted one is
 removed from the QRZ logbook, and sent again if it is restored.
+
+Only LogLab's own copies are ever touched, by the logid QRZ.com gave them. An
+edited QSO's old copy is removed and the new one inserted; LogLab never asks
+QRZ.com to replace a matching QSO, so one that reached QRZ.com another way
+(from LoTW, or an earlier upload) is never changed or removed.
 
 It runs when a QSO changes, and while anything is still waiting, again every
 few minutes. With no internet it makes one try, then waits; nothing is lost.
@@ -142,15 +147,16 @@ class LogbookSync:
                 self.client.delete(book.api_key, qso.logid)
             store.record(qso, book, outcome="deleted", logid=None)
             return
+        if qso.logid is not None:
+            # An edit or a restore: remove LogLab's own earlier copy by its logid,
+            # then send the QSO as it stands. LogLab never asks QRZ.com to replace
+            # a matching QSO, so a QSO that reached QRZ.com another way (from LoTW,
+            # say) is never changed or removed (Principle VII).
+            self.client.delete(book.api_key, qso.logid)
         record = log.current(qso.qso_id).record
-        answer = self.client.insert(
-            book.api_key, _adif(record, book.book_call), replace=qso.logid is not None
-        )
+        answer = self.client.insert(book.api_key, _adif(record, book.book_call))
         if answer.outcome is InsertOutcome.REFUSED:
             reason = clean_text(answer.reason, 300) or "refused"
-            store.record(qso, book, outcome="refused", logid=qso.logid, message=reason)
+            store.record(qso, book, outcome="refused", logid=None, message=reason)
             return
-        if qso.logid is not None and answer.logid is not None and answer.logid != qso.logid:
-            # The edit changed what QRZ.com matches on, so the old copy is a different QSO there.
-            self.client.delete(book.api_key, qso.logid)
         store.record(qso, book, outcome="sent", logid=answer.logid)
