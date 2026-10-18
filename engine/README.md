@@ -40,8 +40,7 @@ any service.
 reference data in `reference` (Principle VI). Every QSO is a series of complete
 ADIF snapshots: an edit, a delete, and a restore each add a version that
 records the operator, station, and UTC time, and nothing is ever erased
-(Principle VII). Storing a QSO is not yet *logging* it: that needs a second
-independent copy (Principle XV), which comes later.
+(Principle VII). A QSO is *logged* once its transaction commits (Principle XV).
 
 ```sh
 createdb loglab                                   # once
@@ -107,9 +106,14 @@ own reference is at `/api/docs`.
   `view` and changes need `log`. Every request body is checked against a
   strict model before it reaches the log (Principle XII).
 - Times go in and come out in UTC (Principle VIII).
-- A stored QSO is reported as "stored, not yet logged": LogLab calls a QSO
-  logged only once it is in two independent places (Principle XV), and the
-  second copy is not built yet.
+- A QSO is logged as soon as the Engine commits it (Principle XV). The page
+  gives each QSO its unique ID when you store it and keeps it in the
+  browser's journal until the Engine has logged it. If the Engine cannot be
+  reached, the QSO waits under "Not logged yet" and is sent again every 15
+  seconds, or when you press **Send now** or sign back in. Sending it again
+  never logs it twice: the Engine recognises the ID.
+- A QSO waiting in the journal is sent only by the operator who typed it, at
+  the same station (Principle XIII).
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

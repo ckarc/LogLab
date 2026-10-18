@@ -49,8 +49,6 @@ def test_the_demo(cli: Terminal, visitor_cli: Terminal, tmp_path: Path) -> None:
     assert "Imported 200 QSOs" in out
     assert "as import 1, by K9KSU at shack" in out
     assert "reproduces it exactly" in out
-    assert "not yet logged" in out
-    assert " logged." not in out  # Principle XV is not claimed.
     code, _, err = cli("import", str(ghosts))
     assert code == EXIT_REFUSED
     assert "already imported, as import 1" in err

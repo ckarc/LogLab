@@ -22,6 +22,7 @@ from loglab_engine.store import (
     DuplicateImportError,
     ImportSummary,
     LogStore,
+    QsoExistsError,
     QsoNotFoundError,
     StaleVersionError,
     StoreError,
@@ -199,6 +200,20 @@ def test_each_qso_gets_a_unique_id_when_entered(store: LogStore, shack: Actor) -
     with pytest.raises(StoreError, match="already exists"):
         store.create_qso(_qso("Q3C"), actor=shack, qso_id=chosen)
     assert store.current(chosen).call == "Q2B"
+
+
+def test_entering_under_a_client_id_is_safe_to_repeat(store: LogStore, shack: Actor) -> None:
+    """A journal re-send is recognised, even after an edit; a different QSO is refused (XV)."""
+    chosen = uuid.uuid4()
+    first, created = store.enter_qso(_qso("Q4D"), actor=shack, qso_id=chosen)
+    assert created
+    store.edit_qso(chosen, _qso("Q4E"), actor=shack, base_version=1)
+    again, created = store.enter_qso(_qso("Q4D"), actor=shack, qso_id=chosen)
+    assert not created
+    assert (again.qso_id, again.version, again.call) == (first.qso_id, 2, "Q4E")
+    with pytest.raises(QsoExistsError, match="different QSO"):
+        store.enter_qso(_qso("Q4E"), actor=shack, qso_id=chosen)
+    assert len(store.history(chosen)) == 2
 
 
 def test_times_are_utc_and_derived_columns_follow_the_snapshot(

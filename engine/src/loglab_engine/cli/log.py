@@ -9,8 +9,7 @@ ADI. Every change is made by the operator signed in with ``loglab-operator
 sign-in``, at their station (Principle XIII). All times are shown in UTC
 (Principle VIII).
 
-Storing a QSO is not the same as logging it: a QSO counts as logged only when
-two independent copies exist (Principle XV), which is not built yet.
+A QSO is logged once the Engine has committed it to the database (Principle XV).
 
 Exit codes: 0 success, 1 export differs from the imported file, 2 refused or failed.
 """
@@ -64,10 +63,6 @@ EXIT_DIFFERENT: Final = 1
 EXIT_REFUSED: Final = 2
 ADIF_VERSION: Final = "3.1.7"
 _MAX_LISTED: Final = 20
-_NOT_LOGGED: Final = (
-    "Stored, not yet logged: a QSO counts as logged only once a second independent "
-    "copy exists (Principle XV), which LogLab does not make yet.\n"
-)
 
 
 class _RefusedError(Exception):
@@ -201,7 +196,6 @@ def _import(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
     for warning in result.warnings[:_MAX_LISTED]:
         where = "header" if warning.record is None else f"record {warning.record}"
         out.write(f"  warning: {where} {warning.field or ''}: {warning.message}\n")
-    out.write(_NOT_LOGGED)
     return EXIT_OK
 
 

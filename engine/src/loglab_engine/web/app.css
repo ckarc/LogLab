@@ -140,6 +140,11 @@ table.fields td { padding: 4px 6px; }
 table.fields td:first-child { width: 30%; }
 table.fields td:last-child { width: 1%; }
 
+#journal { border-color: var(--notice-line); background: var(--notice-bg); }
+#journal-list { margin: 0; padding-left: 20px; }
+#journal-list li { margin-bottom: 6px; }
+#journal-list .what { font-weight: 600; }
+
 #history { padding-left: 20px; margin: 0; }
 #history li { margin-bottom: 10px; }
 #history .what { font-weight: 600; }
