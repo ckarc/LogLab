@@ -32,17 +32,19 @@ from ..adif.test_roundtrip import documents
 if TYPE_CHECKING:
     from psycopg.rows import TupleRow
 
-SHACK = Actor("K9KSU", "shack")
-VISITOR = Actor("W0XYZ", "field-day-2")
 
-
-def _import(store: LogStore, document: AdifDocument, name: str = "ghosts.adi") -> ImportSummary:
+def _import(
+    store: LogStore,
+    document: AdifDocument,
+    actor: Actor,
+    name: str = "ghosts.adi",
+) -> ImportSummary:
     data = write_adi(document)
     return store.import_document(
         document,
         file_name=name,
         file_sha256=hashlib.sha256(data).hexdigest(),
-        actor=SHACK,
+        actor=actor,
     )
 
 
@@ -89,10 +91,10 @@ def test_log_and_reference_are_separate_schemas_and_reference_is_empty(
     assert not [t for t in tables if t[0] == "reference"]
 
 
-def test_ghosts_import_and_export_back_byte_for_byte(store: LogStore) -> None:
+def test_ghosts_import_and_export_back_byte_for_byte(store: LogStore, shack: Actor) -> None:
     """1000 ghosts, with every ADI edge case, come back out as the identical file."""
     document = generate(1000)
-    ids = _import(store, document).qso_ids
+    ids = _import(store, document, shack).qso_ids
     assert len(set(ids)) == 1000
     exported = store.export_import(1)
     assert exported == document
@@ -105,14 +107,16 @@ def test_ghosts_import_and_export_back_byte_for_byte(store: LogStore) -> None:
     suppress_health_check=[HealthCheck.function_scoped_fixture],
 )
 @given(document=documents)
-def test_any_document_survives_storage(store: LogStore, document: AdifDocument) -> None:
+def test_any_document_survives_storage(
+    store: LogStore, document: AdifDocument, shack: Actor
+) -> None:
     """Random names, case, order, duplicates, indicators, and Unicode all survive storage."""
     if _has_nul(document):
         with pytest.raises(StoreError, match="NUL"):
-            _import(store, document, name="random.adi")
+            _import(store, document, shack, name="random.adi")
         return
     try:
-        summary = _import(store, document, name="random.adi")
+        summary = _import(store, document, shack, name="random.adi")
     except DuplicateImportError:
         return  # Hypothesis replayed a document this test's database already has.
     assert store.export_import(summary.import_id) == document
@@ -123,21 +127,24 @@ def test_any_document_survives_storage(store: LogStore, document: AdifDocument) 
 def test_nul_is_refused_with_the_record_number_and_nothing_is_stored(
     store: LogStore,
     conn: psycopg.Connection[TupleRow],
+    shack: Actor,
 ) -> None:
     """PostgreSQL cannot store U+0000, so the import is refused instead of altered."""
     document = AdifDocument(None, (_qso(), _qso(COMMENT="bad\x00byte")))
     with pytest.raises(StoreError, match="record 2: COMMENT contains a NUL"):
-        _import(store, document)
+        _import(store, document, shack)
     assert _count(conn, "changeset") == 0
     assert _count(conn, "qso") == 0
 
 
-def test_whole_log_export_uses_the_given_header_and_entry_order(store: LogStore) -> None:
+def test_whole_log_export_uses_the_given_header_and_entry_order(
+    store: LogStore, shack: Actor
+) -> None:
     """A whole-log export carries LogLab's header, then every live QSO in the order entered."""
     first = generate(3, seed=1)
     second = generate(2, seed=2)
-    _import(store, first, "one.adi")
-    _import(store, second, "two.adi")
+    _import(store, first, shack, "one.adi")
+    _import(store, second, shack, "two.adi")
     header = Header("LogLab test export\n", (Field("PROGRAMID", "LogLab"),))
     exported = store.export_log(header)
     assert exported.header == header
@@ -147,20 +154,21 @@ def test_whole_log_export_uses_the_given_header_and_entry_order(store: LogStore)
 def test_reimporting_the_same_file_is_refused(
     store: LogStore,
     conn: psycopg.Connection[TupleRow],
+    shack: Actor,
 ) -> None:
     """The same bytes again would duplicate every QSO; it is refused and nothing changes."""
     document = generate(5)
-    _import(store, document)
+    _import(store, document, shack)
     with pytest.raises(DuplicateImportError, match="already imported, as import 1"):
-        _import(store, document, name="renamed.adi")
+        _import(store, document, shack, name="renamed.adi")
     assert _count(conn, "qso") == 5
     assert _count(conn, "changeset") == 1
 
 
-def test_import_keeps_the_header_and_file_identity(store: LogStore) -> None:
+def test_import_keeps_the_header_and_file_identity(store: LogStore, shack: Actor) -> None:
     """The import batch records the file name, SHA-256, header, count, and who imported it."""
     document = generate(4)
-    _import(store, document)
+    _import(store, document, shack)
     batch = store.import_batch(1)
     assert batch.file_name == "ghosts.adi"
     assert batch.file_sha256 == hashlib.sha256(write_adi(document)).hexdigest()
@@ -171,32 +179,34 @@ def test_import_keeps_the_header_and_file_identity(store: LogStore) -> None:
         store.import_batch(9)
 
 
-def test_headerless_file_round_trips(store: LogStore) -> None:
+def test_headerless_file_round_trips(store: LogStore, shack: Actor) -> None:
     """A file with no header exports with no header."""
     document = AdifDocument(None, (_qso(),))
-    _import(store, document, "bare.adi")
+    _import(store, document, shack, "bare.adi")
     assert store.export_import(1) == document
 
 
 # -- Identity and time (Principles XV, VIII) ---------------------------------
 
 
-def test_each_qso_gets_a_unique_id_when_entered(store: LogStore) -> None:
+def test_each_qso_gets_a_unique_id_when_entered(store: LogStore, shack: Actor) -> None:
     """IDs are assigned on entry; a supplied ID is kept; reusing one is refused."""
-    entered = store.create_qso(_qso(), actor=SHACK)
+    entered = store.create_qso(_qso(), actor=shack)
     assert entered.version == 1
     assert entered.action is Action.CREATE
     chosen = uuid.UUID("12345678-1234-4234-8234-123456789abc")
-    assert store.create_qso(_qso("Q2B"), actor=SHACK, qso_id=chosen).qso_id == chosen
+    assert store.create_qso(_qso("Q2B"), actor=shack, qso_id=chosen).qso_id == chosen
     with pytest.raises(StoreError, match="already exists"):
-        store.create_qso(_qso("Q3C"), actor=SHACK, qso_id=chosen)
+        store.create_qso(_qso("Q3C"), actor=shack, qso_id=chosen)
     assert store.current(chosen).call == "Q2B"
 
 
-def test_times_are_utc_and_derived_columns_follow_the_snapshot(store: LogStore) -> None:
+def test_times_are_utc_and_derived_columns_follow_the_snapshot(
+    store: LogStore, shack: Actor
+) -> None:
     """Change time and QSO start come back as UTC; call, band, and mode are normalized."""
     before = datetime.now(UTC)
-    version = store.create_qso(_qso("q1abc"), actor=SHACK)
+    version = store.create_qso(_qso("q1abc"), actor=shack)
     assert version.changed_at.utcoffset() == timedelta(0)
     assert before - timedelta(seconds=5) <= version.changed_at <= datetime.now(UTC)
     assert version.qso_start == datetime(2026, 6, 27, 18, 5, tzinfo=UTC)
@@ -221,28 +231,31 @@ def test_qso_start_is_derived_only_from_real_utc_dates(
     date: str,
     time: str,
     expected: datetime | None,
+    shack: Actor,
 ) -> None:
     """Malformed dates and times are stored as written, with no derived start."""
     record = Record((Field("CALL", "Q1A"), Field("qso_date", date), Field("time_on", time)))
-    version = store.create_qso(record, actor=SHACK)
+    version = store.create_qso(record, actor=shack)
     assert version.qso_start == expected
     assert version.record == record
 
 
-def test_missing_fields_derive_nothing(store: LogStore) -> None:
+def test_missing_fields_derive_nothing(store: LogStore, shack: Actor) -> None:
     """A QSO with none of the derived fields still stores, with empty derived columns."""
-    version = store.create_qso(Record((Field("COMMENT", "only a comment"),)), actor=SHACK)
+    version = store.create_qso(Record((Field("COMMENT", "only a comment"),)), actor=shack)
     assert (version.call, version.qso_start, version.band, version.mode) == (None,) * 4
 
 
 # -- Versioned, audited changes (Principle VII) ------------------------------
 
 
-def test_edit_adds_a_version_and_keeps_what_it_was_before(store: LogStore) -> None:
+def test_edit_adds_a_version_and_keeps_what_it_was_before(
+    store: LogStore, shack: Actor, visitor: Actor
+) -> None:
     """An edit is a new version by its operator and station; the old one is unchanged."""
-    qso_id = store.create_qso(_qso(), actor=SHACK).qso_id
+    qso_id = store.create_qso(_qso(), actor=shack).qso_id
     edited = _qso("Q9ZZZ", COMMENT="call corrected")
-    after = store.edit_qso(qso_id, edited, actor=VISITOR, base_version=1, note="busted call")
+    after = store.edit_qso(qso_id, edited, actor=visitor, base_version=1, note="busted call")
     assert after.version == 2
     assert after.call == "Q9ZZZ"
     history = store.history(qso_id)
@@ -258,29 +271,29 @@ def test_edit_adds_a_version_and_keeps_what_it_was_before(store: LogStore) -> No
     assert history[1].changed_at >= history[0].changed_at
 
 
-def test_a_stale_edit_is_refused(store: LogStore) -> None:
+def test_a_stale_edit_is_refused(store: LogStore, shack: Actor, visitor: Actor) -> None:
     """Editing from an old version would silently undo someone else's change."""
-    qso_id = store.create_qso(_qso(), actor=SHACK).qso_id
-    store.edit_qso(qso_id, _qso(RST_RCVD="59"), actor=SHACK, base_version=1)
+    qso_id = store.create_qso(_qso(), actor=shack).qso_id
+    store.edit_qso(qso_id, _qso(RST_RCVD="59"), actor=shack, base_version=1)
     with pytest.raises(StaleVersionError, match="at version 2, not 1"):
-        store.edit_qso(qso_id, _qso(RST_RCVD="57"), actor=VISITOR, base_version=1)
+        store.edit_qso(qso_id, _qso(RST_RCVD="57"), actor=visitor, base_version=1)
     assert store.current(qso_id).record == _qso(RST_RCVD="59")
 
 
-def test_an_edit_that_changes_nothing_is_refused(store: LogStore) -> None:
+def test_an_edit_that_changes_nothing_is_refused(store: LogStore, shack: Actor) -> None:
     """Every version records a real change."""
-    qso_id = store.create_qso(_qso(), actor=SHACK).qso_id
+    qso_id = store.create_qso(_qso(), actor=shack).qso_id
     with pytest.raises(StoreError, match="changes nothing"):
-        store.edit_qso(qso_id, _qso(), actor=SHACK, base_version=1)
+        store.edit_qso(qso_id, _qso(), actor=shack, base_version=1)
     assert len(store.history(qso_id)) == 1
 
 
-def test_delete_is_recorded_and_recoverable(store: LogStore) -> None:
+def test_delete_is_recorded_and_recoverable(store: LogStore, shack: Actor, visitor: Actor) -> None:
     """A deleted QSO leaves exports and searches, keeps its history, and can be restored."""
     document = generate(10)
-    victim = _import(store, document).qso_ids[3]
+    victim = _import(store, document, shack).qso_ids[3]
 
-    deleted = store.delete_qso(victim, actor=VISITOR, note="dupe")
+    deleted = store.delete_qso(victim, actor=visitor, note="dupe")
     assert deleted.deleted
     assert deleted.record == document.records[3]
     assert store.export_import(1).records == document.records[:3] + document.records[4:]
@@ -288,11 +301,11 @@ def test_delete_is_recorded_and_recoverable(store: LogStore) -> None:
     assert victim in {v.qso_id for v in store.find(limit=100, include_deleted=True)}
 
     with pytest.raises(StoreError, match="already deleted"):
-        store.delete_qso(victim, actor=SHACK)
+        store.delete_qso(victim, actor=shack)
     with pytest.raises(StoreError, match="restore it before editing"):
-        store.edit_qso(victim, _qso(), actor=SHACK, base_version=2)
+        store.edit_qso(victim, _qso(), actor=shack, base_version=2)
 
-    restored = store.restore_qso(victim, actor=SHACK)
+    restored = store.restore_qso(victim, actor=shack)
     assert (restored.version, restored.deleted) == (3, False)
     assert [v.action for v in store.history(victim)] == [
         Action.CREATE,
@@ -301,10 +314,10 @@ def test_delete_is_recorded_and_recoverable(store: LogStore) -> None:
     ]
     assert store.export_import(1) == document
     with pytest.raises(StoreError, match="is not deleted"):
-        store.restore_qso(victim, actor=SHACK)
+        store.restore_qso(victim, actor=shack)
 
 
-def test_unknown_qsos_are_reported(store: LogStore) -> None:
+def test_unknown_qsos_are_reported(store: LogStore, shack: Actor) -> None:
     """Every operation on a missing QSO says so instead of doing nothing."""
     missing = uuid.uuid4()
     with pytest.raises(QsoNotFoundError):
@@ -312,14 +325,14 @@ def test_unknown_qsos_are_reported(store: LogStore) -> None:
     with pytest.raises(QsoNotFoundError):
         store.history(missing)
     with pytest.raises(QsoNotFoundError):
-        store.delete_qso(missing, actor=SHACK)
+        store.delete_qso(missing, actor=shack)
     with pytest.raises(QsoNotFoundError):
-        store.edit_qso(missing, _qso(), actor=SHACK, base_version=1)
+        store.edit_qso(missing, _qso(), actor=shack, base_version=1)
 
 
-def test_ids_resolve_from_a_prefix(store: LogStore) -> None:
+def test_ids_resolve_from_a_prefix(store: LogStore, shack: Actor) -> None:
     """Operators can type the first 8 characters of an ID."""
-    qso_id = store.create_qso(_qso(), actor=SHACK).qso_id
+    qso_id = store.create_qso(_qso(), actor=shack).qso_id
     assert store.resolve(str(qso_id)[:8].upper()) == qso_id
     assert store.resolve(str(qso_id)) == qso_id
     with pytest.raises(QsoNotFoundError, match="8\\+ character prefix"):
@@ -328,24 +341,24 @@ def test_ids_resolve_from_a_prefix(store: LogStore) -> None:
         store.resolve("ffffffff-ffff")
 
 
-def test_find_by_call_uses_the_current_version(store: LogStore) -> None:
+def test_find_by_call_uses_the_current_version(store: LogStore, shack: Actor) -> None:
     """Search sees a QSO as it is now, not as it was."""
-    qso_id = store.create_qso(_qso("Q1OLD"), actor=SHACK).qso_id
-    store.edit_qso(qso_id, _qso("Q1NEW"), actor=SHACK, base_version=1)
+    qso_id = store.create_qso(_qso("Q1OLD"), actor=shack).qso_id
+    store.edit_qso(qso_id, _qso("Q1NEW"), actor=shack, base_version=1)
     assert store.find(call="q1old") == ()
     assert [v.qso_id for v in store.find(call=" q1new ")] == [qso_id]
 
 
-def test_actors_must_be_identified(store: LogStore) -> None:
-    """Placeholder identities are still validated; there is no anonymous change."""
+def test_actors_must_be_identified(store: LogStore, shack: Actor) -> None:
+    """Identities are validated; there is no anonymous change."""
     with pytest.raises(StoreError, match="upper-case callsign"):
-        Actor("", "shack")
+        Actor("", "shack", shack.session_id)
     with pytest.raises(StoreError, match="upper-case callsign"):
-        Actor("k9ksu", "shack")
+        Actor("k9ksu", "shack", shack.session_id)
     with pytest.raises(StoreError, match="station"):
-        Actor("K9KSU", "")
+        Actor("K9KSU", "", shack.session_id)
     with pytest.raises(StoreError, match="at most 1000"):
-        store.create_qso(_qso(), actor=SHACK, note="x" * 1001)
+        store.create_qso(_qso(), actor=shack, note="x" * 1001)
 
 
 def test_store_needs_autocommit(database: str) -> None:
@@ -362,6 +375,7 @@ def test_store_needs_autocommit(database: str) -> None:
 def test_a_failed_import_stores_nothing(
     store: LogStore,
     conn: psycopg.Connection[TupleRow],
+    shack: Actor,
 ) -> None:
     """If the database fails part-way through an import, not one QSO of it remains."""
     conn.execute(
@@ -378,19 +392,20 @@ def test_a_failed_import_stores_nothing(
         """,
     )
     with pytest.raises(psycopg.errors.RaiseException, match="simulated failure"):
-        _import(store, generate(1000))
-    for table in ("operator", "station", "changeset", "import_batch", "qso", "qso_version"):
+        _import(store, generate(1000), shack)
+    for table in ("changeset", "import_batch", "qso", "qso_version"):
         assert _count(conn, table) == 0, table
+    assert (_count(conn, "operator"), _count(conn, "station")) == (1, 1)  # just the signed-in one
 
 
 # -- The database enforces the rules, not just this code (Principle VII) -----
 
 
 @pytest.fixture
-def entered(store: LogStore) -> uuid.UUID:
+def entered(store: LogStore, shack: Actor) -> uuid.UUID:
     """One QSO, edited once, so it has two versions."""
-    qso_id = store.create_qso(_qso(), actor=SHACK).qso_id
-    store.edit_qso(qso_id, _qso(RST_RCVD="59"), actor=SHACK, base_version=1)
+    qso_id = store.create_qso(_qso(), actor=shack).qso_id
+    store.edit_qso(qso_id, _qso(RST_RCVD="59"), actor=shack, base_version=1)
     return qso_id
 
 
@@ -425,8 +440,8 @@ def test_history_cannot_be_rewritten_even_with_sql(
 def _changeset(conn: psycopg.Connection[TupleRow], kind: str) -> int:
     row = conn.execute(
         """
-        INSERT INTO log.changeset (operator_id, station_id, kind)
-        SELECT o.id, s.id, %s FROM log.operator o, log.station s LIMIT 1
+        INSERT INTO log.changeset (operator_id, station_id, session_id, kind)
+        SELECT operator_id, station_id, id, %s FROM log.session LIMIT 1
         RETURNING id
         """,
         (kind,),
@@ -490,15 +505,25 @@ def test_audit_columns_are_required_and_time_is_the_databases(
     conn: psycopg.Connection[TupleRow],
 ) -> None:
     """A changeset must name its operator and station, and cannot be backdated."""
+    session = conn.execute("SELECT id, operator_id, station_id FROM log.session").fetchone()
+    assert session is not None
+    session_id, operator_id, station_id = session
     with pytest.raises(psycopg.errors.NotNullViolation):
-        conn.execute("INSERT INTO log.changeset (station_id, kind) VALUES (1, 'edit')")
+        conn.execute(
+            "INSERT INTO log.changeset (station_id, session_id, kind) VALUES (%s, %s, 'edit')",
+            (station_id, session_id),
+        )
     with pytest.raises(psycopg.errors.NotNullViolation):
-        conn.execute("INSERT INTO log.changeset (operator_id, kind) VALUES (1, 'edit')")
+        conn.execute(
+            "INSERT INTO log.changeset (operator_id, session_id, kind) VALUES (%s, %s, 'edit')",
+            (operator_id, session_id),
+        )
     row = conn.execute(
         """
-        INSERT INTO log.changeset (operator_id, station_id, kind, changed_at)
-        VALUES (1, 1, 'edit', '2001-01-01T00:00Z') RETURNING changed_at
+        INSERT INTO log.changeset (operator_id, station_id, session_id, kind, changed_at)
+        VALUES (%s, %s, %s, 'edit', '2001-01-01T00:00Z') RETURNING changed_at
         """,
+        (operator_id, station_id, session_id),
     ).fetchone()
     assert row is not None
     assert row[0] > datetime(2026, 1, 1, tzinfo=UTC)

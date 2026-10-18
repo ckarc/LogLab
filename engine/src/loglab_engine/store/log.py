@@ -63,6 +63,10 @@ class StaleVersionError(StoreError):
     """The QSO changed since the version the caller based its edit on."""
 
 
+class NotAuthorizedError(StoreError):
+    """The operator is not signed in, or does not hold the permission this needs."""
+
+
 class DuplicateImportError(StoreError):
     """This exact file has been imported before."""
 
@@ -76,21 +80,45 @@ class Action(StrEnum):
     RESTORE = "restore"
 
 
+def check_callsign(callsign: str) -> None:
+    """Refuse a callsign the log could not record.
+
+    Raises:
+        StoreError: Not an upper-case callsign of at most 20 characters.
+    """
+    if len(callsign) > _MAX_CALLSIGN or not _CALLSIGN.match(callsign):
+        msg = f"{callsign!r} is not an upper-case callsign"
+        raise StoreError(msg)
+
+
+def check_station(station: str) -> None:
+    """Refuse a station name the log could not record.
+
+    Raises:
+        StoreError: Not 1-64 letters, digits, '.', '_' or '-'.
+    """
+    if not _STATION.match(station):
+        msg = f"station {station!r} must be 1-64 letters, digits, '.', '_' or '-'"
+        raise StoreError(msg)
+
+
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """Who is making a change, and from where (placeholders until operator sign-in)."""
+    """A signed-in operator at a station, making a change in their session (Principle XIII).
+
+    Get one from :meth:`loglab_engine.store.IdentityStore.authenticate`. The
+    database checks every change against the session, so an actor that was
+    not signed in is refused.
+    """
 
     operator: str
     station: str
+    session_id: uuid.UUID
 
     def __post_init__(self) -> None:
         """Refuse identities the log could not record."""
-        if len(self.operator) > _MAX_CALLSIGN or not _CALLSIGN.match(self.operator):
-            msg = f"operator {self.operator!r} is not an upper-case callsign"
-            raise StoreError(msg)
-        if not _STATION.match(self.station):
-            msg = f"station {self.station!r} must be 1-64 letters, digits, '.', '_' or '-'"
-            raise StoreError(msg)
+        check_callsign(self.operator)
+        check_station(self.station)
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,28 +270,22 @@ class LogStore:
         if note is not None and (len(note) > _MAX_NOTE or "\x00" in note):
             msg = f"a note is at most {_MAX_NOTE} characters, without NUL"
             raise StoreError(msg)
-        conn = self._conn
-        conn.execute(
-            "INSERT INTO log.operator (callsign) VALUES (%s) ON CONFLICT DO NOTHING",
-            (actor.operator,),
-        )
-        conn.execute(
-            "INSERT INTO log.station (name) VALUES (%s) ON CONFLICT DO NOTHING",
-            (actor.station,),
-        )
-        row = conn.execute(
-            """
-            INSERT INTO log.changeset (operator_id, station_id, kind, note)
-            SELECT o.id, s.id, %s, %s
-            FROM log.operator o, log.station s
-            WHERE o.callsign = %s AND s.name = %s
-            RETURNING id
-            """,
-            (kind, note, actor.operator, actor.station),
-        ).fetchone()
-        if row is None:  # pragma: no cover - both rows were just ensured
-            msg = "could not record the changeset"
-            raise StoreError(msg)
+        try:
+            row = self._conn.execute(
+                """
+                INSERT INTO log.changeset (operator_id, station_id, session_id, kind, note)
+                SELECT o.id, s.id, %s, %s, %s
+                FROM log.operator o, log.station s
+                WHERE o.callsign = %s AND s.name = %s
+                RETURNING id
+                """,
+                (actor.session_id, kind, note, actor.operator, actor.station),
+            ).fetchone()
+        except errors.InsufficientPrivilege as error:
+            raise NotAuthorizedError(error.diag.message_primary or str(error)) from error
+        if row is None:
+            msg = f"{actor.operator} at {actor.station} is not signed in (Principle XIII)"
+            raise NotAuthorizedError(msg)
         changeset_id: int = row[0]
         return changeset_id
 
