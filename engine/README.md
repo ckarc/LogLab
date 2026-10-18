@@ -154,6 +154,29 @@ own reference is at `/api/docs`.
   the same (Principle V); after QRZ.com cannot be reached the Engine leaves
   it alone for a minute. The Engine has to send the password to QRZ.com, so
   it is stored as typed: anyone who can read the database can read it.
+- **Logbook of the World** is optional. The **LoTW** link in the Log box
+  says how many QSOs wait to be sent and opens the set-up: each operator
+  saves their own callsign certificate (the `.p12` file TrustedQSL saves,
+  with its password), their station location (grid, zones, and a state and
+  county or province from LoTW's own lists), and their LoTW website login
+  (`GET`/`DELETE /api/v1/lotw`, `PUT /api/v1/lotw/certificate`, `/location`,
+  `/login`; no password or key is ever sent back). **Send to LoTW**
+  (`POST /api/v1/lotw/upload`) signs every waiting QSO made as the
+  certificate's call (its `STATION_CALLSIGN`, else `OPERATOR`, else whoever
+  entered it) and sends them; the Engine signs the `.tq8` file itself, as
+  TrustedQSL's published source does, so TrustedQSL need not be installed.
+  QSOs LoTW cannot take (an unknown band, a date the certificate does not
+  cover, `MY_` fields that name another place) stay waiting, each with the
+  reason. **Fetch confirmations** (`POST /api/v1/lotw/download`) asks LoTW
+  for QSLs recorded since the last fetch and matches each to a QSO by call,
+  band and mode within 30 minutes. What happened is written to each QSO's
+  own ADIF fields (`LOTW_QSL_SENT`, `LOTW_QSLSDATE`, `LOTW_QSL_RCVD`,
+  `LOTW_QSLRDATE`) as a new audited version by the operator who asked
+  (Principles IV and VII); the Log's **LoTW** column shows Sent or
+  Confirmed. Logging never waits for LoTW: with no internet a send or fetch
+  changes nothing and says so (Principle V). The certificate and its
+  password are stored so sending needs no typing: anyone who can read the
+  database can sign QSOs with it.
 - **QRZ logbook** sending is optional. An operator saves their QRZ logbook's
   API key (and, for a club logbook, its callsign) from the **QRZ.com** link
   (`GET`/`PUT`/`DELETE /api/v1/logbook/qrz`; the key is never sent back).

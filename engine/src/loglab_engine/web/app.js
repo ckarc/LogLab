@@ -1233,8 +1233,17 @@
   // Fields offered first in the Log's column chooser; any other is found by name.
   const SUGGESTED_FIELDS = [
     "FREQ", "RST_SENT", "RST_RCVD", "NAME", "COMMENT", "GRIDSQUARE", "QTH", "STATE", "COUNTRY", "TX_PWR",
-    "CONTEST_ID", "SRX", "STX", "SUBMODE", "TIME_OFF", "CLASS", "ARRL_SECT",
+    "CONTEST_ID", "SRX", "STX", "SUBMODE", "TIME_OFF", "CLASS", "ARRL_SECT", "LOTW_QSL_RCVD",
   ];
+  // Fields shown as words rather than as their ADIF value.
+  const FIELD_SHOWN = {
+    // Logbook of the World: confirmed, sent and waiting, or not yet sent (lotw.js sends).
+    LOTW_QSL_RCVD: {
+      label: "LoTW",
+      render: (q) => (field(q, "LOTW_QSL_RCVD").toUpperCase() === "Y" ? "Confirmed"
+        : field(q, "LOTW_QSL_SENT").toUpperCase() === "Y" ? "Sent" : ""),
+    },
+  };
 
   const fieldLabel = (name) => (ADIF_FIELDS.get(name.toUpperCase()) || { label: name.toUpperCase() }).label;
 
@@ -1259,7 +1268,8 @@
   function logColumn(key) {
     if (LOG_COLUMNS[key]) return LOG_COLUMNS[key];
     const name = key.slice("field:".length).toUpperCase();
-    return { label: fieldLabel(name), sort: `field:${name}`, render: (q) => field(q, name) };
+    const shown = FIELD_SHOWN[name];
+    return { label: shown ? shown.label : fieldLabel(name), sort: `field:${name}`, render: shown ? shown.render : (q) => field(q, name) };
   }
 
   let logTable = null;
@@ -1601,7 +1611,7 @@
       column: logColumn,
       suggested: [...Object.keys(LOG_COLUMNS), ...SUGGESTED_FIELDS.map((f) => `field:${f}`)],
       defaults: Object.freeze({
-        columns: ["date", "time", "call", "band", "mode", "operator", "version"],
+        columns: ["date", "time", "call", "band", "mode", "operator", "version", "field:LOTW_QSL_RCVD"],
         sort: "entered",
         descending: true,
       }),
@@ -1619,6 +1629,8 @@
     fillSelect($("#entry [name=MODE]"), MODES);
     $("#entry [name=BAND]").value = "20m";
 
+    // Other modules that change QSOs (lotw.js) ask for the log to be shown again.
+    document.addEventListener("loglab:log-changed", () => { if (session && !$("#app").hidden) loadLog(); });
     $("#sign-in-form").addEventListener("submit", signIn);
     $("#sign-out").addEventListener("click", signOut);
     $("#arrange").addEventListener("click", () => arrange(!arranging()));

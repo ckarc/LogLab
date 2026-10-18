@@ -99,6 +99,26 @@ _VERSION_JOINS: Final = """
 """
 
 
+# The call a QSO was made as: its STATION_CALLSIGN, else its OPERATOR, else the
+# operator who entered it.
+_STATION_CALL: Final = """
+    coalesce(
+        nullif(upper(btrim(log.field_value(v.fields, 'STATION_CALLSIGN'))), ''),
+        nullif(upper(btrim(log.field_value(v.fields, 'OPERATOR'))), ''),
+        (SELECT o1.callsign FROM log.qso_version v1
+         JOIN log.changeset c1 ON c1.id = v1.changeset_id
+         JOIN log.operator o1 ON o1.id = c1.operator_id
+         WHERE v1.qso_id = q.id AND v1.version = 1)
+    )
+"""
+_QSL_WAITING: Final = f"""
+    NOT q.deleted
+    AND coalesce(upper(btrim(log.field_value(v.fields, %(sent)s))), '') NOT IN ('Y', 'N', 'I')
+    AND {_STATION_CALL} = %(call)s
+"""
+_SERVICE: Final = re.compile(r"^[A-Z]{2,12}$")
+
+
 class StoreError(Exception):
     """A request to the log cannot be carried out; the log is unchanged."""
 
@@ -589,6 +609,66 @@ class LogStore:
         """
         return self._append(qso_id, Action.RESTORE, actor, note)
 
+    def edit_many(
+        self,
+        edits: Iterable[tuple[uuid.UUID, int, Record]],
+        *,
+        actor: Actor,
+        note: str | None = None,
+    ) -> tuple[uuid.UUID, ...]:
+        """Replace several QSOs' fields as new versions, in one changeset and transaction.
+
+        Each edit is a QSO's ID, the version it was made from, and its new
+        record. A QSO that has moved on from that version, is deleted, or would
+        not change is left as it is, so a background update never overwrites
+        an operator's edit (Principle VII).
+
+        Returns:
+            The IDs of the QSOs that were changed.
+
+        Raises:
+            StoreError: A record cannot be stored; nothing was changed.
+        """
+        encoded = [(qso_id, base, _encode_fields(r.fields, "record")) for qso_id, base, r in edits]
+        if not encoded:
+            return ()
+        conn = self._conn
+        changed: list[uuid.UUID] = []
+        with conn.transaction():
+            rows = conn.execute(
+                """
+                SELECT q.id, q.current_version, q.deleted, v.fields
+                FROM log.qso q
+                JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+                WHERE q.id = ANY(%s)
+                FOR UPDATE OF q
+                """,
+                ([qso_id for qso_id, _, _ in encoded],),
+            ).fetchall()
+            state = {uuid.UUID(str(r[0])): (int(r[1]), bool(r[2]), r[3]) for r in rows}
+            todo = [
+                (qso_id, base, fields)
+                for qso_id, base, fields in encoded
+                if qso_id in state
+                and state[qso_id][0] == base
+                and not state[qso_id][1]
+                and state[qso_id][2] != fields
+            ]
+            if not todo:
+                return ()
+            changeset_id = self._changeset(actor, Action.EDIT.value, note)
+            with conn.cursor() as cur:
+                cur.executemany(
+                    """
+                    INSERT INTO log.qso_version
+                        (qso_id, version, changeset_id, action, deleted, fields)
+                    VALUES (%s, %s, %s, 'edit', false, %s)
+                    """,
+                    [(qso_id, base + 1, changeset_id, Jsonb(f)) for qso_id, base, f in todo],
+                )
+            changed = [qso_id for qso_id, _, _ in todo]
+        return tuple(changed)
+
     # -- Reads ----------------------------------------------------------------
 
     def resolve(self, text: str) -> uuid.UUID:
@@ -696,6 +776,68 @@ class LogStore:
                 "limit": max(limit, 0),
                 "field": sort_field,
             },
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
+    def qsl_queue(self, service: str, station_call: str, limit: int) -> tuple[QsoVersion, ...]:
+        """Current QSOs made as ``station_call`` that have not been sent to a QSL ``service``.
+
+        ``service`` is the prefix of the ADIF ``*_QSL_SENT`` field, such as
+        ``LOTW``. A QSO is waiting unless that field says it was sent (Y), is
+        not to be sent (N), or is to be ignored (I). The call a QSO was made as
+        is its ``STATION_CALLSIGN``, else its ``OPERATOR``, else the operator
+        who entered it. The oldest-entered come first.
+
+        Raises:
+            StoreError: ``service`` is not a QSL service name.
+        """
+        if not _SERVICE.match(service):
+            raise StoreError(f"{service!r} is not a QSL service")
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE {_QSL_WAITING}
+            ORDER BY q.entry_seq
+            LIMIT %(limit)s
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"sent": f"{service}_QSL_SENT", "call": station_call, "limit": max(limit, 0)},
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
+    def qsl_waiting(self, service: str, station_call: str) -> int:
+        """How many QSOs :meth:`qsl_queue` would list with no limit.
+
+        Raises:
+            StoreError: ``service`` is not a QSL service name.
+        """
+        if not _SERVICE.match(service):
+            raise StoreError(f"{service!r} is not a QSL service")
+        row = self._conn.execute(
+            f"""
+            SELECT count(*)
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            WHERE {_QSL_WAITING}
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"sent": f"{service}_QSL_SENT", "call": station_call},
+        ).fetchone()
+        return 0 if row is None else int(row[0])
+
+    def station_qsos(self, station_call: str, calls: Iterable[str]) -> tuple[QsoVersion, ...]:
+        """Current QSOs made as ``station_call`` with any of ``calls`` (see :meth:`qsl_queue`)."""
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE NOT q.deleted AND v.call = ANY(%(calls)s) AND {_STATION_CALL} = %(call)s
+            ORDER BY q.entry_seq
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"calls": sorted(set(calls)), "call": station_call},
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
