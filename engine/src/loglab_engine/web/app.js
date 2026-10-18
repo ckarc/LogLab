@@ -18,7 +18,6 @@
   const SESSION_KEY = "loglab.session";
   const JOURNAL_KEY = "loglab.journal";
   const RETRY_MS = 15000;
-  const FADE_AFTER_MS = 4000; // a "Logged" notice fades; warnings stay until dealt with
   // ADIF 3.1.7 band and mode enumerations most used on the air.
   const BANDS = ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m", "1.25m", "70cm"];
   const MODES = ["SSB", "CW", "FT8", "FT4", "FM", "AM", "RTTY", "PSK", "DIGITALVOICE", "JS8", "OLIVIA", "SSTV"];
@@ -37,6 +36,16 @@
     tables: {},
   });
   const SAVE_AFTER_MS = 400;
+  // One box on a page of its own: /?module=map shows only the section map,
+  // full width, for a second screen or a bookmark. The journal still shows
+  // when a QSO is waiting (Principle XV), and a QSO opened from the log
+  // still opens its detail. The operator's saved layout is left alone.
+  const POPPABLE = ["entry", "log", "map"];
+  const SOLO = (() => {
+    const id = new URLSearchParams(location.search).get("module");
+    return POPPABLE.includes(id) ? id : null;
+  })();
+  const ALONE_WITH = new Set([SOLO, "journal", "detail"]);
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -237,8 +246,8 @@
       seen.add(m.id);
       modules.push({
         id: m.id,
-        width: m.width === "half" ? "half" : "full",
-        side: m.side === "right" ? "right" : "left",
+        width: WIDTHS.includes(m.width) ? m.width : "full",
+        side: sideFor(m.width, SIDES.includes(m.side) ? m.side : "left"),
         hidden: HIDEABLE.has(m.id) && m.hidden === true,
       });
     }
@@ -270,38 +279,69 @@
   // Is this box on the page now? Boxes that show only when needed (Not
   // logged yet, QSO detail) take their place while the page is unlocked.
   function shown(m) {
+    if (SOLO) return ALONE_WITH.has(m.id) && !moduleEl(m.id).hidden;
     return !m.hidden && (arranging() || !moduleEl(m.id).hidden);
   }
 
-  // Place each box on the grid: a full-width box takes a row of its own; a
-  // half-width box takes its side of the current row, or starts a new row
-  // when that side is taken. The page's own order never changes, so the
-  // keyboard and screen readers keep a stable order.
+  // The page is six narrow tracks wide: a third takes two, a half three,
+  // a full-width box all six. Boxes are placed in the operator's order, each
+  // as high as its own tracks allow, so a short box on one side never leaves
+  // a gap beside a tall one on the other. The grid's rows are one pixel high,
+  // and each box spans as many as it is tall. Below THIRDS_FROM pixels wide,
+  // thirds show as halves; on a phone, every box is full width (app.css).
+  const GAP = 18;
+  const THIRDS_FROM = 960;
+  const WIDTHS = ["third", "half", "full"];
+  const SIDES = ["left", "middle", "right"];
+
+  // Only a third has a middle; anything else there moves to the left.
+  const sideFor = (width, side) => (width !== "third" && side === "middle" ? "left" : side);
+
+  // The tracks [from, to) a box takes, as `wide` or not.
+  function tracksFor(width, side, wide) {
+    const w = width === "third" && !wide ? "half" : width;
+    if (w === "full") return [0, 6];
+    if (w === "half") return side === "right" ? [3, 6] : [0, 3];
+    return { left: [0, 2], middle: [2, 4], right: [4, 6] }[side] || [0, 2];
+  }
+
+  function pack() {
+    const area = $("#workspace");
+    const wide = area.clientWidth >= THIRDS_FROM;
+    const heights = [0, 0, 0, 0, 0, 0];
+    for (const m of layout.modules) {
+      const el = moduleEl(m.id);
+      if (!shown(m)) continue;
+      const [from, to] = SOLO ? [0, 6] : tracksFor(m.width, m.side, wide);
+      el.style.gridColumn = `${from + 1} / ${to + 1}`;
+      const top = Math.max(...heights.slice(from, to));
+      const tall = Math.max(1, Math.ceil(el.offsetHeight));
+      el.style.gridRow = `${top + 1} / span ${tall}`;
+      for (let t = from; t < to; t += 1) heights[t] = top + tall + GAP;
+    }
+  }
+
+  // Boxes grow and shrink as the log loads, a QSO opens, or the window
+  // changes; place them again each time, once per frame at most.
+  let packing = 0;
+  const repack = () => {
+    if (!packing) packing = requestAnimationFrame(() => { packing = 0; pack(); });
+  };
+  const sizes = new ResizeObserver(repack);
+  sizes.observe($("#workspace"));
+
   function applyLayout() {
-    let row = 1;
-    let used = { left: false, right: false, full: false };
-    const fresh = () => {
-      if (used.left || used.right || used.full) row += 1;
-      used = { left: false, right: false, full: false };
-    };
     layout.modules.forEach((m, index) => {
       const el = moduleEl(m.id);
       el.style.order = String(index);
-      el.classList.toggle("half", m.width === "half");
-      el.classList.toggle("off", m.hidden);
+      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden);
+      el.dataset.width = m.width;
       el.dataset.place = m.width === "full" ? "full" : m.side;
-      if (!shown(m)) return;
-      if (m.width === "full") {
-        fresh();
-        used.full = true;
-        el.style.gridColumn = "1 / -1";
-      } else {
-        if (used.full || used[m.side]) fresh();
-        used[m.side] = true;
-        el.style.gridColumn = m.side === "left" ? "1" : "2";
+      for (const b of el.querySelectorAll(".module-head [data-width]")) {
+        b.setAttribute("aria-pressed", String(b.dataset.width === m.width));
       }
-      el.style.gridRow = String(row);
     });
+    pack();
     const tray = $("#tray");
     tray.replaceChildren();
     for (const m of layout.modules.filter((x) => x.hidden)) {
@@ -342,7 +382,7 @@
     const to = Math.max(0, Math.min(layout.modules.length - 1, index));
     if (from === to && m.width === width && (width === "full" || m.side === side)) return false;
     layout.modules.splice(from, 1);
-    layout.modules.splice(to, 0, { ...m, width, side: width === "half" ? side : m.side });
+    layout.modules.splice(to, 0, { ...m, width, side: sideFor(width, width === "full" ? m.side : side) });
     applyLayout();
     return true;
   }
@@ -369,32 +409,47 @@
     applyLayout();
   }
 
-  // Where a box dropped at (x, y) goes. Across the page: near the centre
-  // line it is full width; left or right of that, half width on that side.
-  // Down the page: before the first other box whose middle is below the
-  // pointer. Positions are measured when the drag starts, so the boxes
-  // moving aside as you drag never change the answer.
+  // Where a box dropped at (x, y) goes. A third stays a third and goes to
+  // the left, middle or right third the pointer is over. Any other box goes
+  // full width near the centre line, or half width left or right of it.
+  // Down the page: before the first box in those columns whose middle is
+  // below the pointer, or else after the last one. Positions are measured
+  // when the drag starts, so boxes moving aside never change the answer.
   const CENTRE_BAND = 0.2; // the middle fifth of the page counts as the centre line
 
-  function dropTarget(x, y, others, area) {
+  function dropTarget(x, y, others, area, current) {
     let width = "full";
     let side = "left";
     const single = getComputedStyle($("#workspace")).gridTemplateColumns.split(" ").length < 2;
+    const wide = area.width >= THIRDS_FROM;
     const across = (x - area.left) / area.width;
-    if (!single && across < 0.5 - CENTRE_BAND / 2) width = "half";
-    if (!single && across > 0.5 + CENTRE_BAND / 2) {
+    if (!single && current === "third" && wide) {
+      width = "third";
+      side = across < 1 / 3 ? "left" : across < 2 / 3 ? "middle" : "right";
+    } else if (!single && across < 0.5 - CENTRE_BAND / 2) {
+      width = "half";
+    } else if (!single && across > 0.5 + CENTRE_BAND / 2) {
       width = "half";
       side = "right";
     }
+    // The columns it will take, in pixels from the page's left edge.
+    const [from, to] = single ? [0, 6] : tracksFor(width, side, wide);
+    const track = (area.width - 5 * GAP) / 6;
+    const left = area.left + from * (track + GAP);
+    const right = area.left + to * (track + GAP) - GAP;
+    const below = others.filter((o) => o.left < right && o.right > left);
     let index = layout.modules.length - 1;
-    for (const o of others) {
-      if (y < o.top + o.height / 2) {
-        index = o.index;
-        break;
-      }
-    }
+    const next = below.find((o) => y < o.top + o.height / 2);
+    if (next) index = next.index;
+    else if (below.length) index = Math.max(...below.map((o) => o.index)) + 1;
     return { index, width, side };
   }
+
+  const WHERE = {
+    full: "Full width",
+    "half:left": "Left half", "half:right": "Right half",
+    "third:left": "Left third", "third:middle": "Middle third", "third:right": "Right third",
+  };
 
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
   // finger. The box's place shows as an outline; a small card follows the
@@ -413,7 +468,7 @@
       .filter(({ m }) => shown(m))
       .map(({ m, index }) => {
         const r = moduleEl(m.id).getBoundingClientRect();
-        return { index, top: r.top, height: r.height };
+        return { index, top: r.top, height: r.height, left: r.left, right: r.right };
       });
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
@@ -438,11 +493,11 @@
     let last = "";
     const onMove = (e) => {
       follow(e);
-      const t = dropTarget(e.clientX, e.clientY, others, area);
+      const t = dropTarget(e.clientX, e.clientY, others, area, layout.modules.find((m) => m.id === id).width);
       const key = `${t.index}:${t.width}:${t.side}`;
       if (key === last) return;
       last = key;
-      ghostWhere.textContent = t.width === "full" ? "Full width" : t.side === "left" ? "Left half" : "Right half";
+      ghostWhere.textContent = WHERE[t.width === "full" ? "full" : `${t.width}:${t.side}`];
       // `index` counts the boxes without this one, which is where `place`
       // puts it once it has been lifted out.
       place(id, t.index, t.width, t.side);
@@ -468,25 +523,38 @@
     handle.addEventListener("pointercancel", onCancel);
   }
 
-  // From the keyboard: up and down move a box; left and right step it
-  // between left half, full width, and right half (L, C, and R jump there).
+  // From the keyboard: up and down move a box. Left and right step a third
+  // between the three thirds, and any other box between left half, full
+  // width and right half (L, C and R jump there). T, H and F make it a
+  // third, a half, or full width.
   function keyMove(event, id) {
     const at = layout.modules.findIndex((m) => m.id === id);
     const m = layout.modules[at];
-    const spot = m.width === "full" ? "centre" : m.side;
-    const spots = ["left", "centre", "right"];
-    let target = null;
-    if (event.key === "ArrowUp") target = { index: at - 1, spot };
-    else if (event.key === "ArrowDown") target = { index: at + 1, spot };
-    else if (event.key === "ArrowLeft") target = { index: at, spot: spots[Math.max(0, spots.indexOf(spot) - 1)] };
-    else if (event.key === "ArrowRight") target = { index: at, spot: spots[Math.min(2, spots.indexOf(spot) + 1)] };
-    else if ({ l: 1, c: 1, r: 1 }[event.key.toLowerCase()]) {
-      target = { index: at, spot: { l: "left", c: "centre", r: "right" }[event.key.toLowerCase()] };
+    const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
+    const sizeKeys = { t: "third", h: "half", f: "full" };
+    let width = m.width;
+    let side = m.side;
+    let index = at;
+    if (key === "ArrowUp") index = at - 1;
+    else if (key === "ArrowDown") index = at + 1;
+    else if (sizeKeys[key]) {
+      width = sizeKeys[key];
+    } else if (m.width === "third" && (key === "ArrowLeft" || key === "ArrowRight")) {
+      const step = key === "ArrowLeft" ? -1 : 1;
+      side = SIDES[Math.max(0, Math.min(2, SIDES.indexOf(side) + step))];
+    } else if (key === "ArrowLeft" || key === "ArrowRight" || { l: 1, c: 1, r: 1 }[key]) {
+      const spots = ["left", "centre", "right"];
+      const spot = m.width === "full" ? "centre" : side === "right" ? "right" : "left";
+      const go = key === "ArrowLeft" ? spots[Math.max(0, spots.indexOf(spot) - 1)]
+        : key === "ArrowRight" ? spots[Math.min(2, spots.indexOf(spot) + 1)]
+        : { l: "left", c: "centre", r: "right" }[key];
+      width = go === "centre" ? "full" : "half";
+      if (go !== "centre") side = go;
+    } else {
+      return;
     }
-    if (!target) return;
     event.preventDefault();
-    const width = target.spot === "centre" ? "full" : "half";
-    if (place(id, target.index, width, target.spot === "right" ? "right" : "left")) saveLayout();
+    if (place(id, index, width, side)) saveLayout();
     event.currentTarget.focus();
   }
 
@@ -497,9 +565,9 @@
       const handle = document.createElement("button");
       handle.type = "button";
       handle.className = "handle";
-      handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half.";
+      handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half. A third goes to the third you drop it on.";
       handle.setAttribute("aria-label",
-        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right for width)`);
+        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right to change side); T, H and F make it a third, a half, or full width`);
       const grip = document.createElement("span");
       grip.className = "grip";
       grip.setAttribute("aria-hidden", "true");
@@ -513,6 +581,26 @@
       handle.addEventListener("pointerdown", (event) => startDrag(event, id));
       handle.addEventListener("keydown", (event) => keyMove(event, id));
       head.append(handle);
+      // How wide the box is: a third, a half, or the full page.
+      const widths = document.createElement("span");
+      widths.className = "widths";
+      widths.setAttribute("role", "group");
+      widths.setAttribute("aria-label", `${title} width`);
+      for (const [width, label, name] of [["third", "⅓", "One third"], ["half", "½", "Half"], ["full", "Full", "Full width"]]) {
+        const size = document.createElement("button");
+        size.type = "button";
+        size.className = "small secondary";
+        size.dataset.width = width;
+        size.textContent = label;
+        size.title = name;
+        size.setAttribute("aria-label", `${name} width`);
+        size.addEventListener("click", () => {
+          const m = layout.modules.find((x) => x.id === id);
+          changeLayout(id, { width, side: sideFor(width, m.side) });
+        });
+        widths.append(size);
+      }
+      head.append(widths);
       if (HIDEABLE.has(id)) {
         const hide = document.createElement("button");
         hide.type = "button";
@@ -532,6 +620,33 @@
       if (id === "journal" || id === "detail") head.after(placeholder);
       // These boxes come and go; place the rest around them each time.
       new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
+      sizes.observe(box);
+    }
+  }
+
+  // A box in a window of its own, to drag onto a second screen. Where the
+  // browser can tell (Chrome, at http://127.0.0.1 or over HTTPS), and the
+  // operator allows it, the window opens on the other screen by itself.
+  function popOut(id) {
+    const win = window.open(`/?module=${id}`, `loglab-${id}`, "popup,width=1200,height=820");
+    if (!win || !("getScreenDetails" in window)) return;
+    window.getScreenDetails().then((screens) => {
+      const other = screens.screens.find((s) => s !== screens.currentScreen);
+      if (!other) return;
+      win.moveTo(other.availLeft, other.availTop);
+      win.resizeTo(other.availWidth, other.availHeight);
+    }).catch(() => { /* not allowed: the operator drags it over */ });
+  }
+
+  function buildPopOuts() {
+    for (const id of POPPABLE) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "link popout";
+      button.textContent = "⧉ Pop out";
+      button.title = `Open ${MODULES[id]} in a window of its own, to put on another screen`;
+      button.addEventListener("click", () => popOut(id));
+      $("h2", moduleEl(id)).append(button);
     }
   }
 
@@ -883,7 +998,8 @@
     $("#app").hidden = false;
     $("#who").hidden = false;
     $("#sign-out").hidden = false;
-    $("#arrange").hidden = false;
+    $("#arrange").hidden = Boolean(SOLO); // a page of one box has nothing to arrange
+    $("#all-boxes").hidden = !SOLO;
     $("#who").textContent = `${session.operator} at ${session.station}`;
     const mayLog = session.permissions.includes("log");
     for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore, #add-field")) {
@@ -1023,10 +1139,8 @@
             : "sign in again to send it.");
         notice.hidden = false;
       } else {
-        notice.textContent = result.message;
-        notice.classList.add("ok");
-        notice.hidden = false;
-        fadeTimer = setTimeout(() => notice.classList.add("fading"), FADE_AFTER_MS);
+        // Logged: it appears in the Log, which is confirmation enough. Only
+        // problems get a notice.
         await loadLog();
       }
       resetEntry();
@@ -1039,13 +1153,8 @@
     }
   }
 
-  let fadeTimer = null;
-
   function hideNotice() {
-    clearTimeout(fadeTimer);
-    const notice = $("#stored");
-    notice.hidden = true;
-    notice.classList.remove("ok", "fading");
+    $("#stored").hidden = true;
   }
 
   function setError(selector, message) {
@@ -1294,6 +1403,12 @@
       load: () => (session && !$("#app").hidden ? loadLog() : null),
     });
     buildModuleHeads();
+    if (SOLO) {
+      document.body.classList.add("solo");
+      document.title = `${MODULES[SOLO]} · LogLab`;
+    } else {
+      buildPopOuts();
+    }
     applyLayout();
     fillSelect($("#entry [name=BAND]"), BANDS);
     fillSelect($("#entry [name=MODE]"), MODES);
@@ -1309,9 +1424,6 @@
       applyLayout();
       saveLayout();
     });
-    $("#stored").addEventListener("transitionend", (event) => {
-      if (event.propertyName === "opacity" && $("#stored").classList.contains("fading")) hideNotice();
-    });
     $("#entry").addEventListener("submit", storeQso);
     const callInput = $("#entry [name=CALL]");
     for (const type of ["input", "scroll", "keyup", "select"]) {
@@ -1320,7 +1432,13 @@
     $("#send-now").addEventListener("click", flushJournal);
     window.addEventListener("online", flushJournal);
     setInterval(flushJournal, RETRY_MS);
-    window.addEventListener("storage", (event) => { if (event.key === JOURNAL_KEY) renderJournal(); });
+    // Another window of this browser (a popped-out box) changed the journal,
+    // so a QSO may have just been logged there: show it here too.
+    window.addEventListener("storage", (event) => {
+      if (event.key !== JOURNAL_KEY) return;
+      renderJournal();
+      if (session && !$("#app").hidden) loadLog();
+    });
     $("#now").addEventListener("click", () => {
       const { date, time } = utcNow();
       $("#entry [name=QSO_DATE]").value = date;

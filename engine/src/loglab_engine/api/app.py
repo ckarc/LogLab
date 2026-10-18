@@ -58,6 +58,9 @@ from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
 from loglab_engine.adif import Field as AdifField
 from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http_fetch
+from loglab_engine.callbook.logbook_sync import LogbookSync
+from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
+from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -88,6 +91,7 @@ from loglab_engine.store import (
     WorkspaceStore,
     connect,
 )
+from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 
 if TYPE_CHECKING:
     from psycopg.rows import TupleRow
@@ -180,12 +184,23 @@ TableId = Literal["log"]
 
 
 class ModuleLayout(_Strict):
-    """One module of the workspace: its width, the side a half sits on, and whether it is shown."""
+    """One module of the workspace: its width, the side it sits on, and whether it is shown.
+
+    A third sits on the left, middle or right; a half on the left or right;
+    a full-width box ignores it.
+    """
 
     id: ModuleId
-    width: Literal["half", "full"] = "full"
-    side: Literal["left", "right"] = "left"
+    width: Literal["third", "half", "full"] = "full"
+    side: Literal["left", "middle", "right"] = "left"
     hidden: bool = False
+
+    @model_validator(mode="after")
+    def _middle_is_for_thirds(self) -> Self:
+        if self.side == "middle" and self.width != "third":
+            msg = "only a third can sit on the middle side"
+            raise ValueError(msg)
+        return self
 
 
 class TableLayout(_Strict):
@@ -262,6 +277,35 @@ class QrzLoginOut(BaseModel):
 
     username: str | None
     status: str | None
+    message: str
+
+
+class QrzLogbookIn(_Strict):
+    """A QRZ logbook's API key, and the callsign that logbook is for."""
+
+    api_key: Annotated[
+        str, StringConstraints(strip_whitespace=True, pattern=r"^[A-Za-z0-9-]{8,64}$")
+    ]
+    book_call: (
+        Annotated[
+            str,
+            StringConstraints(
+                strip_whitespace=True, max_length=20, pattern=r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
+            ),
+        ]
+        | None
+    ) = None
+
+
+class QrzLogbookOut(BaseModel):
+    """Where the operator's QSOs go on QRZ.com, and how they stand. The key is never sent back."""
+
+    book_call: str | None
+    sent: int
+    waiting: int
+    refused: int
+    last_refusal: str | None
+    problem: str | None
     message: str
 
 
@@ -529,6 +573,14 @@ def _actor(conn: Conn, authorization: Annotated[str | None, Header()] = None) ->
 Signed = Annotated[Actor, Depends(_actor)]
 
 
+def _sync(request: Request) -> LogbookSync:
+    sync: LogbookSync = request.app.state.logbook
+    return sync
+
+
+Sync = Annotated[LogbookSync, Depends(_sync)]
+
+
 def _require(conn: psycopg.Connection[TupleRow], who: Actor, permission: Permission) -> None:
     IdentityStore(conn).require(who, permission)
 
@@ -673,7 +725,9 @@ def get_history(qso_id: uuid.UUID, who: Signed, conn: Conn) -> list[QsoOut]:
 
 
 @api.post("/qsos", status_code=status.HTTP_201_CREATED)
-def create_qso(body: QsoCreate, who: Signed, conn: Conn, response: Response) -> QsoWritten:
+def create_qso(
+    body: QsoCreate, who: Signed, conn: Conn, response: Response, sync: Sync
+) -> QsoWritten:
     """Log a new QSO, under the ID its client gave it if any (Principle XV).
 
     Sending a QSO again with the same ID and fields returns it as it stands
@@ -688,11 +742,12 @@ def create_qso(body: QsoCreate, who: Signed, conn: Conn, response: Response) -> 
         version, created = store.enter_qso(record, actor=who, qso_id=body.id, note=body.note)
     if not created:
         response.status_code = status.HTTP_200_OK
+    sync.wake()
     return _written(version, created=created)
 
 
 @api.put("/qsos/{qso_id}")
-def edit_qso(qso_id: uuid.UUID, body: QsoEdit, who: Signed, conn: Conn) -> QsoWritten:
+def edit_qso(qso_id: uuid.UUID, body: QsoEdit, who: Signed, conn: Conn, sync: Sync) -> QsoWritten:
     """Replace a QSO's fields as a new version; refused if it changed since ``base_version``."""
     _require(conn, who, Permission.LOG)
     version = LogStore(conn).edit_qso(
@@ -702,21 +757,30 @@ def edit_qso(qso_id: uuid.UUID, body: QsoEdit, who: Signed, conn: Conn) -> QsoWr
         base_version=body.base_version,
         note=body.note,
     )
+    sync.wake()
     return _written(version)
 
 
 @api.post("/qsos/{qso_id}/delete")
-def delete_qso(qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn) -> QsoWritten:
+def delete_qso(
+    qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn, sync: Sync
+) -> QsoWritten:
     """Mark a QSO deleted. Its fields and history are kept; restore brings it back."""
     _require(conn, who, Permission.LOG)
-    return _written(LogStore(conn).delete_qso(qso_id, actor=who, note=body.note))
+    written = _written(LogStore(conn).delete_qso(qso_id, actor=who, note=body.note))
+    sync.wake()
+    return written
 
 
 @api.post("/qsos/{qso_id}/restore")
-def restore_qso(qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn) -> QsoWritten:
+def restore_qso(
+    qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn, sync: Sync
+) -> QsoWritten:
     """Recover a deleted QSO."""
     _require(conn, who, Permission.LOG)
-    return _written(LogStore(conn).restore_qso(qso_id, actor=who, note=body.note))
+    written = _written(LogStore(conn).restore_qso(qso_id, actor=who, note=body.note))
+    sync.wake()
+    return written
 
 
 def _callbook(request: Request, conn: Conn) -> Callbook:
@@ -941,6 +1005,72 @@ def lotw_download(who: Signed, conn: Conn, lotw: LotwService) -> LotwDownloadOut
     )
 
 
+def _logbook_out(
+    conn: psycopg.Connection[TupleRow], who: Actor, sync: LogbookSync
+) -> QrzLogbookOut:
+    store = LogbookStore(conn)
+    book = store.mine(who)
+    if book is None:
+        return QrzLogbookOut(
+            book_call=None,
+            sent=0,
+            waiting=0,
+            refused=0,
+            last_refusal=None,
+            problem=None,
+            message="QSOs are not being sent to a QRZ logbook.",
+        )
+    counts = store.counts(book)
+    state = sync.state(book.book_call)
+    problem = None if state is None else state.problem
+    message = f"New QSOs for {book.book_call} go to its QRZ logbook: {counts.sent} sent"
+    message += f", {counts.waiting} waiting." if counts.waiting else "."
+    return QrzLogbookOut(
+        book_call=book.book_call,
+        sent=counts.sent,
+        waiting=counts.waiting,
+        refused=counts.refused,
+        last_refusal=counts.last_refusal,
+        problem=problem,
+        message=message,
+    )
+
+
+@api.get("/logbook/qrz")
+def get_qrz_logbook(who: Signed, conn: Conn, sync: Sync) -> QrzLogbookOut:
+    """The QRZ logbook the operator's QSOs go to, and how many are sent or waiting."""
+    return _logbook_out(conn, who, sync)
+
+
+@api.put("/logbook/qrz")
+def put_qrz_logbook(body: QrzLogbookIn, who: Signed, conn: Conn, sync: Sync) -> QrzLogbookOut:
+    """Save the operator's QRZ logbook API key and check it if QRZ.com can be reached.
+
+    QSOs entered from now on, for the logbook's callsign (the operator's own
+    unless ``book_call`` names another, such as a club call), are sent to it.
+    The key is saved even with no internet; QSOs wait until QRZ.com is reached.
+    """
+    book_call = (body.book_call or who.operator).upper()
+    LogbookStore(conn).save(who, body.api_key, book_call)
+    try:
+        sync.client.status(body.api_key)
+    except QrzKeyError as error:
+        checked = f"Saved, but QRZ.com refused this API key: {error}"
+    except (QrzUnreachableError, QrzReplyError):
+        checked = "Saved. QRZ.com can't be reached right now to check it."
+    else:
+        checked = "Saved. QRZ.com accepted the API key."
+    sync.wake()
+    out = _logbook_out(conn, who, sync)
+    return out.model_copy(update={"message": f"{checked} {out.message}"})
+
+
+@api.delete("/logbook/qrz", status_code=status.HTTP_204_NO_CONTENT)
+def delete_qrz_logbook(who: Signed, conn: Conn) -> None:
+    """Stop sending the operator's QSOs to QRZ.com and forget the key."""
+    LogbookStore(conn).remove(who)
+
+
 _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (SignInError, status.HTTP_401_UNAUTHORIZED),
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
@@ -948,6 +1078,7 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
     (StaleVersionError, status.HTTP_409_CONFLICT),
+    (LogbookTakenError, status.HTTP_409_CONFLICT),
 )
 
 
@@ -981,12 +1112,15 @@ async def _security_headers(
 def create_app(
     database: str,
     qrz_fetch: Callable[[str], bytes] = http_fetch,
+    qrz_post: Callable[[str, bytes, str], bytes] = http_post,
     lotw_transport: Transport = https,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
-    ``qrz_fetch`` and ``lotw_transport`` are how the Engine reaches QRZ.com and
-    LoTW; tests give them stand-ins.
+    ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
+    and logbook services, and ``lotw_transport`` how it reaches LoTW; tests
+    give them stand-ins. The QRZ logbook sender runs in the background once
+    ``app.state.logbook.start()`` is called.
     """
     app = FastAPI(
         title="LogLab Engine",
@@ -1000,6 +1134,7 @@ def create_app(
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch))
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
+    app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

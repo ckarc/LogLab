@@ -111,7 +111,9 @@ own reference is at `/api/docs`.
   browser's journal until the Engine has logged it. If the Engine cannot be
   reached, the QSO waits under "Not logged yet" and is sent again every 15
   seconds, or when you press **Send now** or sign back in. Sending it again
-  never logs it twice: the Engine recognises the ID.
+  never logs it twice: the Engine recognises the ID. A QSO that is logged
+  simply appears in the Log; the page shows a notice only when something
+  needs your attention.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
 - Each box on the page is a module. The lock in the top bar is **Locked**
@@ -166,6 +168,16 @@ own reference is at `/api/docs`.
   changes nothing and says so (Principle V). The certificate and its
   password are stored so sending needs no typing: anyone who can read the
   database can sign QSOs with it.
+- **QRZ logbook** sending is optional. An operator saves their QRZ logbook's
+  API key (and, for a club logbook, its callsign) from the **QRZ.com** link
+  (`GET`/`PUT`/`DELETE /api/v1/logbook/qrz`; the key is never sent back).
+  QSOs entered from then on whose STATION_CALLSIGN, or else whose operator,
+  is that callsign are copied to the logbook in the background; edits replace
+  the copy, deletes remove it, and a restore sends it again. Logging never
+  waits on this (Principle V): with no internet, QSOs wait and go out once
+  QRZ.com can be reached, retried every five minutes and whenever a QSO
+  changes. Each callsign has one key, so nothing is sent twice. What was sent
+  is kept in the `workspace` schema, apart from the log.
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

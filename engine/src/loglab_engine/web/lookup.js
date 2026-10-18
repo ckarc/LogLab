@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 LogLab contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The QRZ.com lookup on the New QSO form. When the operator leaves the Call
+// QRZ.com: the operator's logbook (sent with its API key) and the callsign
+// lookup on the New QSO form. Both are optional; logging never waits on them.
+// The lookup: When the operator leaves the Call
 // box, this asks the Engine who the call is (Principle I: the Engine talks to
 // QRZ.com, never the page) and fills in the name, QTH, state and grid boxes
 // the operator left empty. It never overwrites what the operator typed. With
@@ -96,7 +98,7 @@
       problem(e.message);
     }
     dialog.showModal();
-    (setup.username.value ? setup.password : setup.username).focus();
+    book.api_key.focus();
   }
 
   setup.addEventListener("submit", async (event) => {
@@ -110,8 +112,6 @@
       setup.password.value = "";
       showState(saved);
       if (saved.status === null) {
-        dialog.close();
-        say(saved.message);
         asked = ""; // look the current call up with the new login
         if (form.CALL.value.trim()) lookUp();
       } else if (saved.status === "login_failed") {
@@ -133,6 +133,58 @@
     }
   });
 
-  $("#qrz-open").addEventListener("click", open);
+  // -- Sending QSOs to the operator's QRZ logbook --------------------------
+
+  const book = $("#qrz-book-form");
+  const stop = $("#qrz-book-remove");
+
+  function bookProblem(text) { $(".error", book).textContent = text; }
+
+  function showBook(state) {
+    const parts = [state.message];
+    if (state.problem) parts.push(state.problem);
+    if (state.refused) parts.push(`${state.refused} refused by QRZ.com${state.last_refusal ? ` (latest: ${state.last_refusal})` : ""}.`);
+    $("#qrz-book-state").textContent = parts.join(" ");
+    stop.hidden = state.book_call === null;
+    if (state.book_call) book.book_call.value = state.book_call;
+  }
+
+  async function loadBook() {
+    bookProblem("");
+    book.api_key.value = "";
+    try {
+      showBook(await window.LogLab.api("GET", "/logbook/qrz"));
+    } catch (e) {
+      bookProblem(e.message);
+    }
+  }
+
+  book.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    bookProblem("");
+    const body = { api_key: book.api_key.value.trim() };
+    const call = book.book_call.value.trim().toUpperCase();
+    if (call) body.book_call = call;
+    try {
+      const saved = await window.LogLab.api("PUT", "/logbook/qrz", body);
+      book.api_key.value = "";
+      showBook(saved);
+      if (saved.message.includes("refused")) bookProblem("QRZ.com refused this API key.");
+    } catch (e) {
+      bookProblem(e.message);
+    }
+  });
+
+  stop.addEventListener("click", async () => {
+    try {
+      await window.LogLab.api("DELETE", "/logbook/qrz");
+      book.book_call.value = "";
+      await loadBook();
+    } catch (e) {
+      bookProblem(e.message);
+    }
+  });
+
+  $("#qrz-open").addEventListener("click", () => { loadBook(); open(); });
   $("#qrz-close").addEventListener("click", () => dialog.close());
 })();
