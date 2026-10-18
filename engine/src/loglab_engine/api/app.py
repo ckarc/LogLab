@@ -238,12 +238,14 @@ class Layout(_Strict):
     """An operator's workspace: its modules in order, its tables, and a QSO's fields.
 
     ``detail`` is ``None`` until the operator chooses, and the page's default is used.
+    ``theme`` is light, dark, or ``auto`` to follow the computer's setting.
     """
 
     version: Literal[1] = 1
     modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
     tables: dict[TableId, TableLayout] = Field(default_factory=dict)
     detail: DetailLayout | None = None
+    theme: Literal["auto", "light", "dark"] = "auto"
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:

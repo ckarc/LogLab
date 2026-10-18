@@ -20,9 +20,7 @@
   <header class="bar">
     <span class="brand">LogLab</span>
     <span id="who" class="who" hidden></span>
-    <a id="all-boxes" class="link" href="/" hidden>All boxes</a>
-    <button id="arrange" class="link lock" type="button" aria-pressed="false" title="Unlock to move boxes" hidden>🔒 Locked</button>
-    <button id="sign-out" class="link" type="button" hidden>Sign out</button>
+    <button id="menu-open" class="link menu-open" type="button" aria-haspopup="dialog" hidden>Menu</button>
   </header>
 
   <main>
@@ -44,6 +42,7 @@
         <span id="tray"></span>
         <span class="spacer"></span>
         <button type="button" id="arrange-reset" class="small secondary">Reset to default</button>
+        <button type="button" id="arrange-done" class="small">🔒 Lock</button>
       </div>
 
       <div id="workspace" class="workspace">
@@ -158,6 +157,38 @@
   </main>
 
   <datalist id="adif-field-list"></datalist>
+
+  <dialog id="menu-dialog" class="card menu-dialog" aria-labelledby="menu-title">
+    <div class="menu-head">
+      <h2 id="menu-title">Menu</h2>
+      <button type="button" id="menu-close" class="secondary small">Close</button>
+    </div>
+    <p id="menu-who" class="hint"></p>
+
+    <h3>Appearance</h3>
+    <div class="segmented" role="group" aria-label="Appearance">
+      <button type="button" class="secondary small" data-theme-choice="auto" aria-pressed="true">Auto</button>
+      <button type="button" class="secondary small" data-theme-choice="light" aria-pressed="false">☀ Light</button>
+      <button type="button" class="secondary small" data-theme-choice="dark" aria-pressed="false">☾ Dark</button>
+    </div>
+    <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
+
+    <h3>Layout</h3>
+    <div class="menu-items">
+      <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
+      <a id="all-boxes" class="link" href="/" hidden>Show all boxes</a>
+    </div>
+
+    <h3>Services</h3>
+    <div class="menu-items">
+      <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
+      <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
+    </div>
+
+    <div class="menu-foot">
+      <button type="button" id="sign-out" class="secondary small">Sign out</button>
+    </div>
+  </dialog>
 
   <dialog id="qrz-dialog" class="card qrz-dialog">
     <h2>QRZ.com</h2>

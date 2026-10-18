@@ -263,6 +263,7 @@ LAYOUT = {
         },
     },
     "detail": {"fields": ["CALL", "QSO_DATE", "NAME", "MY_GRIDSQUARE", "APP_LOGLAB_X"]},
+    "theme": "dark",
 }
 
 
@@ -284,7 +285,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     }
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
-        "layout": {**changed, "tables": {}, "detail": None}
+        "layout": {**changed, "tables": {}, "detail": None, "theme": "auto"}
     }
 
 
@@ -343,6 +344,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
             {"version": 1, "modules": [{"id": "log"}], "detail": {"fields": ["CALL"] * 81}},
             "at most 80",
         ),
+        ({"version": 1, "modules": [{"id": "log"}], "theme": "night"}, "theme"),
     ],
 )
 def test_a_bad_layout_is_refused(
