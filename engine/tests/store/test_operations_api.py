@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from loglab_engine.api import create_app
-from loglab_engine.store import IdentityStore, Permission
+from loglab_engine.store import IdentityStore, LogStore, Permission
 
 from .conftest import ADMIN_SECRET, VISITOR_SECRET, conninfo
 
@@ -329,3 +329,95 @@ def test_the_map_counts_only_the_operations_qsos(
 
     assert worked(f"/api/v1/sections?operation={field_day['id']}") == {"CT": 1}
     assert worked("/api/v1/sections") == {"CT": 1, "MN": 1}
+
+
+def test_an_ended_operation_can_still_be_changed(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """After the contest an administrator can still fix its name, hours or exchange."""
+    url = f"/api/v1/operations/{field_day['id']}"
+    assert client.put(url, headers=k9ksu, json={**FIELD_DAY, "ended": True}).status_code == 200
+    fixed = {**FIELD_DAY, "ended": True, "sent": {"class": "4a", "section": "ks"}}
+    response = client.put(url, headers=k9ksu, json=fixed)
+    assert response.status_code == 200, response.text
+    assert response.json()["sent"] == {"class": "4A", "section": "KS"}
+    assert response.json()["ended"] is True
+    assert response.json()["archived_at"] is None
+
+
+def _archive(client: TestClient, headers: dict[str, str], operation: dict[str, Any]) -> int:
+    url = f"/api/v1/operations/{operation['id']}/archive"
+    return client.post(url, headers=headers).status_code
+
+
+def test_an_archived_operation_never_changes(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """Archiving ends the operation and locks it, for good (Principle VII)."""
+    url = f"/api/v1/operations/{field_day['id']}"
+    response = client.post(f"{url}/archive", headers=k9ksu)
+    assert response.status_code == 200, response.text
+    assert response.json()["ended"] is True
+    assert response.json()["archived_at"] is not None
+    changed = client.put(url, headers=k9ksu, json={**FIELD_DAY, "ended": True, "name": "FD"})
+    assert changed.status_code == 409
+    assert "archived" in changed.json()["detail"]
+    assert _archive(client, k9ksu, field_day) == 409
+    assert client.get(url, headers=k9ksu).json()["name"] == "Field Day 2027"
+
+
+def test_an_archived_operations_qsos_never_change(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """No QSO in an archived operation is edited, deleted, restored or added (Principle VII)."""
+    kept = _log(client, k9ksu, field_day)
+    gone = _log(client, k9ksu, field_day)
+    deleted = client.post(f"/api/v1/qsos/{gone['id']}/delete", headers=k9ksu, json={})
+    assert deleted.status_code == 200, deleted.text
+    assert _archive(client, k9ksu, field_day) == 200
+
+    fixed = [*kept["fields"], {"name": "COMMENT", "value": "late fix"}]
+    edit = {"base_version": kept["version"], "fields": fixed}
+    response = client.put(f"/api/v1/qsos/{kept['id']}", headers=k9ksu, json=edit)
+    assert response.status_code == 409
+    assert "archived" in response.json()["detail"]
+    assert (
+        client.post(f"/api/v1/qsos/{kept['id']}/delete", headers=k9ksu, json={}).status_code == 409
+    )
+    assert (
+        client.post(f"/api/v1/qsos/{gone['id']}/restore", headers=k9ksu, json={}).status_code == 409
+    )
+    assert client.get(f"/api/v1/qsos/{kept['id']}", headers=k9ksu).json()["version"] == 1
+
+
+def test_no_qso_moves_into_an_archived_operation(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """A QSO can't be added to an archived operation by naming it in its fields."""
+    assert _archive(client, k9ksu, field_day) == 200
+    own = client.post("/api/v1/qsos", headers=k9ksu, json={"fields": QSO})
+    assert own.status_code == 201, own.text
+    qso = own.json()["qso"]
+    tag = {"name": "APP_LOGLAB_OPERATION", "value": field_day["id"]}
+    edit = {"base_version": qso["version"], "fields": [*qso["fields"], tag]}
+    assert client.put(f"/api/v1/qsos/{qso['id']}", headers=k9ksu, json=edit).status_code == 409
+    added = client.post("/api/v1/qsos", headers=k9ksu, json={"fields": [*QSO, tag]})
+    assert added.status_code == 409
+
+
+def test_an_archived_operations_qsos_are_left_out_of_qsl_uploads(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any], store: LogStore
+) -> None:
+    """Uploads would mark them sent, which would change them, so they are not queued."""
+    _log(client, k9ksu, field_day)
+    assert store.qsl_waiting("LOTW", "W0CK") == 1
+    assert _archive(client, k9ksu, field_day) == 200
+    assert store.qsl_waiting("LOTW", "W0CK") == 0
+    assert store.qsl_queue("LOTW", "W0CK", 10) == ()
+
+
+def test_only_who_may_change_an_operation_archives_it(
+    client: TestClient, w0xyz: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """An operator who isn't an administrator can't archive the club's operation (XIII)."""
+    assert _archive(client, w0xyz, field_day) == 403

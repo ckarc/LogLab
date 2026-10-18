@@ -83,6 +83,7 @@ from loglab_engine.reference import SECTIONS, tally_sections
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.store import (
     Actor,
+    ArchivedError,
     IdentityStore,
     LogStore,
     NotAuthorizedError,
@@ -239,6 +240,7 @@ class OperationOut(BaseModel):
     ended: bool
     starts_at: datetime | None
     ends_at: datetime | None
+    archived_at: datetime | None
     created_at: datetime
     changed_at: datetime
 
@@ -967,6 +969,7 @@ def _operation_out(conn: Conn, op: Operation) -> OperationOut:
         ended=op.ended,
         starts_at=op.starts_at,
         ends_at=op.ends_at,
+        archived_at=op.archived_at,
         created_at=op.created_at,
         changed_at=op.changed_at,
     )
@@ -1145,18 +1148,37 @@ def create_operation(body: OperationIn, who: Signed, conn: Conn) -> OperationOut
     return _operation_out(conn, OperationStore(conn).create(who, _setup(conn, body)))
 
 
+def _may_change(conn: Conn, who: Actor, op: Operation) -> None:
+    if IdentityStore(conn).may(who, Permission.ADMIN):
+        return
+    _require(conn, who, Permission.LOG)
+    if op.station_call != who.operator or op.gota_call is not None:
+        raise NotAuthorizedError("only an administrator changes a club's operation")
+
+
 @api.put("/operations/{operation_id}")
 def update_operation(
     operation_id: uuid.UUID, body: OperationIn, who: Signed, conn: Conn
 ) -> OperationOut:
-    """Change an operation, or end it with ``ended``. QSOs already logged keep their fields."""
+    """Change an operation, ended or not, or end it with ``ended``.
+
+    QSOs already logged keep their fields. An archived operation can't be changed.
+    """
     _may_set_up(conn, who, body)
-    if (
-        not IdentityStore(conn).may(who, Permission.ADMIN)
-        and OperationStore(conn).get(operation_id).station_call != who.operator
-    ):
-        raise NotAuthorizedError("only an administrator changes a club's operation")
+    _may_change(conn, who, OperationStore(conn).get(operation_id))
     return _operation_out(conn, OperationStore(conn).update(who, operation_id, _setup(conn, body)))
+
+
+@api.post("/operations/{operation_id}/archive")
+def archive_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationOut:
+    """End an operation and archive it, for good, once its log has been submitted.
+
+    From then on neither the operation nor any QSO logged in it can be
+    changed, so the log always matches what was sent in.
+    """
+    store = OperationStore(conn)
+    _may_change(conn, who, store.get(operation_id))
+    return _operation_out(conn, store.archive(who, operation_id))
 
 
 def _catalog(conn: Conn) -> list[OverlayOut]:
@@ -1769,6 +1791,7 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
     (OperationNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
+    (ArchivedError, status.HTTP_409_CONFLICT),
     (StaleVersionError, status.HTTP_409_CONFLICT),
     (LogbookTakenError, status.HTTP_409_CONFLICT),
 )

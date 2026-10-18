@@ -115,6 +115,7 @@ _QSL_WAITING: Final = f"""
     NOT q.deleted
     AND coalesce(upper(btrim(log.field_value(v.fields, %(sent)s))), '') NOT IN ('Y', 'N', 'I')
     AND {_STATION_CALL} = %(call)s
+    AND NOT workspace.in_archive(v.fields)
 """
 _SERVICE: Final = re.compile(r"^[A-Z]{2,12}$")
 
@@ -143,6 +144,10 @@ class DuplicateImportError(StoreError):
     """This exact file has been imported before."""
 
 
+class ArchivedError(StoreError):
+    """The QSO or operation belongs to an archived operation, which never changes."""
+
+
 class Action(StrEnum):
     """What a QSO version did."""
 
@@ -150,6 +155,10 @@ class Action(StrEnum):
     EDIT = "edit"
     DELETE = "delete"
     RESTORE = "restore"
+
+
+def _first_line(error: Exception) -> str:
+    return str(error).splitlines()[0]
 
 
 def check_callsign(callsign: str) -> None:
@@ -445,6 +454,8 @@ class LogStore:
         except errors.UniqueViolation as error:
             msg = "this file was already imported"
             raise DuplicateImportError(msg) from error
+        except errors.ObjectNotInPrerequisiteState as error:
+            raise ArchivedError(_first_line(error)) from error
         return ImportSummary(import_id, qso_ids)
 
     def create_qso(
@@ -478,6 +489,8 @@ class LogStore:
         except errors.UniqueViolation as error:
             msg = f"QSO {new_id} already exists"
             raise QsoExistsError(msg) from error
+        except errors.ObjectNotInPrerequisiteState as error:
+            raise ArchivedError(_first_line(error)) from error
         return self.current(new_id)
 
     def enter_qso(
@@ -555,21 +568,24 @@ class LogStore:
                 if fields == previous:
                     raise StoreError("the edit changes nothing")
             changeset_id = self._changeset(actor, action.value, note)
-            conn.execute(
-                """
-                INSERT INTO log.qso_version
-                    (qso_id, version, changeset_id, action, deleted, fields)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    qso_id,
-                    current + 1,
-                    changeset_id,
-                    action.value,
-                    action is Action.DELETE,
-                    Jsonb(fields),
-                ),
-            )
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO log.qso_version
+                        (qso_id, version, changeset_id, action, deleted, fields)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        qso_id,
+                        current + 1,
+                        changeset_id,
+                        action.value,
+                        action is Action.DELETE,
+                        Jsonb(fields),
+                    ),
+                )
+            except errors.ObjectNotInPrerequisiteState as error:
+                raise ArchivedError(_first_line(error)) from error
         return self.current(qso_id)
 
     def edit_qso(
@@ -633,9 +649,9 @@ class LogStore:
         """Replace several QSOs' fields as new versions, in one changeset and transaction.
 
         Each edit is a QSO's ID, the version it was made from, and its new
-        record. A QSO that has moved on from that version, is deleted, or would
-        not change is left as it is, so a background update never overwrites
-        an operator's edit (Principle VII).
+        record. A QSO that has moved on from that version, is deleted, is in an
+        archived operation, or would not change is left as it is, so a
+        background update never overwrites an operator's edit (Principle VII).
 
         Returns:
             The IDs of the QSOs that were changed.
@@ -654,7 +670,7 @@ class LogStore:
                 SELECT q.id, q.current_version, q.deleted, v.fields
                 FROM log.qso q
                 JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
-                WHERE q.id = ANY(%s)
+                WHERE q.id = ANY(%s) AND NOT workspace.in_archive(v.fields)
                 FOR UPDATE OF q
                 """,
                 ([qso_id for qso_id, _, _ in encoded],),
@@ -671,15 +687,18 @@ class LogStore:
             if not todo:
                 return ()
             changeset_id = self._changeset(actor, Action.EDIT.value, note)
-            with conn.cursor() as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO log.qso_version
-                        (qso_id, version, changeset_id, action, deleted, fields)
-                    VALUES (%s, %s, %s, 'edit', false, %s)
-                    """,
-                    [(qso_id, base + 1, changeset_id, Jsonb(f)) for qso_id, base, f in todo],
-                )
+            try:
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        """
+                        INSERT INTO log.qso_version
+                            (qso_id, version, changeset_id, action, deleted, fields)
+                        VALUES (%s, %s, %s, 'edit', false, %s)
+                        """,
+                        [(qso_id, base + 1, changeset_id, Jsonb(f)) for qso_id, base, f in todo],
+                    )
+            except errors.ObjectNotInPrerequisiteState as error:
+                raise ArchivedError(_first_line(error)) from error
             changed = [qso_id for qso_id, _, _ in todo]
         return tuple(changed)
 
