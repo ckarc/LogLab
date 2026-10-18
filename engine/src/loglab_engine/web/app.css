@@ -198,6 +198,9 @@ input, select {
   width: 100%;
   transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
 }
+/* A drop-down's list is drawn by the browser on its own plain background, so
+   its options take the theme's plain colors, not the glass text color. */
+option { color: CanvasText; background-color: Canvas; }
 input:focus, select:focus {
   outline: none;
   background: var(--field-focus);
