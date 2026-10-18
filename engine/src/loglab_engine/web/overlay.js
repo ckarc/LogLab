@@ -91,22 +91,14 @@
     return { modules, tables: { log: { columns: [...o.layout.log_columns], sort: "entered", descending: true } } };
   }
 
-  // Which call QSOs are being made as, always in sight on New QSO: the
-  // operation's call, or the operator's own while an operation is running,
-  // so nobody forgets they switched.
+  // The operation and the call QSOs are made as, beside New QSO's title.
   function showLoggingAs() {
-    const banner = $("#logging-as");
-    const own = LogLab.session()?.operator || "";
+    const name = $("#overlay-name");
     const gota = Boolean(LogLab.layout().operation?.gota && operation?.gota_call);
-    banner.classList.toggle("in-operation", Boolean(operation));
+    name.hidden = !operation;
     if (operation) {
-      const call = gota ? operation.gota_call : operation.station_call;
-      $("span", banner).textContent = `Logging as ${callText(call)}${gota ? " (GOTA)" : ""} for ${operation.name}. You are noted as the operator, ${callText(own)}.`;
-    } else if (operations.length) {
-      const running = operations.map((op) => op.name).join(", ");
-      $("span", banner).textContent = `Logging as ${callText(own)}, your own call. Not in ${running}.`;
+      name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}`;
     }
-    banner.hidden = !operation && !operations.length;
   }
 
   // Zeros in callsigns are written slashed, as everywhere else on the page.
@@ -417,7 +409,6 @@
   document.addEventListener("loglab:overlays-changed", load); // the overlay editor saved one
   document.addEventListener("loglab:log-loaded", showTally);
   logChoice.addEventListener("change", () => document.dispatchEvent(new CustomEvent("loglab:log-changed")));
-  $("#logging-as button").addEventListener("click", () => $("#menu-open").click());
   document.addEventListener("loglab:entry-reset", () => {
     timeTyped = false;
     clearNote();
