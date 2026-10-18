@@ -116,8 +116,12 @@ own reference is at `/api/docs`.
   needs your attention.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
-- Each box on the page is a module. The lock in the top bar is **Locked**
-  normally; press it to unlock, and every box shows a handle bar. Drag a box
+- The top bar holds only LogLab, who is signed in, and **Menu**. Menu opens
+  a box with everything else: light or dark, unlocking the layout, QRZ.com,
+  LoTW, and Sign out. New settings go there too, so the bar never fills up.
+- Each box on the page is a module. The layout is locked normally; **Menu →
+  Unlock to move boxes** unlocks it, and every box shows a handle bar
+  (**Lock** in the bar above the boxes locks it again). Drag a box
   by its handle like a window: let go on the centre line (the middle fifth
   of the page) for full width, or left or right of it for half width on that
   side; how far down you let go sets its place. From the keyboard, focus a
@@ -127,6 +131,9 @@ own reference is at `/api/docs`.
   full width. The Engine keeps each operator's layout in its own
   `workspace` schema, apart from the log, so it follows them to any
   workstation or tablet (`GET`/`PUT /api/v1/layout`).
+- The page is light or dark: **Menu → Appearance** picks **Auto** (follow
+  the computer's own setting), **Light** or **Dark**. The choice is saved
+  with the layout, per operator (`theme`).
 - Every table can be shaped the same way, and its shape is saved with the
   layout. **Columns** picks which columns show (any ADIF field can be added
   by name) and their order; a heading can also be dragged to move it.
