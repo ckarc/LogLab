@@ -248,9 +248,9 @@ def test_unknown_qsos_are_404(client: TestClient, k9ksu: dict[str, str]) -> None
 LAYOUT = {
     "version": 1,
     "modules": [
-        {"id": "log", "width": "full", "hidden": False},
-        {"id": "entry", "width": "half", "hidden": False},
-        {"id": "journal", "width": "half", "hidden": True},
+        {"id": "log", "width": "full", "side": "left", "hidden": False},
+        {"id": "entry", "width": "half", "side": "right", "hidden": False},
+        {"id": "journal", "width": "half", "side": "left", "hidden": True},
     ],
     "tables": {
         "log": {
@@ -274,7 +274,10 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     elsewhere = _sign_in(client, "K9KSU", ADMIN_SECRET, "fd-3")
     assert client.get("/api/v1/layout", headers=elsewhere).json() == {"layout": LAYOUT}
     assert client.get("/api/v1/layout", headers=w0xyz).json() == {"layout": None}
-    changed = {"version": 1, "modules": [{"id": "log", "width": "full", "hidden": False}]}
+    changed = {
+        "version": 1,
+        "modules": [{"id": "log", "width": "full", "side": "left", "hidden": False}],
+    }
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
         "layout": {**changed, "tables": {}}
@@ -288,6 +291,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 2, "modules": [{"id": "log"}]}, "version"),
         ({"version": 1, "modules": [{"id": "radar"}]}, "id"),
         ({"version": 1, "modules": [{"id": "log", "width": "wide"}]}, "width"),
+        ({"version": 1, "modules": [{"id": "log", "width": "half", "side": "middle"}]}, "side"),
         ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
         ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
         (

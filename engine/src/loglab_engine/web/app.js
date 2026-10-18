@@ -31,7 +31,7 @@
   const HIDEABLE = new Set(["entry", "log"]);
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
-    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", hidden: false })),
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false })),
     tables: {},
   });
   const SAVE_AFTER_MS = 400;
@@ -230,10 +230,15 @@
     for (const m of (saved && saved.modules) || []) {
       if (!(m.id in MODULES) || seen.has(m.id)) continue;
       seen.add(m.id);
-      modules.push({ id: m.id, width: m.width === "half" ? "half" : "full", hidden: HIDEABLE.has(m.id) && m.hidden === true });
+      modules.push({
+        id: m.id,
+        width: m.width === "half" ? "half" : "full",
+        side: m.side === "right" ? "right" : "left",
+        hidden: HIDEABLE.has(m.id) && m.hidden === true,
+      });
     }
     for (const id of Object.keys(MODULES)) {
-      if (!seen.has(id)) modules.push({ id, width: "full", hidden: false });
+      if (!seen.has(id)) modules.push({ id, width: "full", side: "left", hidden: false });
     }
     const tables = {};
     for (const id of Object.keys(TABLES)) {
@@ -255,19 +260,42 @@
     return { version: 1, modules, tables };
   }
 
-  // The page's order never changes, only where each box is drawn, so the
+  const arranging = () => document.body.classList.contains("arranging");
+
+  // Is this box on the page now? Boxes that show only when needed (Not
+  // logged yet, QSO detail) take their place while the page is unlocked.
+  function shown(m) {
+    return !m.hidden && (arranging() || !moduleEl(m.id).hidden);
+  }
+
+  // Place each box on the grid: a full-width box takes a row of its own; a
+  // half-width box takes its side of the current row, or starts a new row
+  // when that side is taken. The page's own order never changes, so the
   // keyboard and screen readers keep a stable order.
   function applyLayout() {
+    let row = 1;
+    let used = { left: false, right: false, full: false };
+    const fresh = () => {
+      if (used.left || used.right || used.full) row += 1;
+      used = { left: false, right: false, full: false };
+    };
     layout.modules.forEach((m, index) => {
       const el = moduleEl(m.id);
       el.style.order = String(index);
       el.classList.toggle("half", m.width === "half");
       el.classList.toggle("off", m.hidden);
-      const head = $(".module-head", el);
-      $("[data-act=earlier]", head).disabled = index === 0;
-      $("[data-act=later]", head).disabled = index === layout.modules.length - 1;
-      const width = $("[data-act=width]", head);
-      width.textContent = m.width === "half" ? "Full width" : "Half width";
+      el.dataset.place = m.width === "full" ? "full" : m.side;
+      if (!shown(m)) return;
+      if (m.width === "full") {
+        fresh();
+        used.full = true;
+        el.style.gridColumn = "1 / -1";
+      } else {
+        if (used.full || used[m.side]) fresh();
+        used[m.side] = true;
+        el.style.gridColumn = m.side === "left" ? "1" : "2";
+      }
+      el.style.gridRow = String(row);
     });
     const tray = $("#tray");
     tray.replaceChildren();
@@ -301,12 +329,15 @@
     saveLayout();
   }
 
-  function move(id, to) {
+  // Put box `id` at `index` in the order, `width` wide, on `side`. True if
+  // anything changed.
+  function place(id, index, width, side) {
     const from = layout.modules.findIndex((m) => m.id === id);
-    const clamped = Math.max(0, Math.min(layout.modules.length - 1, to));
-    if (from === clamped) return false;
-    const [m] = layout.modules.splice(from, 1);
-    layout.modules.splice(clamped, 0, m);
+    const m = layout.modules[from];
+    const to = Math.max(0, Math.min(layout.modules.length - 1, index));
+    if (from === to && m.width === width && (width === "full" || m.side === side)) return false;
+    layout.modules.splice(from, 1);
+    layout.modules.splice(to, 0, { ...m, width, side: width === "half" ? side : m.side });
     applyLayout();
     return true;
   }
@@ -322,98 +353,167 @@
     for (const table of Object.values(TABLES)) table.refresh();
   }
 
+  // Locked is the normal state. Unlocked, every box shows a handle to move it.
   function arrange(on) {
     document.body.classList.toggle("arranging", on);
     $("#arrange-bar").hidden = !on;
-    $("#arrange").setAttribute("aria-pressed", String(on));
+    const toggle = $("#arrange");
+    toggle.setAttribute("aria-pressed", String(on));
+    toggle.textContent = on ? "🔓 Unlocked" : "🔒 Locked";
+    toggle.title = on ? "Lock the layout" : "Unlock to move boxes";
+    applyLayout();
   }
 
-  function toolButton(act, text, label) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "small secondary";
-    button.dataset.act = act;
-    button.textContent = text;
-    if (label) button.setAttribute("aria-label", label);
-    return button;
+  // Where a box dropped at (x, y) goes. Across the page: near the centre
+  // line it is full width; left or right of that, half width on that side.
+  // Down the page: before the first other box whose middle is below the
+  // pointer. Positions are measured when the drag starts, so the boxes
+  // moving aside as you drag never change the answer.
+  const CENTRE_BAND = 0.2; // the middle fifth of the page counts as the centre line
+
+  function dropTarget(x, y, others, area) {
+    let width = "full";
+    let side = "left";
+    const single = getComputedStyle($("#workspace")).gridTemplateColumns.split(" ").length < 2;
+    const across = (x - area.left) / area.width;
+    if (!single && across < 0.5 - CENTRE_BAND / 2) width = "half";
+    if (!single && across > 0.5 + CENTRE_BAND / 2) {
+      width = "half";
+      side = "right";
+    }
+    let index = layout.modules.length - 1;
+    for (const o of others) {
+      if (y < o.top + o.height / 2) {
+        index = o.index;
+        break;
+      }
+    }
+    return { index, width, side };
   }
 
-  // Dragging uses pointer events, so it works with a mouse, a pen, or a finger.
+  // Dragging uses pointer events, so it works with a mouse, a pen, or a
+  // finger. The box's place shows as an outline; a small card follows the
+  // pointer like a window being carried.
   function startDrag(event, id) {
     if (event.button !== 0) return;
     event.preventDefault();
-    const el = moduleEl(id);
     const handle = event.currentTarget;
+    const el = moduleEl(id);
+    const before = structuredClone(layout.modules);
+    const area = $("#workspace").getBoundingClientRect();
+    // Where the other boxes are, in order, with each one's index once this
+    // box is lifted out of the order.
+    const rest = layout.modules.filter((m) => m.id !== id);
+    const others = rest.map((m, index) => ({ m, index }))
+      .filter(({ m }) => shown(m))
+      .map(({ m, index }) => {
+        const r = moduleEl(m.id).getBoundingClientRect();
+        return { index, top: r.top, height: r.height };
+      });
+    const grab = handle.getBoundingClientRect();
+    const dx = event.clientX - grab.left;
+    const dy = event.clientY - grab.top;
+    const ghost = document.createElement("div");
+    ghost.className = "ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    const ghostName = document.createElement("span");
+    ghostName.textContent = `⠿ ${MODULES[id]}`;
+    const ghostWhere = document.createElement("span");
+    ghostWhere.className = "ghost-where";
+    ghost.append(ghostName, ghostWhere);
+    ghost.style.width = `${Math.min(grab.width, 420)}px`;
+    document.body.append(ghost);
     handle.setPointerCapture(event.pointerId);
-    el.classList.add("dragging");
+    el.classList.add("placing");
     document.body.classList.add("moving");
-    const onMove = (e) => {
-      el.style.pointerEvents = "none";
-      const under = document.elementFromPoint(e.clientX, e.clientY);
-      el.style.pointerEvents = "";
-      const target = under && under.closest(".module");
-      if (!target || target === el) return;
-      const box = target.getBoundingClientRect();
-      const after = target.classList.contains("half") && el.classList.contains("half")
-        ? e.clientX > box.left + box.width / 2
-        : e.clientY > box.top + box.height / 2;
-      const ids = layout.modules.map((m) => m.id);
-      const from = ids.indexOf(id);
-      let to = ids.indexOf(target.dataset.module) + (after ? 1 : 0);
-      if (from < to) to -= 1;
-      move(id, to);
+    const follow = (e) => {
+      ghost.style.transform = `translate(${e.clientX - dx}px, ${e.clientY - dy}px)`;
     };
-    const onUp = () => {
+    follow(event);
+    let last = "";
+    const onMove = (e) => {
+      follow(e);
+      const t = dropTarget(e.clientX, e.clientY, others, area);
+      const key = `${t.index}:${t.width}:${t.side}`;
+      if (key === last) return;
+      last = key;
+      ghostWhere.textContent = t.width === "full" ? "Full width" : t.side === "left" ? "Left half" : "Right half";
+      // `index` counts the boxes without this one, which is where `place`
+      // puts it once it has been lifted out.
+      place(id, t.index, t.width, t.side);
+    };
+    const finish = (keep) => {
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
-      handle.removeEventListener("pointercancel", onUp);
-      el.classList.remove("dragging");
+      handle.removeEventListener("pointercancel", onCancel);
+      ghost.remove();
+      el.classList.remove("placing");
       document.body.classList.remove("moving");
-      saveLayout();
+      if (keep) {
+        saveLayout();
+      } else {
+        layout.modules = before;
+        applyLayout();
+      }
     };
+    const onUp = () => finish(true);
+    const onCancel = () => finish(false);
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
-    handle.addEventListener("pointercancel", onUp);
+    handle.addEventListener("pointercancel", onCancel);
+  }
+
+  // From the keyboard: up and down move a box; left and right step it
+  // between left half, full width, and right half (L, C, and R jump there).
+  function keyMove(event, id) {
+    const at = layout.modules.findIndex((m) => m.id === id);
+    const m = layout.modules[at];
+    const spot = m.width === "full" ? "centre" : m.side;
+    const spots = ["left", "centre", "right"];
+    let target = null;
+    if (event.key === "ArrowUp") target = { index: at - 1, spot };
+    else if (event.key === "ArrowDown") target = { index: at + 1, spot };
+    else if (event.key === "ArrowLeft") target = { index: at, spot: spots[Math.max(0, spots.indexOf(spot) - 1)] };
+    else if (event.key === "ArrowRight") target = { index: at, spot: spots[Math.min(2, spots.indexOf(spot) + 1)] };
+    else if ({ l: 1, c: 1, r: 1 }[event.key.toLowerCase()]) {
+      target = { index: at, spot: { l: "left", c: "centre", r: "right" }[event.key.toLowerCase()] };
+    }
+    if (!target) return;
+    event.preventDefault();
+    const width = target.spot === "centre" ? "full" : "half";
+    if (place(id, target.index, width, target.spot === "right" ? "right" : "left")) saveLayout();
+    event.currentTarget.focus();
   }
 
   function buildModuleHeads() {
     for (const [id, title] of Object.entries(MODULES)) {
       const head = document.createElement("div");
       head.className = "module-head";
-      const grip = document.createElement("button");
-      grip.type = "button";
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "handle";
+      handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half.";
+      handle.setAttribute("aria-label",
+        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right for width)`);
+      const grip = document.createElement("span");
       grip.className = "grip";
+      grip.setAttribute("aria-hidden", "true");
       grip.textContent = "⠿";
-      grip.title = "Drag to move";
-      grip.setAttribute("aria-label", `Move ${title}: drag, or use the arrow keys`);
-      grip.addEventListener("pointerdown", (event) => startDrag(event, id));
-      grip.addEventListener("keydown", (event) => {
-        const step = { ArrowUp: -1, ArrowLeft: -1, ArrowDown: 1, ArrowRight: 1 }[event.key];
-        if (!step) return;
-        event.preventDefault();
-        const at = layout.modules.findIndex((m) => m.id === id);
-        if (move(id, at + step)) saveLayout();
-        grip.focus();
-      });
       const name = document.createElement("span");
       name.className = "module-title";
       name.textContent = title;
-      const earlier = toolButton("earlier", "↑", `Move ${title} earlier`);
-      earlier.addEventListener("click", () => {
-        if (move(id, layout.modules.findIndex((m) => m.id === id) - 1)) saveLayout();
-      });
-      const later = toolButton("later", "↓", `Move ${title} later`);
-      later.addEventListener("click", () => {
-        if (move(id, layout.modules.findIndex((m) => m.id === id) + 1)) saveLayout();
-      });
-      const width = toolButton("width", "Half width");
-      width.addEventListener("click", () => {
-        const m = layout.modules.find((x) => x.id === id);
-        changeLayout(id, { width: m.width === "half" ? "full" : "half" });
-      });
-      head.append(grip, name, earlier, later, width);
+      const where = document.createElement("span");
+      where.className = "where hint";
+      handle.append(grip, name, where);
+      handle.addEventListener("pointerdown", (event) => startDrag(event, id));
+      handle.addEventListener("keydown", (event) => keyMove(event, id));
+      head.append(handle);
       if (HIDEABLE.has(id)) {
-        const hide = toolButton("hide", "Hide");
+        const hide = document.createElement("button");
+        hide.type = "button";
+        hide.className = "small secondary";
+        hide.dataset.act = "hide";
+        hide.textContent = "Hide";
         hide.addEventListener("click", () => changeLayout(id, { hidden: true }));
         head.append(hide);
       }
@@ -422,8 +522,11 @@
       placeholder.textContent = id === "journal"
         ? "Appears here when a QSO is waiting to be logged."
         : "Appears here when you open a QSO from the log.";
-      moduleEl(id).prepend(head);
+      const box = moduleEl(id);
+      box.prepend(head);
       if (id === "journal" || id === "detail") head.after(placeholder);
+      // These boxes come and go; place the rest around them each time.
+      new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
     }
   }
 
@@ -1179,8 +1282,7 @@
 
     $("#sign-in-form").addEventListener("submit", signIn);
     $("#sign-out").addEventListener("click", signOut);
-    $("#arrange").addEventListener("click", () => arrange(!document.body.classList.contains("arranging")));
-    $("#arrange-done").addEventListener("click", () => arrange(false));
+    $("#arrange").addEventListener("click", () => arrange(!arranging()));
     $("#arrange-reset").addEventListener("click", () => {
       layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables }; // columns have their own reset
       applyLayout();
