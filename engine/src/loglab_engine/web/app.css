@@ -426,6 +426,18 @@ h2 .popout:hover { color: var(--accent); }
 .widths button { min-width: 34px; padding-left: 8px; padding-right: 8px; }
 .widths button[aria-pressed="true"] { color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
 
+/* Panels: parts of a box placed above, below, or beside its main content.
+   Beside it, a panel drops below when the box is too narrow for both. */
+.panels { display: flex; flex-direction: column; gap: 14px; }
+.panels-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.panel-main { flex: 4 1 380px; min-width: 0; }
+.panels-row > .panel { flex: 1 1 200px; min-width: 0; }
+.panel-head { display: none; }
+body.arranging .panel { outline: 2px dashed var(--glass-line); outline-offset: 4px; border-radius: 12px; }
+body.arranging .panel-head { display: flex; margin-bottom: 10px; }
+body.arranging .panel.placing { outline-color: var(--accent); background: var(--row-hover); }
+.panel.placing > * { opacity: 0.25; }
+
 /* Boxes that show only when needed still get a place while unlocked. */
 body.arranging .module[hidden]:not(.off) { display: block !important; }
 body.arranging .module[hidden] > :not(.module-head):not(.placeholder) { display: none !important; }
