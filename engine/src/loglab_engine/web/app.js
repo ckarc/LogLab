@@ -1027,7 +1027,7 @@
     $("#all-boxes").hidden = !SOLO;
     $("#who").textContent = `${session.operator} at ${session.station}`;
     const mayLog = session.permissions.includes("log");
-    for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore, #add-field")) {
+    for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore")) {
       el.disabled = !mayLog;
     }
     if (!mayLog) setError("#entry", "You can view the log but not change it (no log permission).");
@@ -1309,51 +1309,25 @@
     if (!$("#detail-chooser").hidden) renderDetailChooser();
   }
 
-  // One field of the open QSO. A known field shows its plain name with its
-  // ADIF name beside it; a new row asks which field, searching by either.
-  // A field the operator always shows stays on screen when cleared. A field
-  // left empty is not saved.
+  // One field of the open QSO: its plain name with its ADIF name beside it.
+  // Which fields show is set by the Fields chooser, never QSO by QSO. A field
+  // the operator always shows stays on screen when cleared. A field left
+  // empty is not saved.
   function fieldRow(f, { pinned = false } = {}) {
     const row = document.createElement("tr");
     row.dataset.type = f.type || "";
+    row.dataset.name = f.name;
     const nameCell = document.createElement("td");
-    if (f.name) {
-      row.dataset.name = f.name;
-      const label = document.createElement("span");
-      label.className = "field-label";
-      label.textContent = fieldLabel(f.name);
-      const adif = document.createElement("span");
-      adif.className = "field-adif";
-      adif.textContent = f.name.toUpperCase();
-      nameCell.append(label, adif);
-    } else {
-      const name = document.createElement("input");
-      name.maxLength = 80;
-      name.spellcheck = false;
-      name.placeholder = "Search fields, like Power or POTA";
-      name.setAttribute("list", "adif-field-list");
-      name.setAttribute("aria-label", "Which field");
-      name.addEventListener("change", () => {
-        const chosen = fieldFromText(name.value);
-        name.setCustomValidity(chosen || !name.value.trim() ? "" : "Pick a field from the list.");
-        if (!chosen) return;
-        // Already on screen: go to it rather than adding it twice.
-        const existing = [...$("#edit tbody").rows].find((r) => r !== row && (r.dataset.name || "").toUpperCase() === chosen);
-        if (existing) {
-          row.remove();
-          $("input", existing).focus();
-          return;
-        }
-        row.replaceWith(fieldRow({ name: chosen, value: $("input[aria-label=Value]", row).value, type: null }));
-        const added = [...$("#edit tbody").rows].find((r) => r.dataset.name === chosen);
-        if (added) $("input", added).focus();
-      });
-      nameCell.append(name);
-    }
+    const label = document.createElement("span");
+    label.className = "field-label";
+    label.textContent = fieldLabel(f.name);
+    const adif = document.createElement("span");
+    adif.className = "field-adif";
+    adif.textContent = f.name.toUpperCase();
+    nameCell.append(label, adif);
     const value = document.createElement("input");
     value.value = f.value;
-    value.setAttribute("aria-label", "Value");
-    if (f.name) value.setAttribute("aria-label", `${fieldLabel(f.name)} value`);
+    value.setAttribute("aria-label", `${fieldLabel(f.name)} value`);
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "link";
@@ -1537,7 +1511,6 @@
     $("#delete").hidden = qso.deleted;
     $("#restore").hidden = !qso.deleted;
     $("#edit button[type=submit]").hidden = qso.deleted;
-    $("#add-field").hidden = qso.deleted;
     $("#detail-fields").hidden = qso.deleted;
     renderHistory(history);
     $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -1604,11 +1577,9 @@
   function editedFields() {
     const fields = [];
     for (const row of $("#edit tbody").rows) {
-      const name = row.dataset.name || fieldFromText($("input", row).value);
-      const value = $("input[aria-label$=alue]", row).value;
+      const value = $("input", row).value;
       if (!value.trim()) continue; // an empty field is not kept
-      if (!name) throw new Error(`Pick which field "${value}" goes in from the list.`);
-      fields.push({ name, value, type: row.dataset.type || null });
+      fields.push({ name: row.dataset.name, value, type: row.dataset.type || null });
     }
     return fields;
   }
@@ -1695,11 +1666,6 @@
     });
     $("#show-deleted").addEventListener("change", loadLog);
     $("#close-detail").addEventListener("click", closeDetail);
-    $("#add-field").addEventListener("click", () => {
-      const row = fieldRow({ name: "", value: "", type: null });
-      $("#edit tbody").append(row);
-      $("input", row).focus();
-    });
     const fieldList = $("#adif-field-list");
     for (const [name, f] of ADIF_FIELDS) {
       const option = document.createElement("option");
@@ -1723,14 +1689,7 @@
     $("#edit").addEventListener("submit", (event) => {
       event.preventDefault();
       if (!current) return;
-      let fields;
-      try {
-        fields = editedFields();
-      } catch (e) {
-        setError("#edit", e.message);
-        return;
-      }
-      change("PUT", `/qsos/${current.id}`, { base_version: current.version, fields, note: note() });
+      change("PUT", `/qsos/${current.id}`, { base_version: current.version, fields: editedFields(), note: note() });
     });
     $("#delete").addEventListener("click", () => {
       if (current && confirm("Delete this QSO? It is kept in the history and can be restored.")) {
