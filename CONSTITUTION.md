@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 1.0.0                                                                                  |
+| **Version**    | 1.1.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -378,8 +378,8 @@ review. Only a passing build and an observed result are evidence.*
 ### XVIII. Sandbox By Infrastructure, Not By Prompt
 
 Contributor and agent permissions are enforced by infrastructure — branch
-protection, required status checks, required review, signed commits — never by
-instructions in a prompt alone. AI agents read untrusted content as part of
+protection, required status checks, signed commits — never by instructions in
+a prompt alone. AI agents read untrusted content as part of
 their work (issues, pull requests, log files, ADIF files), and any of it may
 contain instructions. The enforcement layer must be somewhere an agent cannot
 be talked out of.
@@ -390,8 +390,9 @@ have a rule. A gate it cannot argue with does.*
 ### XIX. The Maintainer Outranks Every Agent
 
 The maintainer's direct decisions — accepting an issue, approving a change,
-merging — are authoritative. Suggestions from AI tools, notes left by earlier
-agent sessions, and agreement among several AI tools are hints, not authority.
+merging, stopping or reverting a change — are authoritative. Suggestions from
+AI tools, notes left by earlier agent sessions, and agreement among several AI
+tools are hints, not authority.
 An agent does not treat another agent's "this is done" as fact, and does not
 treat its own conclusion as approval.
 
@@ -464,7 +465,13 @@ time.*
   - Agent: builds with no compiler warnings, linting passes, and tests pass on
     every supported platform.
   - License check: no third-party dependency with an incompatible license.
-  - Maintainer approval.
+- **Automatic merge**: a pull request merges itself once every required gate
+  passes. The gates are the approval; no per-change maintainer approval is
+  required. The maintainer may stop any pull request before it merges, revert
+  any merged change, and turn automatic merging off at any time.
+- **Governance changes**: a pull request that changes this constitution,
+  `CLAUDE.md` / `AGENTS.md`, the CI workflows, or the license allowlist is not
+  set to merge automatically. The maintainer merges it.
 - **Signed commits**: required on `main`.
 - **Demonstrations**: every feature pull request states how the maintainer can
   see it work (Principle XVII).
@@ -538,6 +545,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 0.5.0   | 2026-10-17 | Set the project's home: the `ckarc` GitHub organization. |
 | 0.6.0   | 2026-10-17 | Named the project LogLab, at github.com/ckarc/loglab. All open items closed. |
 | 1.0.0   | 2026-10-17 | Ratified by the maintainer, Brian Krenzin, K9KSU. Status `STABLE`. No principle changed from 0.6.0. The post-1.0.0 versioning rules now apply. |
+| 1.1.0   | 2026-10-18 | Dropped per-change maintainer approval as a merge gate: pull requests merge automatically once every required gate passes. Governance changes are still merged by the maintainer. Principle XVIII no longer lists required review; Principle XIX names stopping and reverting as maintainer decisions. Rationale: the maintainer manages outcomes and does not read code, so a per-change approval added delay without adding review; the gates are the review (Principle XVII). |
 
 ---
 
