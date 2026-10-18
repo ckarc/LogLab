@@ -154,10 +154,11 @@ TableId = Literal["log"]
 
 
 class ModuleLayout(_Strict):
-    """One module of the workspace: how wide it is, and whether it is shown."""
+    """One module of the workspace: its width, the side a half sits on, and whether it is shown."""
 
     id: ModuleId
     width: Literal["half", "full"] = "full"
+    side: Literal["left", "right"] = "left"
     hidden: bool = False
 
 
