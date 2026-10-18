@@ -9,9 +9,11 @@
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
+  <link rel="stylesheet" href="/static/lotw.css">
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
+  <script src="/static/lotw.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -86,6 +88,7 @@
           <label class="inline"><input id="show-deleted" type="checkbox"> Show deleted</label>
           <span id="count" class="hint"></span>
           <span id="log-tools" class="table-tools"></span>
+          <button type="button" id="lotw-open" class="link lotw-open">LoTW</button>
         </div>
         <div class="table-wrap">
           <table id="log">
@@ -158,6 +161,68 @@
       </div>
       <p class="error" role="alert"></p>
     </form>
+  </dialog>
+
+  <dialog id="lotw-dialog" class="card qrz-dialog lotw-dialog">
+    <div class="lotw-head">
+      <h2>Logbook of the World</h2>
+      <button type="button" id="lotw-close" class="secondary small">Close</button>
+    </div>
+    <p class="hint">LogLab signs your QSOs with your own LoTW callsign certificate and sends them when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here until you send them.</p>
+    <p id="lotw-state" class="notice" aria-live="polite"></p>
+
+    <section id="lotw-actions" class="lotw-part" hidden>
+      <div class="actions">
+        <button type="button" id="lotw-send">Send to LoTW</button>
+        <button type="button" id="lotw-fetch" class="secondary">Fetch confirmations</button>
+      </div>
+      <p id="lotw-result" class="hint" aria-live="polite"></p>
+      <ul id="lotw-skipped" class="lotw-skipped"></ul>
+    </section>
+
+    <details id="lotw-cert-part" class="lotw-part">
+      <summary>Callsign certificate</summary>
+      <p class="hint">In TrustedQSL, pick your callsign certificate and choose <em>Save the callsign certificate</em>. That makes a .p12 file with a password you choose. Pick that file here.</p>
+      <p id="lotw-cert" class="hint"></p>
+      <form id="lotw-cert-form" autocomplete="off">
+        <label>Certificate file (.p12) <input name="file" type="file" accept=".p12,application/x-pkcs12" required></label>
+        <label>Its password <input name="password" type="password" maxlength="128"></label>
+        <div class="actions"><button type="submit" class="small">Save certificate</button></div>
+        <p class="error" role="alert"></p>
+      </form>
+    </details>
+
+    <details id="lotw-location-part" class="lotw-part">
+      <summary>Station location</summary>
+      <p class="hint">Where the station is. LoTW records this with every QSO you send, like a TrustedQSL station location.</p>
+      <form id="lotw-location-form" autocomplete="off">
+        <div class="grid">
+          <label>Grid <input name="grid" required minlength="4" maxlength="6" spellcheck="false" placeholder="e.g. EM18"></label>
+          <label class="us-only">State <select name="us_state"></select></label>
+          <label class="us-only">County <select name="us_county"></select></label>
+          <label class="ca-only">Province <select name="ca_province"></select></label>
+          <label>ITU zone <input name="ituz" type="number" min="1" max="90" required></label>
+          <label>CQ zone <input name="cqz" type="number" min="1" max="40" required></label>
+        </div>
+        <div class="actions"><button type="submit" class="small">Save location</button></div>
+        <p class="error" role="alert"></p>
+      </form>
+    </details>
+
+    <details id="lotw-login-part" class="lotw-part">
+      <summary>LoTW website login</summary>
+      <p class="hint">Used only to fetch confirmations: the username and password you use on the LoTW website.</p>
+      <form id="lotw-login-form" autocomplete="off">
+        <label>Username <input name="username" required maxlength="64" spellcheck="false"></label>
+        <label>Password <input name="password" type="password" required maxlength="128"></label>
+        <div class="actions"><button type="submit" class="small">Save login</button></div>
+        <p class="error" role="alert"></p>
+      </form>
+    </details>
+
+    <div class="actions">
+      <button type="button" id="lotw-remove" class="danger small" hidden>Remove my LoTW set-up</button>
+    </div>
   </dialog>
 
   <footer class="foot">

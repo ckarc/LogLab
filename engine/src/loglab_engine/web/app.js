@@ -1100,13 +1100,19 @@
     FREQ: "Freq (MHz)", RST_SENT: "RST sent", RST_RCVD: "RST rcvd", NAME: "Name", COMMENT: "Comment",
     GRIDSQUARE: "Grid", QTH: "QTH", STATE: "State", COUNTRY: "Country", TX_PWR: "Power (W)",
     CONTEST_ID: "Contest", SRX: "Rcvd #", STX: "Sent #", SUBMODE: "Submode", TIME_OFF: "Time off",
-    CLASS: "Class", ARRL_SECT: "Section",
+    CLASS: "Class", ARRL_SECT: "Section", LOTW_QSL_RCVD: "LoTW",
+  };
+  // Fields shown as words rather than as their ADIF value.
+  const FIELD_RENDER = {
+    // Logbook of the World: confirmed, sent and waiting, or not yet sent (lotw.js sends).
+    LOTW_QSL_RCVD: (q) => (field(q, "LOTW_QSL_RCVD").toUpperCase() === "Y" ? "Confirmed"
+      : field(q, "LOTW_QSL_SENT").toUpperCase() === "Y" ? "Sent" : ""),
   };
 
   function logColumn(key) {
     if (LOG_COLUMNS[key]) return LOG_COLUMNS[key];
     const name = key.slice("field:".length).toUpperCase();
-    return { label: FIELD_LABELS[name] || name, sort: `field:${name}`, render: (q) => field(q, name) };
+    return { label: FIELD_LABELS[name] || name, sort: `field:${name}`, render: FIELD_RENDER[name] || ((q) => field(q, name)) };
   }
 
   let logTable = null;
@@ -1281,7 +1287,7 @@
       column: logColumn,
       suggested: [...Object.keys(LOG_COLUMNS), ...Object.keys(FIELD_LABELS).map((f) => `field:${f}`)],
       defaults: Object.freeze({
-        columns: ["date", "time", "call", "band", "mode", "operator", "version"],
+        columns: ["date", "time", "call", "band", "mode", "operator", "version", "field:LOTW_QSL_RCVD"],
         sort: "entered",
         descending: true,
       }),
@@ -1293,6 +1299,8 @@
     fillSelect($("#entry [name=MODE]"), MODES);
     $("#entry [name=BAND]").value = "20m";
 
+    // Other modules that change QSOs (lotw.js) ask for the log to be shown again.
+    document.addEventListener("loglab:log-changed", () => { if (session && !$("#app").hidden) loadLog(); });
     $("#sign-in-form").addEventListener("submit", signIn);
     $("#sign-out").addEventListener("click", signOut);
     $("#arrange").addEventListener("click", () => arrange(!arranging()));

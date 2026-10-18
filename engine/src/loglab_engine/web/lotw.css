@@ -1,0 +1,28 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* Logbook of the World: the link in the Log box, and its dialog. */
+
+.lotw-open { margin-left: auto; font-size: 13px; }
+
+.lotw-dialog {
+  width: min(620px, calc(100vw - 32px));
+  max-height: calc(100vh - 48px);
+  overflow-y: auto;
+}
+.lotw-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lotw-head h2 { margin: 0; }
+.lotw-dialog .notice.warn { border-color: var(--danger); color: var(--danger); font-weight: 500; }
+.lotw-dialog form > label { margin-bottom: 12px; }
+.lotw-dialog .error { margin-top: 10px; }
+
+.lotw-part { margin-top: 18px; padding-top: 14px; border-top: 1px solid var(--glass-line); }
+.lotw-part > summary { cursor: pointer; font-weight: 600; }
+.lotw-part > summary .hint { margin-left: 8px; }
+.lotw-part[open] > summary { margin-bottom: 8px; }
+
+.lotw-dialog .us-only[hidden], .lotw-dialog .ca-only[hidden] { display: none; }
+
+.lotw-skipped { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); }
+.lotw-skipped li { margin: 3px 0; }
+.lotw-skipped b { color: var(--text); }
