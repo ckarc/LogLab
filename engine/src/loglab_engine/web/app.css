@@ -428,6 +428,10 @@ body.moving, body.moving * { cursor: grabbing !important; }
   border-radius: 18px;
   box-shadow: var(--shadow);
 }
+/* Every pop-up box (Menu, QRZ.com, LoTW, and any added later) opens just
+   below the top of the window, not in the middle, and scrolls inside
+   itself if it is taller than the window. */
+dialog.card:modal { margin: 16px auto auto; max-height: calc(100vh - 32px); overflow: auto; }
 .menu-dialog::backdrop { background: rgba(10, 14, 30, 0.35); backdrop-filter: blur(4px); }
 .menu-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .menu-head h2 { margin: 0; }
