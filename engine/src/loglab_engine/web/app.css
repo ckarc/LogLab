@@ -327,6 +327,9 @@ th[aria-sort] { color: var(--accent); }
 .module { grid-column: span 2; margin-bottom: 0; min-width: 0; }
 .module.half { grid-column: span 1; }
 .module.off { display: none !important; }
+.module.raised { position: relative; z-index: 30; }
+/* While a box or column is being moved, nothing on the page gets selected. */
+body.moving, .module-head, .grip { -webkit-user-select: none; user-select: none; }
 
 .module-head { display: none; }
 .placeholder { display: none; margin: 0; }

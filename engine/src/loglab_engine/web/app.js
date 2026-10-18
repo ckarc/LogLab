@@ -346,6 +346,7 @@
     const handle = event.currentTarget;
     handle.setPointerCapture(event.pointerId);
     el.classList.add("dragging");
+    document.body.classList.add("moving");
     const onMove = (e) => {
       el.style.pointerEvents = "none";
       const under = document.elementFromPoint(e.clientX, e.clientY);
@@ -367,6 +368,7 @@
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onUp);
       el.classList.remove("dragging");
+      document.body.classList.remove("moving");
       saveLayout();
     };
     handle.addEventListener("pointermove", onMove);
@@ -497,6 +499,11 @@
       };
       const onMove = (e) => {
         if (!dragged && Math.hypot(e.clientX - x0, e.clientY - y0) < 6) return;
+        if (!dragged) {
+          // Moving a column, not selecting text on the page.
+          window.getSelection().removeAllRanges();
+          document.body.classList.add("moving");
+        }
         dragged = true;
         clear();
         th.classList.add("dragging");
@@ -514,6 +521,7 @@
         th.removeEventListener("pointermove", onMove);
         th.removeEventListener("pointerup", onUp);
         th.removeEventListener("pointercancel", onUp);
+        document.body.classList.remove("moving");
         clear();
         if (!dragged || target === null) return;
         const columns = [...state().columns];
@@ -675,6 +683,10 @@
     function openChooser(open) {
       chooser.hidden = !open;
       chooserButton.setAttribute("aria-expanded", String(open));
+      // Each glass box is drawn as its own layer, so lift the one holding
+      // the open list above the boxes after it.
+      const box = table.closest(".module");
+      if (box) box.classList.toggle("raised", open);
       if (open) {
         renderChooser();
         const first = $("input, button", chooser);
