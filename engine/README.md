@@ -145,6 +145,16 @@ own reference is at `/api/docs`.
   the same (Principle V); after QRZ.com cannot be reached the Engine leaves
   it alone for a minute. The Engine has to send the password to QRZ.com, so
   it is stored as typed: anyone who can read the database can read it.
+- **QRZ logbook** sending is optional. An operator saves their QRZ logbook's
+  API key (and, for a club logbook, its callsign) from the **QRZ.com** link
+  (`GET`/`PUT`/`DELETE /api/v1/logbook/qrz`; the key is never sent back).
+  QSOs entered from then on whose STATION_CALLSIGN, or else whose operator,
+  is that callsign are copied to the logbook in the background; edits replace
+  the copy, deletes remove it, and a restore sends it again. Logging never
+  waits on this (Principle V): with no internet, QSOs wait and go out once
+  QRZ.com can be reached, retried every five minutes and whenever a QSO
+  changes. Each callsign has one key, so nothing is sent twice. What was sent
+  is kept in the `workspace` schema, apart from the log.
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

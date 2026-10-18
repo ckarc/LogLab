@@ -73,7 +73,9 @@ def main(
         return EXIT_REFUSED
     out.write(f"LogLab Engine {__version__}: http://{args.host}:{args.port}/\n")
     out.flush()
-    uvicorn.run(create_app(database), host=args.host, port=args.port, log_level="info")
+    app = create_app(database)
+    app.state.logbook.start()  # sends QSOs to QRZ logbooks, when operators set that up
+    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
     return EXIT_OK
 
 

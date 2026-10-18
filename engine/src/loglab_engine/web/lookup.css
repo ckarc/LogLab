@@ -19,4 +19,6 @@
 }
 .qrz-dialog::backdrop { background: rgba(10, 14, 30, 0.35); backdrop-filter: blur(4px); }
 .qrz-dialog form > label { margin-bottom: 12px; }
+.qrz-dialog form + form { margin-top: 22px; padding-top: 6px; border-top: 1px solid var(--glass-line); }
+.qrz-dialog { max-height: calc(100vh - 32px); overflow: auto; }
 .qrz-dialog .error { margin-top: 10px; }
