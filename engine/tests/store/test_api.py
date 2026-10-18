@@ -262,6 +262,7 @@ LAYOUT = {
             "descending": False,
         },
     },
+    "detail": {"fields": ["CALL", "QSO_DATE", "NAME", "MY_GRIDSQUARE", "APP_LOGLAB_X"]},
 }
 
 
@@ -283,7 +284,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     }
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
-        "layout": {**changed, "tables": {}}
+        "layout": {**changed, "tables": {}, "detail": None}
     }
 
 
@@ -329,6 +330,18 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
                 "tables": {"log": {"columns": ["call"], "sort": "1; drop"}},
             },
             "pattern",
+        ),
+        (
+            {"version": 1, "modules": [{"id": "log"}], "detail": {"fields": ["NAME", "name"]}},
+            "only once",
+        ),
+        (
+            {"version": 1, "modules": [{"id": "log"}], "detail": {"fields": ["MY GRID"]}},
+            "pattern",
+        ),
+        (
+            {"version": 1, "modules": [{"id": "log"}], "detail": {"fields": ["CALL"] * 81}},
+            "at most 80",
         ),
     ],
 )

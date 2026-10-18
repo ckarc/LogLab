@@ -366,6 +366,15 @@ th[aria-sort] { color: var(--accent); }
 .module { grid-column: 1 / -1; margin-bottom: 0; min-width: 0; }
 .module.off { display: none !important; }
 .module.raised { position: relative; z-index: 30; }
+
+/* -- One QSO's fields --------------------------------------------------- */
+
+.detail-bar { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+.detail-bar #detail-meta { margin: 0; flex: 1 1 auto; }
+.field-label { color: var(--text); font-weight: 500; }
+.field-adif { margin-left: 8px; color: var(--muted); font-size: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+#detail-search { width: 100%; margin-bottom: 12px; }
+.chooser-end { margin-top: 14px; }
 /* While a box or column is being moved, nothing on the page gets selected. */
 body.moving, .module-head, .ghost { -webkit-user-select: none; user-select: none; }
 body.moving, body.moving * { cursor: grabbing !important; }

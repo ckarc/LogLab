@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
   <link rel="stylesheet" href="/static/lotw.css">
+  <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
@@ -127,7 +128,16 @@
 
       <section id="detail" class="card module" data-module="detail" hidden>
         <h2><span id="detail-title"></span> <button id="close-detail" class="link" type="button">Close</button></h2>
-        <p id="detail-meta" class="hint"></p>
+        <div class="detail-bar">
+          <p id="detail-meta" class="hint"></p>
+          <div class="table-tools">
+            <button type="button" id="detail-fields" class="link table-columns" aria-expanded="false" aria-controls="detail-chooser">Fields</button>
+            <div id="detail-chooser" class="chooser card" role="dialog" aria-label="Choose the fields a QSO shows" hidden>
+              <input id="detail-search" type="search" placeholder="Search, like Grid, County or POTA" spellcheck="false" aria-label="Search fields">
+              <div id="detail-chooser-list"></div>
+            </div>
+          </div>
+        </div>
         <form id="edit">
           <table class="fields"><thead><tr><th>Field</th><th>Value</th><th></th></tr></thead><tbody></tbody></table>
           <div class="actions">
@@ -147,6 +157,8 @@
       </div>
     </div>
   </main>
+
+  <datalist id="adif-field-list"></datalist>
 
   <dialog id="qrz-dialog" class="card qrz-dialog">
     <h2>QRZ.com</h2>

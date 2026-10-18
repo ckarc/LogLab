@@ -218,12 +218,32 @@ class TableLayout(_Strict):
         return self
 
 
+FieldName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z][A-Za-z0-9_]{0,63}$")]
+
+
+class DetailLayout(_Strict):
+    """The ADIF fields a QSO's detail always shows, in order, even when empty."""
+
+    fields: Annotated[list[FieldName], Field(max_length=80)]
+
+    @model_validator(mode="after")
+    def _each_field_once(self) -> Self:
+        if len(self.fields) != len({f.upper() for f in self.fields}):
+            msg = "each field may appear only once"
+            raise ValueError(msg)
+        return self
+
+
 class Layout(_Strict):
-    """An operator's workspace: the modules in the order they appear, and their tables."""
+    """An operator's workspace: its modules in order, its tables, and a QSO's fields.
+
+    ``detail`` is ``None`` until the operator chooses, and the page's default is used.
+    """
 
     version: Literal[1] = 1
     modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
     tables: dict[TableId, TableLayout] = Field(default_factory=dict)
+    detail: DetailLayout | None = None
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
