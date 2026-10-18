@@ -841,6 +841,46 @@ class LogStore:
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
+    def contest_qsos(
+        self,
+        *,
+        contest_id: str,
+        station_call: str,
+        call: str,
+        year: int,
+        exclude: uuid.UUID | None = None,
+    ) -> tuple[QsoVersion, ...]:
+        """Current QSOs with ``call``, made as ``station_call`` in ``contest_id`` during ``year``.
+
+        These are the QSOs a new one could be a dupe of. The contest is the
+        ADIF ``CONTEST_ID`` and the year is that of the QSO's UTC start, both
+        compared as the database derives them; ``exclude`` leaves one QSO out
+        (the one being edited). Deleted QSOs never count.
+        """
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE NOT q.deleted
+              AND v.call = upper(btrim(%(call)s))
+              AND upper(btrim(log.field_value(v.fields, 'CONTEST_ID'))) = upper(btrim(%(contest)s))
+              AND extract(year FROM v.qso_start AT TIME ZONE 'UTC') = %(year)s
+              AND {_STATION_CALL} = upper(btrim(%(station)s))
+              AND (%(exclude)s::uuid IS NULL OR q.id <> %(exclude)s::uuid)
+            ORDER BY v.qso_start, q.entry_seq
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {
+                "call": call,
+                "contest": contest_id,
+                "year": year,
+                "station": station_call,
+                "exclude": exclude,
+            },
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
     def field_counts(self, name: str) -> dict[str, int]:
         """How many current QSOs carry each value of the ADIF field ``name``.
 

@@ -26,8 +26,8 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
-from collections.abc import Awaitable, Callable, Iterator
-from datetime import date, datetime
+from collections.abc import Awaitable, Callable, Iterable, Iterator
+from datetime import UTC, date, datetime
 from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
@@ -61,6 +61,9 @@ from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
+from loglab_engine.contests import Earlier, Overlay, Worked, overlays
+from loglab_engine.contests import check as contest_check
+from loglab_engine.contests import overlay as find_overlay
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -411,6 +414,63 @@ class SectionsOut(BaseModel):
     source: str
 
 
+_CALL_PATTERN: Final = r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
+
+
+class ContestCheckIn(_Strict):
+    """A QSO to check against the log in a contest overlay, before or after it is stored.
+
+    ``station_call`` is the call the QSO is made as; without it, the QSO's
+    own ``STATION_CALLSIGN`` or ``OPERATOR``, else the signed-in operator.
+    ``exclude`` leaves out the QSO being edited, so it is not its own dupe.
+    """
+
+    fields: Annotated[list[AdifFieldModel], Field(min_length=1, max_length=MAX_FIELDS)]
+    station_call: Annotated[str, StringConstraints(max_length=20, pattern=_CALL_PATTERN)] | None = (
+        None
+    )
+    exclude: Annotated[uuid.UUID, Field(strict=False)] | None = None
+
+
+class WorkedOut(BaseModel):
+    """An earlier QSO with the same call in the same contest."""
+
+    id: uuid.UUID
+    band: str | None
+    mode_group: str | None
+    qso_start: datetime | None
+    operator: str
+
+
+class ProblemOut(BaseModel):
+    """A part of the received exchange that does not look right."""
+
+    field: str
+    label: str
+    message: str
+
+
+class ContestCheckOut(BaseModel):
+    """Whether a QSO is a dupe in the overlay, and whether it counts at all.
+
+    ``status`` is ``new``, ``dupe``, ``not_counted`` (a band or mode the
+    contest leaves out), ``incomplete`` (no call, band or mode yet), or
+    ``no_check`` (an overlay that never checks for dupes, like Everyday).
+    A dupe is only reported: it can still be stored.
+    """
+
+    overlay: str
+    status: str
+    station_call: str
+    year: int
+    band: str | None
+    mode_group: str | None
+    dupes: list[WorkedOut]
+    worked: list[WorkedOut]
+    problems: list[ProblemOut]
+    message: str
+
+
 class StatusOut(BaseModel):
     """What this Engine is, and where its source is (AGPL-3.0, Licensing)."""
 
@@ -734,6 +794,103 @@ def list_sections(who: Signed, conn: Conn) -> SectionsOut:
         unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
         without_section=tally.without_section,
         source=SECTIONS_SOURCE,
+    )
+
+
+@api.get("/overlays")
+def list_overlays(who: Signed, conn: Conn) -> list[Overlay]:
+    """Every operation overlay: Everyday first, then the contests (Principle III)."""
+    _require(conn, who, Permission.VIEW)
+    return list(overlays())
+
+
+def _overlay(overlay_id: str) -> Overlay:
+    found = find_overlay(overlay_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"there is no overlay called {overlay_id}")
+    return found
+
+
+@api.get("/overlays/{overlay_id}")
+def get_overlay(overlay_id: str, who: Signed, conn: Conn) -> Overlay:
+    """One operation overlay."""
+    _require(conn, who, Permission.VIEW)
+    return _overlay(overlay_id)
+
+
+def _year(qso_date: str | None) -> int:
+    try:
+        return datetime.strptime((qso_date or "").strip(), "%Y%m%d").replace(tzinfo=UTC).year
+    except ValueError:
+        return datetime.now(UTC).year
+
+
+def _worked_out(worked: Iterable[Worked]) -> list[WorkedOut]:
+    return [
+        WorkedOut(
+            id=w.qso_id, band=w.band, mode_group=w.group, qso_start=w.qso_start, operator=w.operator
+        )
+        for w in worked
+    ]
+
+
+@api.post("/overlays/{overlay_id}/check")
+def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) -> ContestCheckOut:
+    """Check a QSO for dupes and its exchange under a contest overlay's rules.
+
+    Two QSOs are dupes when they are with the same call, made as the same
+    station callsign, carry the overlay's ``CONTEST_ID``, fall in the same
+    UTC year, and agree on whatever the overlay's dupe rule lists (for both
+    Field Days, the band and the mode group). Nothing is stored.
+    """
+    _require(conn, who, Permission.VIEW)
+    found = _overlay(overlay_id)
+    fields: dict[str, str] = {}
+    for f in body.fields:
+        fields.setdefault(f.name.upper(), f.value)
+    station = (
+        body.station_call
+        or fields.get("STATION_CALLSIGN", "").strip()
+        or fields.get("OPERATOR", "").strip()
+        or who.operator
+    ).upper()
+    year = _year(fields.get("QSO_DATE"))
+    earlier: tuple[QsoVersion, ...] = ()
+    call = fields.get("CALL", "").strip()
+    if found.contest_id is not None and call:
+        earlier = LogStore(conn).contest_qsos(
+            contest_id=found.contest_id,
+            station_call=station,
+            call=call,
+            year=year,
+            exclude=body.exclude,
+        )
+    result = contest_check(
+        found,
+        fields,
+        (
+            Earlier(
+                qso_id=v.qso_id,
+                fields={f.name.upper(): f.value for f in reversed(v.record.fields)},
+                qso_start=v.qso_start,
+                operator=v.operator,
+            )
+            for v in earlier
+        ),
+    )
+    return ContestCheckOut(
+        overlay=found.id,
+        status=result.status,
+        station_call=station,
+        year=year,
+        band=result.band,
+        mode_group=result.group,
+        dupes=_worked_out(result.dupes),
+        worked=_worked_out(result.worked),
+        problems=[
+            ProblemOut(field=p.field, label=p.label, message=p.message) for p in result.problems
+        ],
+        message=result.message,
     )
 
 

@@ -1,0 +1,115 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+"""Overlay files: shipped as data, parsed strictly, refused whole when wrong (III, XII)."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from loglab_engine.contests import EVERYDAY, OverlayError, overlay, overlays, parse
+
+
+def test_the_shipped_overlays_are_everyday_then_the_field_days() -> None:
+    """Everyday comes first; the two Field Days are the first contests."""
+    ids = [o.id for o in overlays()]
+    assert ids[0] == EVERYDAY
+    assert set(ids) >= {"everyday", "arrl-fd", "wfd"}
+
+
+def test_everyday_is_not_a_contest() -> None:
+    """Everyday logging has no contest, no exchange, and no dupe rule."""
+    everyday = overlay(EVERYDAY)
+    assert everyday is not None
+    assert not everyday.is_contest
+    assert everyday.dupes is None
+    assert everyday.exchange is None
+
+
+@pytest.mark.parametrize(("overlay_id", "contest_id"), [("arrl-fd", "ARRL-FD"), ("wfd", "WFD")])
+def test_each_field_day_names_its_rules_and_counts_by_band_and_mode(
+    overlay_id: str, contest_id: str
+) -> None:
+    """Both Field Days count a station once per band per mode, and cite where that is written."""
+    found = overlay(overlay_id)
+    assert found is not None
+    assert found.contest_id == contest_id
+    assert found.dupes is not None
+    assert found.dupes.per == ("band", "mode")
+    assert found.rules is not None
+    assert found.rules.url.startswith("https://")
+    assert "CALL" in found.entry.fields
+
+
+def _minimal(**changes: object) -> dict[str, object]:
+    raw: dict[str, object] = {
+        "format": 1,
+        "id": "test",
+        "name": "Test",
+        "summary": "A test overlay.",
+        "entry": {"fields": ["CALL"]},
+    }
+    raw.update(changes)
+    return raw
+
+
+def _bytes(raw: dict[str, object]) -> bytes:
+    return json.dumps(raw).encode()
+
+
+def test_a_minimal_overlay_parses() -> None:
+    """An overlay needs only its id, name, summary and the fields it asks for."""
+    assert parse(_bytes(_minimal()), "test.json").name == "Test"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        _minimal(surprise=True),
+        _minimal(entry={"fields": ["NAME"]}),
+        _minimal(entry={"fields": ["CALL", "CALL"]}),
+        _minimal(contest_id="TEST"),
+        _minimal(dupes={"per": ["band"], "rule": "x"}),
+        _minimal(id="Bad Id"),
+        _minimal(format=2),
+    ],
+    ids=[
+        "unknown key",
+        "no call",
+        "field twice",
+        "half a contest",
+        "dupes, no contest",
+        "id",
+        "format",
+    ],
+)
+def test_an_overlay_that_is_not_whole_is_refused(raw: dict[str, object]) -> None:
+    """A wrong overlay is refused, never half-loaded (Principle XII)."""
+    with pytest.raises(OverlayError):
+        parse(_bytes(raw), "test.json")
+
+
+def test_an_overlay_must_be_named_after_its_id() -> None:
+    """The file name and the id agree, so two files can't claim one id."""
+    with pytest.raises(OverlayError, match="named after its id"):
+        parse(_bytes(_minimal()), "other.json")
+
+
+@pytest.mark.parametrize("data", [b"\xff\xfe", b"{", b"[]", b" " * (64 * 1024 + 1)])
+def test_an_overlay_file_that_is_not_json_or_too_large_is_refused(data: bytes) -> None:
+    """Bad bytes, bad JSON, the wrong shape, or too much of it are all refused."""
+    with pytest.raises(OverlayError):
+        parse(data, "test.json")
+
+
+def test_an_exchange_pattern_must_compile() -> None:
+    """A pattern that isn't a regular expression is refused when the file loads."""
+    fd = overlay("arrl-fd")
+    assert fd is not None
+    raw = json.loads(fd.model_dump_json())
+    raw["id"] = "test"
+    raw["exchange"]["received"][0]["pattern"] = "["
+    with pytest.raises(OverlayError, match="pattern"):
+        parse(_bytes(raw), "test.json")

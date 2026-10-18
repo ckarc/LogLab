@@ -1,0 +1,10 @@
+{
+  "format": 1,
+  "id": "everyday",
+  "name": "Everyday logging",
+  "summary": "Ordinary logging under your own call. No contest exchange and no dupe check.",
+  "entry": {
+    "fields": ["CALL", "QSO_DATE", "TIME_ON", "BAND", "MODE", "FREQ", "RST_SENT", "RST_RCVD",
+               "NAME", "QTH", "STATE", "GRIDSQUARE", "COMMENT"]
+  }
+}
