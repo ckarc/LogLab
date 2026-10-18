@@ -80,6 +80,7 @@
       label.hidden = place(label) === fields.length;
       grid.append(label);
     }
+    storeAfter = overlay.entry.store_after && fields.includes(overlay.entry.store_after) ? overlay.entry.store_after : null;
     for (const part of overlay.exchange?.received || []) {
       const input = form[part.field];
       if (input) {
@@ -94,6 +95,29 @@
     clearNote();
     check();
   }
+
+  // Tab moves through New QSO's boxes in the overlay's order. The Store QSO
+  // button stays where it is drawn; when the overlay puts it after a box, Tab
+  // reaches it there, and goes on from it to the next box.
+  let storeAfter = null;
+  form.addEventListener("keydown", (event) => {
+    if (event.key !== "Tab" || !storeAfter || event.altKey || event.ctrlKey || event.metaKey) return;
+    const store = form.querySelector("button[type=submit]");
+    const boxes = [...form.querySelectorAll(".grid > label:not([hidden])")]
+      .map((label) => label.querySelector("input[name], select[name]"))
+      .filter(Boolean);
+    const at = boxes.findIndex((input) => input.name === storeAfter);
+    if (at < 0) return;
+    const order = [...boxes.slice(0, at + 1), store, ...boxes.slice(at + 1)];
+    if (at === boxes.length - 1) return; // already last: the page's own order
+    const here = order.indexOf(event.target);
+    if (here < 0) return;
+    // Past the last box Tab goes round to the first, not back to Store QSO.
+    const next = order[here + (event.shiftKey ? -1 : 1)] || (event.shiftKey ? null : order[0]);
+    if (!next) return; // back out of the first box: the page's own order
+    event.preventDefault();
+    next.focus();
+  });
 
   // The overlay's starting layout, as the page's layout keeps one.
   function arrangement(o) {

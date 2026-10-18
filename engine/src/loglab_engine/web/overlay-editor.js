@@ -124,7 +124,7 @@
 
       <fieldset>
         <legend>New QSO</legend>
-        <p class="hint">Tick the boxes New QSO asks for, and drag them into order. Tab moves through them in this order.</p>
+        <p class="hint">Tick the boxes New QSO asks for, and drag them into order. Tab moves through them in this order, and reaches the Store QSO button where you put it.</p>
         <ol id="ov-fields" class="ov-fields"></ol>
         <label class="inline"><input type="checkbox" name="live"> Stamp each QSO with the time it is stored, unless a time was typed</label>
       </fieldset>
@@ -409,6 +409,45 @@
       item.append(label, up, down);
       list.append(item);
     }
+    // The Store QSO button sits in the same order: after the box the overlay
+    // names, or after the last ticked box.
+    const store = document.createElement("li");
+    store.dataset.store = "true";
+    store.draggable = true;
+    const grip = document.createElement("span");
+    grip.className = "ov-grip";
+    grip.textContent = "⠿";
+    grip.setAttribute("aria-hidden", "true");
+    const label = document.createElement("span");
+    label.className = "ov-store";
+    label.textContent = "Store QSO button";
+    const up = button("↑", () => store.previousElementSibling?.before(store), "secondary small");
+    up.setAttribute("aria-label", "Move the Store QSO button up");
+    const down = button("↓", () => store.nextElementSibling?.after(store), "secondary small");
+    down.setAttribute("aria-label", "Move the Store QSO button down");
+    store.append(grip, label, up, down);
+    const after = draft.entry.store_after || draft.entry.fields[draft.entry.fields.length - 1];
+    const anchor = [...list.children].find((li) => li.dataset.field === after);
+    if (anchor) anchor.after(store);
+    else list.append(store);
+  }
+
+  // Where the Store QSO button goes in Tab order: after the last ticked box
+  // above it, or null when that is the last ticked box of all.
+  function storeAfter() {
+    let last = null;
+    let after = null;
+    let seen = false;
+    for (const li of $("#ov-fields", dialog).children) {
+      if (li.dataset.store) {
+        seen = true;
+        after = last;
+      } else if (li.querySelector("input").checked) {
+        last = li.dataset.field;
+        if (seen && after === null) after = li.dataset.field; // above every box: after the first
+      }
+    }
+    return after === last ? null : after;
   }
 
   // New QSO's boxes are dragged into order by their grip; ↑ and ↓ do the same
@@ -469,8 +508,9 @@
       name: form.o_name.value.trim(),
       summary: form.summary.value.trim(),
       entry: {
-        fields: [...$("#ov-fields", dialog).children].filter((li) => li.querySelector("input").checked).map((li) => li.dataset.field),
+        fields: [...$("#ov-fields", dialog).children].filter((li) => li.dataset.field && li.querySelector("input").checked).map((li) => li.dataset.field),
         live: form.live.checked,
+        store_after: storeAfter(),
       },
       layout: draft.layout,
       gota: false,
