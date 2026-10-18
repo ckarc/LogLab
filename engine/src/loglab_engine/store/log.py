@@ -9,8 +9,8 @@ time, kind) and appends complete snapshots; nothing is updated in place or
 erased (Principle VII). The database enforces the same rules, so a bug here
 fails instead of silently changing the log.
 
-Storing a QSO here does not make it *logged*: that needs a second, independent
-copy (Principle XV), which this module does not provide.
+A QSO is *logged* once its transaction commits (Principle XV): the database
+has it on disk.
 """
 
 from __future__ import annotations
@@ -65,6 +65,10 @@ class StaleVersionError(StoreError):
 
 class NotAuthorizedError(StoreError):
     """The operator is not signed in, or does not hold the permission this needs."""
+
+
+class QsoExistsError(StoreError):
+    """A new QSO was given an ID that a different QSO already has."""
 
 
 class DuplicateImportError(StoreError):
@@ -391,8 +395,41 @@ class LogStore:
                 )
         except errors.UniqueViolation as error:
             msg = f"QSO {new_id} already exists"
-            raise StoreError(msg) from error
+            raise QsoExistsError(msg) from error
         return self.current(new_id)
+
+    def enter_qso(
+        self,
+        record: Record,
+        *,
+        actor: Actor,
+        qso_id: uuid.UUID,
+        note: str | None = None,
+    ) -> tuple[QsoVersion, bool]:
+        """Enter a QSO under the ID its client gave it, or recognise a re-send of it.
+
+        A client keeps each QSO in its journal until it is logged and sends it
+        again if it is unsure the Engine got it. Re-sending the same ID with the
+        same fields creates nothing (Principle XV).
+
+        Returns:
+            The QSO as it stands now, and whether this call created it.
+
+        Raises:
+            QsoExistsError: A different QSO already has ``qso_id``.
+            StoreError: The record cannot be stored.
+        """
+        try:
+            return self.create_qso(record, actor=actor, qso_id=qso_id, note=note), True
+        except QsoExistsError:
+            first = self.history(qso_id)[0]
+            if first.action is not Action.CREATE or _encode_fields(
+                first.record.fields,
+                "record",
+            ) != _encode_fields(record.fields, "record"):
+                msg = f"a different QSO already has the ID {qso_id}"
+                raise QsoExistsError(msg) from None
+            return self.current(qso_id), False
 
     def _append(
         self,
@@ -545,6 +582,14 @@ class LogStore:
         if row is None:
             raise QsoNotFoundError(f"no QSO has ID {qso_id}")
         return _version(row)
+
+    def current_versions(self, qso_ids: Iterable[uuid.UUID]) -> dict[uuid.UUID, int]:
+        """The current version number of each of ``qso_ids`` this log holds."""
+        rows = self._conn.execute(
+            "SELECT id, current_version FROM log.qso WHERE id = ANY(%s)",
+            (list(qso_ids),),
+        ).fetchall()
+        return {uuid.UUID(str(qso_id)): int(version) for qso_id, version in rows}
 
     def history(self, qso_id: uuid.UUID) -> tuple[QsoVersion, ...]:
         """Every version of a QSO, oldest first.

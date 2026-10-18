@@ -25,6 +25,7 @@
         <label>Station <input name="station" required maxlength="64" placeholder="e.g. shack or fd-2" spellcheck="false"></label>
         <button type="submit">Sign in</button>
         <p class="error" role="alert"></p>
+        <p id="sign-in-journal" class="notice" hidden></p>
       </form>
     </section>
 
@@ -50,6 +51,12 @@
           </div>
         </form>
         <p id="stored" class="notice" hidden></p>
+      </section>
+
+      <section id="journal" class="card" hidden>
+        <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
+        <ul id="journal-list"></ul>
+        <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
       </section>
 
       <section class="card">

@@ -10,8 +10,9 @@ Every request except signing in and the status check is made by a signed-in
 operator, who must hold the permission it needs (Principle XIII): ``view`` to
 read, ``log`` to change QSOs. All times are UTC (Principle VIII).
 
-Storing a QSO here does not make it *logged*: that needs a second independent
-copy (Principle XV), which LogLab does not make yet. Responses say so.
+A QSO is logged once the Engine has committed it to the database (Principle
+XV). A client may enter a QSO under an ID it chose when the QSO was typed, so
+sending it again from its journal never creates a duplicate.
 """
 
 from __future__ import annotations
@@ -23,8 +24,18 @@ from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final
 
 import psycopg
-from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import (
+    APIRouter,
+    Depends,
+    FastAPI,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    status,
+)
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -38,6 +49,7 @@ from loglab_engine.store import (
     NotAuthorizedError,
     NotSignedInError,
     Permission,
+    QsoExistsError,
     QsoNotFoundError,
     QsoVersion,
     SignInError,
@@ -50,10 +62,6 @@ if TYPE_CHECKING:
     from psycopg.rows import TupleRow
 
 SOURCE: Final = "https://github.com/ckarc/loglab"
-NOT_LOGGED: Final = (
-    "Stored, not yet logged: a QSO counts as logged only once a second independent copy "
-    "exists (Principle XV), which LogLab does not make yet."
-)
 MAX_FIELDS: Final = 500
 MAX_VALUE: Final = 64 * 1024
 MAX_NAME: Final = 64
@@ -93,8 +101,14 @@ Note = Annotated[str, StringConstraints(max_length=MAX_NOTE)]
 
 
 class QsoCreate(_Strict):
-    """A new QSO: its fields, in order."""
+    """A new QSO: its fields, in order, and optionally the ID its client gave it.
 
+    A client that keeps a journal gives each QSO its ID when it is typed, so
+    sending the same QSO again never creates a second one (Principle XV).
+    """
+
+    # JSON has no UUID type: the ID arrives as text and must parse as one.
+    id: Annotated[uuid.UUID, Field(strict=False)] | None = None
     fields: Annotated[list[AdifFieldModel], Field(min_length=1, max_length=MAX_FIELDS)]
     note: Note | None = None
 
@@ -144,10 +158,10 @@ class QsoOut(BaseModel):
 
 
 class QsoWritten(BaseModel):
-    """The QSO as it stands after a change, and what storing it means."""
+    """The QSO as it stands after a change, which is now logged (Principle XV)."""
 
     qso: QsoOut
-    logged: bool
+    created: bool
     message: str
 
 
@@ -184,8 +198,20 @@ def _qso_out(version: QsoVersion) -> QsoOut:
     )
 
 
-def _written(version: QsoVersion) -> QsoWritten:
-    return QsoWritten(qso=_qso_out(version), logged=False, message=NOT_LOGGED)
+_DONE: Final = {
+    "create": "Logged",
+    "edit": "Saved version {version} of",
+    "delete": "Marked deleted:",
+    "restore": "Restored",
+}
+
+
+def _written(version: QsoVersion, *, created: bool = False) -> QsoWritten:
+    what = _DONE[version.action.value].format(version=version.version)
+    message = f"{what} {version.call or 'QSO'}, by {version.operator} at {version.station}."
+    if version.action.value == "create" and not created:
+        message = f"Already logged: {version.call or 'QSO'}. Nothing was added."
+    return QsoWritten(qso=_qso_out(version), created=created, message=message)
 
 
 def _record(fields: list[AdifFieldModel]) -> Record:
@@ -313,10 +339,22 @@ def get_history(qso_id: uuid.UUID, who: Signed, conn: Conn) -> list[QsoOut]:
 
 
 @api.post("/qsos", status_code=status.HTTP_201_CREATED)
-def create_qso(body: QsoCreate, who: Signed, conn: Conn) -> QsoWritten:
-    """Enter a new QSO. It gets its unique ID now (Principle XV)."""
+def create_qso(body: QsoCreate, who: Signed, conn: Conn, response: Response) -> QsoWritten:
+    """Log a new QSO, under the ID its client gave it if any (Principle XV).
+
+    Sending a QSO again with the same ID and fields returns it as it stands
+    (200, ``created`` false) instead of logging it twice.
+    """
     _require(conn, who, Permission.LOG)
-    return _written(LogStore(conn).create_qso(_record(body.fields), actor=who, note=body.note))
+    store = LogStore(conn)
+    record = _record(body.fields)
+    if body.id is None:
+        version, created = store.create_qso(record, actor=who, note=body.note), True
+    else:
+        version, created = store.enter_qso(record, actor=who, qso_id=body.id, note=body.note)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return _written(version, created=created)
 
 
 @api.put("/qsos/{qso_id}")
@@ -352,6 +390,7 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
     (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
+    (QsoExistsError, status.HTTP_409_CONFLICT),
     (StaleVersionError, status.HTTP_409_CONFLICT),
 )
 

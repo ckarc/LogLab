@@ -5,10 +5,15 @@
 // (Principle I) and loads nothing from the internet (Principle V). The Engine
 // is the authority: after every change this page shows what the Engine
 // returned, not what it sent (Principle II). Every time is UTC (Principle VIII).
+// Each QSO gets its unique ID when it is typed and waits in this browser's
+// journal until the Engine has logged it, so a dropped link never loses one and
+// sending it again never duplicates it (Principle XV).
 "use strict";
 
 (() => {
   const SESSION_KEY = "loglab.session";
+  const JOURNAL_KEY = "loglab.journal";
+  const RETRY_MS = 15000;
   // ADIF 3.1.7 band and mode enumerations most used on the air.
   const BANDS = ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m", "1.25m", "70cm"];
   const MODES = ["SSB", "CW", "FT8", "FT4", "FM", "AM", "RTTY", "PSK", "DIGITALVOICE", "JS8", "OLIVIA", "SSTV"];
@@ -62,6 +67,124 @@
     return JSON.stringify(data.detail);
   }
 
+  // -- Journal: QSOs typed here that the Engine has not logged yet --------
+
+  function newId() {
+    const b = crypto.getRandomValues(new Uint8Array(16));
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    const hex = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
+
+  function readJournal() {
+    try {
+      const saved = JSON.parse(localStorage.getItem(JOURNAL_KEY) || "[]");
+      return Array.isArray(saved) ? saved : [];
+    } catch { return []; }
+  }
+
+  // Returns false when this browser cannot keep a journal (private mode, full).
+  function writeJournal(entries) {
+    try {
+      localStorage.setItem(JOURNAL_KEY, JSON.stringify(entries));
+      return true;
+    } catch { return false; }
+  }
+
+  function updateEntry(id, change) {
+    const entries = readJournal();
+    const next = change === null
+      ? entries.filter((e) => e.id !== id)
+      : entries.map((e) => (e.id === id ? { ...e, ...change } : e));
+    writeJournal(next);
+    renderJournal();
+  }
+
+  function mine(entry) {
+    return session && entry.operator === session.operator && entry.station === session.station;
+  }
+
+  function summary(entry) {
+    const value = (name) => (entry.fields.find((f) => f.name === name) || {}).value || "";
+    const date = value("QSO_DATE");
+    const time = value("TIME_ON");
+    return [value("CALL") || "(no call)", value("BAND"), value("SUBMODE") || value("MODE"),
+      date && `${date.slice(0, 4)}-${date.slice(4, 6)}-${date.slice(6, 8)}`,
+      time && `${time.slice(0, 2)}:${time.slice(2, 4)} UTC`].filter(Boolean).join(" ");
+  }
+
+  function renderJournal() {
+    const entries = readJournal();
+    const list = $("#journal-list");
+    list.replaceChildren();
+    for (const entry of entries) {
+      const item = document.createElement("li");
+      const what = document.createElement("span");
+      what.className = "what";
+      what.textContent = summary(entry);
+      let state;
+      if (entry.problem) state = `refused by the Engine: ${entry.problem}`;
+      else if (!mine(entry)) state = `waiting for ${entry.operator} to sign in at ${entry.station}`;
+      else state = "waiting for the Engine";
+      item.append(what, ` · typed by ${entry.operator} at ${entry.station} · ${state}`);
+      if (entry.problem) {
+        const discard = document.createElement("button");
+        discard.type = "button";
+        discard.className = "link";
+        discard.textContent = "Discard";
+        discard.addEventListener("click", () => {
+          if (confirm(`Discard ${summary(entry)}? The Engine refused it, and it will be gone from this browser.`)) {
+            updateEntry(entry.id, null);
+          }
+        });
+        item.append(" ", discard);
+      }
+      list.append(item);
+    }
+    $("#journal").hidden = entries.length === 0;
+    $("#journal-count").textContent = String(entries.length);
+    const waiting = $("#sign-in-journal");
+    waiting.hidden = entries.length === 0;
+    waiting.textContent = entries.length === 1
+      ? "This browser is holding 1 QSO the Engine has not logged yet. Sign in to send it."
+      : `This browser is holding ${entries.length} QSOs the Engine has not logged yet. Sign in to send them.`;
+  }
+
+  // Send one journal entry. True when the Engine has logged it.
+  async function send(entry) {
+    try {
+      const result = await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
+      updateEntry(entry.id, null);
+      return result;
+    } catch (e) {
+      // Unreachable, an Engine error, or signed out: keep it and try again later.
+      if (e.status === 0 || e.status >= 500 || e.status === 401) return null;
+      updateEntry(entry.id, { problem: e.message });
+      throw e;
+    }
+  }
+
+  let flushing = false;
+
+  async function flushJournal() {
+    if (flushing || !session || !session.permissions.includes("log")) return;
+    flushing = true;
+    let sent = 0;
+    try {
+      for (const entry of readJournal()) {
+        if (entry.problem || !mine(entry)) continue;
+        let result = null;
+        try { result = await send(entry); } catch { continue; }
+        if (result === null) break; // the Engine is out of reach; try again later
+        sent += 1;
+      }
+    } finally {
+      flushing = false;
+    }
+    if (sent) await loadLog();
+  }
+
   // -- Session -----------------------------------------------------------
 
   function remember(value) {
@@ -104,7 +227,9 @@
     }
     if (!mayLog) setError("#entry", "You can view the log but not change it (no log permission).");
     resetEntry();
+    renderJournal();
     loadLog();
+    flushJournal();
   }
 
   async function signIn(event) {
@@ -198,16 +323,34 @@
     }
     const button = $("button[type=submit]", form);
     button.disabled = true;
+    const notice = $("#stored");
+    const entry = {
+      id: newId(),
+      operator: session.operator,
+      station: session.station,
+      fields: entryFields(form),
+      typedAt: new Date().toISOString(),
+      problem: null,
+    };
+    // Into the journal before it goes anywhere (Principle XV).
+    const journaled = writeJournal([...readJournal(), entry]);
+    renderJournal();
     try {
-      const result = await api("POST", "/qsos", { fields: entryFields(form) });
-      const qso = result.qso;
-      const notice = $("#stored");
-      notice.textContent = `${qso.call || "QSO"} stored by ${qso.operator} at ${qso.station}. ${result.message}`;
+      const result = journaled ? await send(entry) : await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
+      if (result === null) {
+        notice.textContent = `${summary(entry)} is saved in this browser but not logged yet: ` +
+          (session ? "the Engine cannot be reached. It will be sent when the Engine is back."
+            : "sign in again to send it.");
+      } else {
+        notice.textContent = result.message;
+        await loadLog();
+      }
       notice.hidden = false;
       resetEntry();
-      await loadLog();
     } catch (e) {
-      setError("#entry", e.message);
+      // The Engine refused it: keep the form so it can be fixed and sent again.
+      if (journaled) updateEntry(entry.id, null);
+      setError("#entry", journaled || e.status !== 0 ? e.message : `${e.message} This browser cannot keep a journal, so the QSO is only in the form.`);
     } finally {
       button.disabled = !session || !session.permissions.includes("log");
     }
@@ -418,6 +561,10 @@
     $("#sign-in-form").addEventListener("submit", signIn);
     $("#sign-out").addEventListener("click", signOut);
     $("#entry").addEventListener("submit", storeQso);
+    $("#send-now").addEventListener("click", flushJournal);
+    window.addEventListener("online", flushJournal);
+    setInterval(flushJournal, RETRY_MS);
+    window.addEventListener("storage", (event) => { if (event.key === JOURNAL_KEY) renderJournal(); });
     $("#now").addEventListener("click", () => {
       const { date, time } = utcNow();
       $("#entry [name=QSO_DATE]").value = date;
@@ -457,6 +604,7 @@
     } catch { /* shown when the first real request fails */ }
 
     restore();
+    renderJournal();
     if (!session) {
       showSignIn();
       return;

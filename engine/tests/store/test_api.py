@@ -121,8 +121,8 @@ def test_enter_edit_delete_restore_and_read_history(
     created = client.post("/api/v1/qsos", headers=k9ksu, json={"fields": W1AW})
     assert created.status_code == 201, created.text
     body = created.json()
-    assert body["logged"] is False  # Principle XV is not claimed
-    assert "not yet logged" in body["message"]
+    assert body["created"] is True
+    assert body["message"] == "Logged W1AW, by K9KSU at shack."  # committed: Principle XV
     qso = body["qso"]
     assert (qso["call"], qso["band"], qso["mode"]) == ("W1AW", "20m", "SSB")
     assert qso["qso_start"] == "2026-10-18T01:36:00Z"  # UTC, Principle VIII
@@ -156,6 +156,30 @@ def test_enter_edit_delete_restore_and_read_history(
     ]
     assert history[0]["fields"][-1] == {"name": "RST_RCVD", "value": "57", "type": None}
     assert all(v["changed_at"].endswith("Z") for v in history)
+
+
+def test_a_journal_can_send_a_qso_again_without_duplicating_it(
+    client: TestClient,
+    k9ksu: dict[str, str],
+    w0xyz: dict[str, str],
+) -> None:
+    """The client's ID makes a re-send harmless; a different QSO under it is refused (XV)."""
+    qso_id = "6f1c2b8e-4d3a-4e2f-9a1b-0c5d7e8f9a10"
+    first = client.post("/api/v1/qsos", headers=k9ksu, json={"id": qso_id, "fields": W1AW})
+    assert first.status_code == 201, first.text
+    assert first.json()["qso"]["id"] == qso_id
+    again = client.post("/api/v1/qsos", headers=w0xyz, json={"id": qso_id, "fields": W1AW})
+    assert again.status_code == 200, again.text
+    assert again.json()["created"] is False
+    assert again.json()["message"] == "Already logged: W1AW. Nothing was added."
+    assert again.json()["qso"]["operator"] == "K9KSU"  # the first entry stands
+    other = [*W1AW[:-1], {"name": "RST_RCVD", "value": "59"}]
+    clash = client.post("/api/v1/qsos", headers=k9ksu, json={"id": qso_id, "fields": other})
+    assert clash.status_code == 409
+    assert "different QSO" in clash.json()["detail"]
+    assert len(client.get("/api/v1/qsos", headers=k9ksu).json()) == 1
+    history = client.get(f"/api/v1/qsos/{qso_id}/history", headers=k9ksu).json()
+    assert [v["action"] for v in history] == ["create"]
 
 
 def test_listing_is_newest_first_and_filters_by_call(
@@ -198,6 +222,7 @@ def test_permissions_are_enforced(
         ({"fields": [{"name": "CALL", "value": "W1AW"}] * 501}, "at most 500"),
         ({"fields": W1AW, "note": "n" * 1001}, "at most 1000"),
         ({"fields": [{"name": "CALL", "value": "a\x00b"}]}, "NUL"),
+        ({"id": "not-a-uuid", "fields": W1AW}, "valid UUID"),
     ],
 )
 def test_bad_input_is_refused_at_the_boundary(
