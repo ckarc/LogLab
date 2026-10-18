@@ -74,3 +74,12 @@ every line. That means:
    rig control, or transmit paths has tests that exercise it.
 3. The pull request states how Brian can see it work.
 4. No new dependency has a license incompatible with the AGPL-3.0.
+
+## Merging
+
+Pull requests merge automatically once every required gate passes; Brian
+does not approve each one. After opening a pull request, turn on auto-merge
+for it (`gh pr merge --auto --merge`). Do not turn it on for a pull request
+that changes `CONSTITUTION.md`, this file, `AGENTS.md`, the CI workflows, or
+the license allowlist: Brian merges those himself. Never weaken a gate,
+skip a test, or edit CI to get a pull request to merge.
