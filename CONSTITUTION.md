@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 1.1.0                                                                                  |
+| **Version**    | 1.2.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -304,31 +304,32 @@ and rewritten.
 power loss between the steps leaves every reader with nothing — and field
 stations lose power. Write-then-swap makes that window disappear.*
 
-### XV. The Log Survives The Loss Of Any One Machine
+### XV. A Logged QSO Is Durably Stored And Recoverable
 
-A QSO counts as logged only when it is durably stored in at least two
-independent places. No single failure — the Engine's machine, its disk, its
-power supply, a client laptop, a network cable — may lose a QSO the system
-has told an operator was logged.
+A QSO counts as logged once the Engine has committed it to durable storage
+(Principle XIV). Logging never waits on a second machine: a tablet, a
+workstation that is switched off, or a missing network link never holds a QSO
+back from being logged.
 
 Every client keeps a local journal of each QSO it submits until the Engine
-confirms the QSO is durably stored in both places, and the client shows the
-operator which entries are still unconfirmed. The Engine continuously
-replicates the log to an independent standby or backup target as part of
-normal operation, not as a scheduled afterthought. Every QSO carries a unique
-identifier assigned when it is first entered, so replaying a journal or
-restoring a backup never creates a duplicate.
+confirms the QSO is logged, and the client shows the operator which entries are
+still unconfirmed, so a QSO entered while the Engine is out of reach is sent
+when it is back. Every QSO carries a unique identifier assigned when it is
+first entered, so replaying a journal or restoring a backup never creates a
+duplicate.
 
-Recovery is a documented, tested procedure: after any single failure, the log
-is rebuilt from the surviving copies and the client journals with no confirmed
-QSO lost. Like everything else, this works with no internet connection
+The Engine can keep further copies of the log — on another machine at the
+station, or off site — and recovery from them is a documented, tested
+procedure. Further copies protect the log; they are never a condition for
+logging. Like everything else, this works with no internet connection
 (Principle V).
 
-*Why this is inviolable: Principles VII and XIV keep the log from being
-silently changed or half-written, but neither helps when the hardware holding
-it dies. Field stations run on generators, folding tables, and laptops people
-trip over. A contest log that exists on one disk is one bad moment from being
-gone — and a contact, once lost, can't be re-made.*
+*Why this is inviolable: a logger that will not call a contact logged because
+a tablet or a switched-off workstation has not answered fails operators at the
+moment they need it. But field stations run on generators, folding tables, and
+laptops people trip over, and a contact, once lost, can't be re-made — so the
+log is committed durably before it is called logged, nothing an operator
+entered is dropped on the way, and the log can be rebuilt when hardware dies.*
 
 ### XVI. Original Work, Clean Sources
 
@@ -546,6 +547,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 0.6.0   | 2026-10-17 | Named the project LogLab, at github.com/ckarc/loglab. All open items closed. |
 | 1.0.0   | 2026-10-17 | Ratified by the maintainer, Brian Krenzin, K9KSU. Status `STABLE`. No principle changed from 0.6.0. The post-1.0.0 versioning rules now apply. |
 | 1.1.0   | 2026-10-18 | Dropped per-change maintainer approval as a merge gate: pull requests merge automatically once every required gate passes. Governance changes are still merged by the maintainer. Principle XVIII no longer lists required review; Principle XIX names stopping and reverting as maintainer decisions. Rationale: the maintainer manages outcomes and does not read code, so a per-change approval added delay without adding review; the gates are the review (Principle XVII). |
+| 1.2.0   | 2026-10-18 | Narrowed Principle XV: a QSO counts as logged once the Engine has committed it to durable storage; a second independent copy is no longer a condition for logging. Client journals, unique QSO identifiers, further copies, and tested recovery remain. Situation: the Field Lab station runs with no internet, and its operating positions include tablets and workstations that are not always on; requiring a second copy before a QSO counts as logged would leave every QSO unconfirmed whenever the second machine is a tablet, switched off, or out of reach, a worse outcome than logging on the Engine's durable commit. Decided by the maintainer. |
 
 ---
 
