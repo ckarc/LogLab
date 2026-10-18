@@ -14,8 +14,12 @@ dependencies = []
 [project.urls]
 Homepage = "https://github.com/ckarc/loglab"
 
+[project.scripts]
+loglab-adif = "loglab_engine.cli.adif:run"
+
 [dependency-groups]
 dev = [
+    "hypothesis>=6.140",
     "mypy>=1.18",
     "pytest>=8.4",
     "ruff>=0.14",
@@ -79,11 +83,18 @@ select = [
     "W",    # pycodestyle warnings
 ]
 
+# TRY003 flags every error message built at the raise site, which is how
+# parse errors carry their location; the message is the useful part.
+ignore = ["TRY003"]
+
 [tool.ruff.lint.pydocstyle]
 convention = "google"
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S101"]  # pytest uses assert
+"tests/**" = [
+    "S101",     # pytest uses assert
+    "PLR2004",  # expected values in tests are the point, not magic
+]
 
 # --- Tests (merge gate) ---------------------------------------------------
 

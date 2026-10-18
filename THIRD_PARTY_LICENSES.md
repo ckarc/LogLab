@@ -21,5 +21,6 @@ They are listed for transparency and are held to the same license policy.
 | mypy           | Engine strict type check    | MIT                        |
 | Ruff           | Engine lint and format      | MIT                        |
 | pytest         | Engine tests                | MIT                        |
+| Hypothesis     | Engine property-based tests | MPL-2.0                    |
 | Rust toolchain | Agent build, Clippy, rustfmt | MIT OR Apache-2.0         |
 | cargo-deny     | Agent license check         | MIT OR Apache-2.0          |
