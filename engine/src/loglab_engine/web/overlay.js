@@ -131,8 +131,23 @@
     const gota = Boolean(LogLab.layout().operation?.gota && operation?.gota_call);
     name.hidden = !operation;
     if (operation) {
-      name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}`;
+      const when = shortHours(operation);
+      name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}${when ? ` · ${when}` : ""}`;
     }
+  }
+
+  // An operation's hours, short enough for the label: "Jan 30 1600 – Jan 31 2159".
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  function shortHours(op) {
+    const at = (iso) => {
+      const d = new Date(iso);
+      const hhmm = `${String(d.getUTCHours()).padStart(2, "0")}${String(d.getUTCMinutes()).padStart(2, "0")}`;
+      return `${MONTHS[d.getUTCMonth()]} ${d.getUTCDate()} ${hhmm}`;
+    };
+    if (op.starts_at && op.ends_at) return `${at(op.starts_at)} – ${at(op.ends_at)}`;
+    if (op.starts_at) return `from ${at(op.starts_at)}`;
+    if (op.ends_at) return `until ${at(op.ends_at)}`;
+    return "";
   }
 
   // Zeros in callsigns are written slashed, as everywhere else on the page.
