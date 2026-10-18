@@ -42,8 +42,6 @@ def test_insert_reads_logid_either_way_the_guide_writes_it() -> None:
     """The guide documents LOGID; its own example answers with LOGIDS."""
     assert _client(b"RESULT=OK&LOGID=7&COUNT=1").insert("k", "<call:4>W1AW<eor>").logid == 7
     assert _client(b"RESULT=OK&LOGIDS=8&COUNT=1").insert("k", "x").logid == 8
-    replaced = _client(b"RESULT=REPLACE&LOGID=9").insert("k", "x", replace=True)
-    assert replaced.outcome is InsertOutcome.REPLACED
     refused = _client(b"RESULT=FAIL&REASON=duplicate").insert("k", "x")
     assert (refused.outcome, refused.logid, refused.reason) == (
         InsertOutcome.REFUSED,

@@ -213,22 +213,22 @@ def test_edits_deletes_and_restores_follow_the_log(
     sync.run_once()
     (first,) = qrz.books[KEY]
 
-    # A correction to a field QRZ.com does not match on replaces the copy in place.
+    # An edit removes LogLab's own copy and sends the QSO as it stands now.
     fields = [*W1AW, {"name": "NAME", "value": "Hiram"}]
     edited = client.put(
         f"/api/v1/qsos/{qso_id}", headers=k9ksu, json={"base_version": 1, "fields": fields}
     )
     assert edited.status_code == 200
     sync.run_once()
-    assert qrz.books[KEY] == {first: qrz.books[KEY][first]}
-    assert qrz.books[KEY][first]["NAME"] == "Hiram"
+    ((second, qso),) = qrz.books[KEY].items()
+    assert second != first
+    assert qso["NAME"] == "Hiram"
 
-    # A corrected call is a different QSO to QRZ.com: the old copy is removed.
     fields = [{**f, "value": "W1AX"} if f["name"] == "CALL" else f for f in fields]
     client.put(f"/api/v1/qsos/{qso_id}", headers=k9ksu, json={"base_version": 2, "fields": fields})
     sync.run_once()
     ((logid, qso),) = qrz.books[KEY].items()
-    assert logid != first
+    assert logid not in {first, second}
     assert qso["CALL"] == "W1AX"
 
     client.post(f"/api/v1/qsos/{qso_id}/delete", headers=k9ksu, json={})
@@ -238,6 +238,38 @@ def test_edits_deletes_and_restores_follow_the_log(
     sync.run_once()
     assert [q["CALL"] for q in qrz.books[KEY].values()] == ["W1AX"]
     assert _status(client, k9ksu)["sent"] == 1
+
+
+def test_qsos_qrz_got_another_way_are_never_touched(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeLogbook, sync: LogbookSync
+) -> None:
+    """A QSO QRZ.com got from LoTW is never changed or removed, whatever LogLab does."""
+    lotw = {
+        "CALL": "K0ABC",
+        "QSO_DATE": "20261018",
+        "TIME_ON": "0136",
+        "BAND": "20m",
+        "MODE": "SSB",
+        "APP_QRZLOG_STATUS": "C",
+    }
+    qrz.books[KEY][1] = dict(lotw)
+    _save(client, k9ksu)
+    # The same QSO typed into LogLab: QRZ.com says it has it, and keeps its own.
+    same = _log(client, k9ksu, CALL="K0ABC")
+    sync.run_once()
+    assert qrz.books[KEY] == {1: lotw}
+    assert _status(client, k9ksu)["refused"] == 1
+    # A LogLab QSO edited to match it, then deleted: QRZ.com's copy stays as it was.
+    other = _log(client, k9ksu, CALL="W1AW")
+    sync.run_once()
+    fields = [{**f, "value": "K0ABC"} if f["name"] == "CALL" else f for f in W1AW]
+    client.put(f"/api/v1/qsos/{other}", headers=k9ksu, json={"base_version": 1, "fields": fields})
+    sync.run_once()
+    for qso_id in (same, other):
+        client.post(f"/api/v1/qsos/{qso_id}/delete", headers=k9ksu, json={})
+    sync.run_once()
+    assert qrz.books[KEY] == {1: lotw}
+    assert all(q.get("LOGIDS") != "1" for q in qrz.asked)
 
 
 def test_a_qso_qrz_refuses_is_reported_and_not_sent_again(
