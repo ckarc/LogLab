@@ -37,6 +37,16 @@
     tables: {},
   });
   const SAVE_AFTER_MS = 400;
+  // One box on a page of its own: /?module=map shows only the section map,
+  // full width, for a second screen or a bookmark. The journal still shows
+  // when a QSO is waiting (Principle XV), and a QSO opened from the log
+  // still opens its detail. The operator's saved layout is left alone.
+  const POPPABLE = ["entry", "log", "map"];
+  const SOLO = (() => {
+    const id = new URLSearchParams(location.search).get("module");
+    return POPPABLE.includes(id) ? id : null;
+  })();
+  const ALONE_WITH = new Set([SOLO, "journal", "detail"]);
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -270,6 +280,7 @@
   // Is this box on the page now? Boxes that show only when needed (Not
   // logged yet, QSO detail) take their place while the page is unlocked.
   function shown(m) {
+    if (SOLO) return ALONE_WITH.has(m.id) && !moduleEl(m.id).hidden;
     return !m.hidden && (arranging() || !moduleEl(m.id).hidden);
   }
 
@@ -302,7 +313,7 @@
     for (const m of layout.modules) {
       const el = moduleEl(m.id);
       if (!shown(m)) continue;
-      const [from, to] = tracksFor(m.width, m.side, wide);
+      const [from, to] = SOLO ? [0, 6] : tracksFor(m.width, m.side, wide);
       el.style.gridColumn = `${from + 1} / ${to + 1}`;
       const top = Math.max(...heights.slice(from, to));
       const tall = Math.max(1, Math.ceil(el.offsetHeight));
@@ -324,7 +335,7 @@
     layout.modules.forEach((m, index) => {
       const el = moduleEl(m.id);
       el.style.order = String(index);
-      el.classList.toggle("off", m.hidden);
+      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden);
       el.dataset.width = m.width;
       el.dataset.place = m.width === "full" ? "full" : m.side;
       for (const b of el.querySelectorAll(".module-head [data-width]")) {
@@ -611,6 +622,32 @@
       // These boxes come and go; place the rest around them each time.
       new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
       sizes.observe(box);
+    }
+  }
+
+  // A box in a window of its own, to drag onto a second screen. Where the
+  // browser can tell (Chrome, at http://127.0.0.1 or over HTTPS), and the
+  // operator allows it, the window opens on the other screen by itself.
+  function popOut(id) {
+    const win = window.open(`/?module=${id}`, `loglab-${id}`, "popup,width=1200,height=820");
+    if (!win || !("getScreenDetails" in window)) return;
+    window.getScreenDetails().then((screens) => {
+      const other = screens.screens.find((s) => s !== screens.currentScreen);
+      if (!other) return;
+      win.moveTo(other.availLeft, other.availTop);
+      win.resizeTo(other.availWidth, other.availHeight);
+    }).catch(() => { /* not allowed: the operator drags it over */ });
+  }
+
+  function buildPopOuts() {
+    for (const id of POPPABLE) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "link popout";
+      button.textContent = "⧉ Pop out";
+      button.title = `Open ${MODULES[id]} in a window of its own, to put on another screen`;
+      button.addEventListener("click", () => popOut(id));
+      $("h2", moduleEl(id)).append(button);
     }
   }
 
@@ -962,7 +999,8 @@
     $("#app").hidden = false;
     $("#who").hidden = false;
     $("#sign-out").hidden = false;
-    $("#arrange").hidden = false;
+    $("#arrange").hidden = Boolean(SOLO); // a page of one box has nothing to arrange
+    $("#all-boxes").hidden = !SOLO;
     $("#who").textContent = `${session.operator} at ${session.station}`;
     const mayLog = session.permissions.includes("log");
     for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore, #add-field")) {
@@ -1367,6 +1405,12 @@
       load: () => (session && !$("#app").hidden ? loadLog() : null),
     });
     buildModuleHeads();
+    if (SOLO) {
+      document.body.classList.add("solo");
+      document.title = `${MODULES[SOLO]} · LogLab`;
+    } else {
+      buildPopOuts();
+    }
     applyLayout();
     fillSelect($("#entry [name=BAND]"), BANDS);
     fillSelect($("#entry [name=MODE]"), MODES);
@@ -1391,7 +1435,13 @@
     $("#send-now").addEventListener("click", flushJournal);
     window.addEventListener("online", flushJournal);
     setInterval(flushJournal, RETRY_MS);
-    window.addEventListener("storage", (event) => { if (event.key === JOURNAL_KEY) renderJournal(); });
+    // Another window of this browser (a popped-out box) changed the journal,
+    // so a QSO may have just been logged there: show it here too.
+    window.addEventListener("storage", (event) => {
+      if (event.key !== JOURNAL_KEY) return;
+      renderJournal();
+      if (session && !$("#app").hidden) loadLog();
+    });
     $("#now").addEventListener("click", () => {
       const { date, time } = utcNow();
       $("#entry [name=QSO_DATE]").value = date;
