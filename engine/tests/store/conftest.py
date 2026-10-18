@@ -21,7 +21,7 @@ import psycopg
 import pytest
 from psycopg import sql
 
-from loglab_engine.store import connect, migrate
+from loglab_engine.store import LogStore, connect, migrate
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -93,3 +93,9 @@ def conn(database: str) -> Iterator[psycopg.Connection[TupleRow]]:
     """An autocommit UTC connection to this test's database."""
     with connect(conninfo(database)) as connection:
         yield connection
+
+
+@pytest.fixture
+def store(conn: psycopg.Connection[TupleRow]) -> LogStore:
+    """The log store on this test's database."""
+    return LogStore(conn)
