@@ -13,6 +13,7 @@
   --glow-3: rgba(0, 196, 180, 0.28);
   --glass: rgba(255, 255, 255, 0.66);
   --glass-strong: rgba(255, 255, 255, 0.78);
+  --panel: rgba(250, 251, 255, 0.97);
   --glass-edge: rgba(255, 255, 255, 0.75);
   --glass-line: rgba(30, 40, 70, 0.10);
   --field: rgba(255, 255, 255, 0.70);
@@ -42,6 +43,7 @@
     --glow-3: rgba(0, 190, 170, 0.20);
     --glass: rgba(22, 28, 48, 0.62);
     --glass-strong: rgba(26, 32, 56, 0.80);
+    --panel: rgba(22, 28, 48, 0.97);
     --glass-edge: rgba(255, 255, 255, 0.14);
     --glass-line: rgba(255, 255, 255, 0.08);
     --field: rgba(255, 255, 255, 0.06);
@@ -251,6 +253,49 @@ table.fields td { padding: 4px 6px; border-bottom: none; }
 table.fields td:first-child { width: 30%; }
 table.fields td:last-child { width: 1%; }
 
+/* -- Tables the operator shapes ---------------------------------------- */
+
+.table-tools { margin-left: auto; position: relative; }
+.chooser {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  z-index: 20;
+  width: min(360px, calc(100vw - 32px));
+  max-height: 70vh;
+  overflow-y: auto;
+  margin: 0;
+  padding: 16px;
+  /* Blur does not reach through the card it opens over, so stay nearly solid. */
+  background: var(--panel);
+}
+.chooser h3 { margin: 0 0 8px; font-size: 13px; color: var(--muted); }
+.chooser h3:not(:first-child) { margin-top: 14px; }
+.chooser ol, .chooser ul { margin: 0; padding: 0; list-style: none; }
+.chooser li { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+.chooser li label { flex: 1; color: var(--text); font-size: 14px; }
+.chooser li button { padding: 2px 9px; }
+.chooser .error { font-size: 13px; margin-top: 6px; }
+.chooser > .hint { margin: 14px 0 10px; }
+
+th.movable { cursor: grab; user-select: none; touch-action: pan-y; }
+th.movable.dragging { opacity: 0.5; cursor: grabbing; }
+th.drop-before { box-shadow: inset 3px 0 0 var(--accent); }
+th.drop-after { box-shadow: inset -3px 0 0 var(--accent); }
+th .sort {
+  font: inherit;
+  color: inherit;
+  letter-spacing: inherit;
+  text-transform: inherit;
+  background: none;
+  border: none;
+  box-shadow: none;
+  padding: 0;
+  cursor: pointer;
+}
+th .sort:hover { color: var(--accent); filter: none; }
+th[aria-sort] { color: var(--accent); }
+
 /* -- Not logged yet ---------------------------------------------------- */
 
 #journal { background: var(--notice); border-color: var(--notice-edge); }
@@ -334,6 +379,9 @@ body.arranging .module[hidden] .placeholder { display: block; }
   .who { display: none; }
   #arrange { margin-left: auto; }
   .filters input[type="search"] { width: 100%; }
+  .table-tools { position: static; }
+  .chooser { left: 0; right: 0; width: auto; }
+  .filters { position: relative; }
   .workspace { grid-template-columns: minmax(0, 1fr); gap: 14px; }
   .module, .module.half { grid-column: 1 / -1; }
   .module-head [data-act="width"] { display: none; } /* one column: width does not apply */

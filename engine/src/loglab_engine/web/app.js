@@ -9,7 +9,9 @@
 // journal until the Engine has logged it, so a dropped link never loses one and
 // sending it again never duplicates it (Principle XV).
 // Each box on the page is a module the operator can move, widen, or hide. The
-// Engine keeps their layout, so it follows them to any workstation.
+// Engine keeps their layout, so it follows them to any workstation. Every
+// table is shaped the same way: the operator picks its columns, drags them
+// into order, and sorts it; the Engine does the sorting, over the whole log.
 "use strict";
 
 (() => {
@@ -30,8 +32,13 @@
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
     modules: Object.keys(MODULES).map((id) => ({ id, width: "full", hidden: false })),
+    tables: {},
   });
   const SAVE_AFTER_MS = 400;
+  // The same checks the Engine makes on a saved table (Principle XII).
+  const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
+  const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
+  const MAX_COLUMNS = 40;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   let session = null;
@@ -228,7 +235,24 @@
     for (const id of Object.keys(MODULES)) {
       if (!seen.has(id)) modules.push({ id, width: "full", hidden: false });
     }
-    return { version: 1, modules };
+    const tables = {};
+    for (const id of Object.keys(TABLES)) {
+      const t = saved && saved.tables && saved.tables[id];
+      if (!t || !Array.isArray(t.columns)) continue;
+      const names = new Set();
+      const columns = t.columns.filter((c) => {
+        const ok = typeof c === "string" && COLUMN_ID.test(c) && !names.has(c.toLowerCase());
+        if (ok) names.add(c.toLowerCase());
+        return ok;
+      }).slice(0, MAX_COLUMNS);
+      if (!columns.length) continue;
+      tables[id] = {
+        columns,
+        sort: typeof t.sort === "string" && SORT_KEY.test(t.sort) ? t.sort : "entered",
+        descending: t.descending !== false,
+      };
+    }
+    return { version: 1, modules, tables };
   }
 
   // The page's order never changes, only where each box is drawn, so the
@@ -295,6 +319,7 @@
       layout = normalize(DEFAULT_LAYOUT); // shown as the default until the Engine answers
     }
     applyLayout();
+    for (const table of Object.values(TABLES)) table.refresh();
   }
 
   function arrange(on) {
@@ -400,6 +425,303 @@
     }
   }
 
+  // -- Tables: columns the operator chooses, orders, and sorts -----------
+
+  const TABLES = {};
+
+  // Make `table` (a <table> with a <thead> and <tbody>) one the operator can
+  // shape. `column(id)` describes a column: its label, the key the Engine
+  // sorts it by (or null), and how to show a row in it. `suggested` lists
+  // columns offered in the chooser; any ADIF field can be added by name.
+  // `load()` fetches rows again, sorted as `state()` says.
+  function makeTable({ id, table, toolbar, column, suggested, defaults, load }) {
+    const head = table.tHead.rows[0];
+    const chooserButton = document.createElement("button");
+    chooserButton.type = "button";
+    chooserButton.className = "small secondary";
+    chooserButton.textContent = "Columns";
+    chooserButton.setAttribute("aria-expanded", "false");
+    const chooser = document.createElement("div");
+    chooser.className = "chooser card";
+    chooser.hidden = true;
+    chooser.setAttribute("role", "dialog");
+    chooser.setAttribute("aria-label", "Choose columns");
+    chooserButton.setAttribute("aria-controls", (chooser.id = `${id}-columns`));
+    toolbar.append(chooserButton, chooser);
+
+    const state = () => layout.tables[id] || defaults;
+
+    function setState(change) {
+      layout.tables = { ...layout.tables, [id]: { ...state(), ...change } };
+      saveLayout();
+      refresh();
+    }
+
+    function setColumns(columns) {
+      setState({ columns });
+    }
+
+    function defaultDescending(key) {
+      return ["entered", "qso_start", "changed_at", "version"].includes(key);
+    }
+
+    // First click sorts, the second reverses, the third goes back to the
+    // order the QSOs were entered.
+    function sortBy(key) {
+      const now = state();
+      if (now.sort !== key) setState({ sort: key, descending: defaultDescending(key) });
+      else if (now.descending === defaultDescending(key)) setState({ descending: !now.descending });
+      else setState({ sort: defaults.sort, descending: defaults.descending });
+    }
+
+    function describeSort() {
+      const now = state();
+      if (now.sort === "entered") return now.descending ? "newest entered first" : "oldest entered first";
+      const shown = now.columns.map(column).find((c) => c.sort === now.sort);
+      const name = shown ? shown.label : column(now.sort === "qso_start" ? "date" : now.sort).label;
+      return `sorted by ${name}, ${now.descending ? "high to low" : "low to high"}`;
+    }
+
+    // -- Header: click to sort, drag to reorder --
+    let dragged = false;
+
+    function startColumnDrag(event, th, index) {
+      if (event.button !== 0) return;
+      const x0 = event.clientX;
+      const y0 = event.clientY;
+      let target = null;
+      dragged = false;
+      th.setPointerCapture(event.pointerId);
+      const clear = () => {
+        for (const cell of head.cells) cell.classList.remove("drop-before", "drop-after", "dragging");
+      };
+      const onMove = (e) => {
+        if (!dragged && Math.hypot(e.clientX - x0, e.clientY - y0) < 6) return;
+        dragged = true;
+        clear();
+        th.classList.add("dragging");
+        target = null;
+        for (const [i, cell] of [...head.cells].entries()) {
+          const box = cell.getBoundingClientRect();
+          if (e.clientX >= box.left && e.clientX <= box.right) {
+            const after = e.clientX > box.left + box.width / 2;
+            target = i + (after ? 1 : 0);
+            if (i !== index) cell.classList.add(after ? "drop-after" : "drop-before");
+          }
+        }
+      };
+      const onUp = () => {
+        th.removeEventListener("pointermove", onMove);
+        th.removeEventListener("pointerup", onUp);
+        th.removeEventListener("pointercancel", onUp);
+        clear();
+        if (!dragged || target === null) return;
+        const columns = [...state().columns];
+        const [moved] = columns.splice(index, 1);
+        columns.splice(target > index ? target - 1 : target, 0, moved);
+        setColumns(columns);
+      };
+      th.addEventListener("pointermove", onMove);
+      th.addEventListener("pointerup", onUp);
+      th.addEventListener("pointercancel", onUp);
+    }
+
+    function renderHead() {
+      const now = state();
+      const cells = now.columns.map((key, index) => {
+        const c = column(key);
+        const th = document.createElement("th");
+        th.dataset.column = key;
+        th.className = "movable";
+        th.title = c.sort ? "Click to sort. Drag to move." : "Drag to move.";
+        const sorted = c.sort && c.sort === now.sort;
+        if (sorted) th.setAttribute("aria-sort", now.descending ? "descending" : "ascending");
+        if (c.sort) {
+          const button = document.createElement("button");
+          button.type = "button";
+          button.className = "sort";
+          button.textContent = c.label;
+          if (sorted) {
+            const arrow = document.createElement("span");
+            arrow.className = "arrow";
+            arrow.setAttribute("aria-hidden", "true");
+            arrow.textContent = now.descending ? " ▼" : " ▲";
+            button.append(arrow);
+          }
+          th.append(button);
+        } else {
+          th.textContent = c.label;
+        }
+        th.addEventListener("pointerdown", (event) => startColumnDrag(event, th, index));
+        th.addEventListener("click", () => {
+          if (dragged) { dragged = false; return; }
+          if (c.sort) sortBy(c.sort);
+        });
+        return th;
+      });
+      head.replaceChildren(...cells);
+    }
+
+    // -- Chooser: show, hide, order, add any ADIF field --
+    function chooserRow(key, shown, index, count) {
+      const c = column(key);
+      const li = document.createElement("li");
+      const label = document.createElement("label");
+      label.className = "inline";
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.checked = shown;
+      box.dataset.key = key;
+      box.dataset.act = "toggle";
+      box.disabled = shown && count === 1; // a table keeps at least one column
+      box.addEventListener("change", () => {
+        const columns = state().columns;
+        if (box.checked) {
+          if (columns.length < MAX_COLUMNS) setColumns([...columns, key]);
+        } else {
+          setColumns(columns.filter((k) => k !== key));
+        }
+      });
+      label.append(box, ` ${c.label}`);
+      li.append(label);
+      if (shown) {
+        for (const [act, text, step] of [["up", "↑", -1], ["down", "↓", 1]]) {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "small secondary";
+          b.textContent = text;
+          b.dataset.key = key;
+          b.dataset.act = act;
+          b.setAttribute("aria-label", `Move ${c.label} ${step < 0 ? "left" : "right"}`);
+          b.disabled = step < 0 ? index === 0 : index === count - 1;
+          b.addEventListener("click", () => {
+            const columns = [...state().columns];
+            columns.splice(index, 1);
+            columns.splice(index + step, 0, key);
+            setColumns(columns);
+          });
+          li.append(b);
+        }
+      }
+      return li;
+    }
+
+    function renderChooser() {
+      const focused = document.activeElement;
+      const again = chooser.contains(focused) && focused.dataset.act
+        ? `[data-key="${focused.dataset.key}"][data-act="${focused.dataset.act}"]` : null;
+      const now = state();
+      const shown = document.createElement("ol");
+      now.columns.forEach((key, i) => shown.append(chooserRow(key, true, i, now.columns.length)));
+      const lower = new Set(now.columns.map((k) => k.toLowerCase()));
+      const more = document.createElement("ul");
+      for (const key of suggested) {
+        if (!lower.has(key.toLowerCase())) more.append(chooserRow(key, false, 0, 0));
+      }
+      const add = document.createElement("form");
+      add.className = "row";
+      const name = document.createElement("input");
+      name.placeholder = "Any ADIF field, like GRIDSQUARE";
+      name.maxLength = 64;
+      name.spellcheck = false;
+      name.dataset.key = "add";
+      name.dataset.act = "name";
+      name.setAttribute("aria-label", "ADIF field to add as a column");
+      const addButton = document.createElement("button");
+      addButton.type = "submit";
+      addButton.className = "small";
+      addButton.textContent = "Add";
+      const problem = document.createElement("p");
+      problem.className = "error";
+      problem.setAttribute("role", "alert");
+      add.append(name, addButton);
+      add.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const key = `field:${name.value.trim().toUpperCase()}`;
+        if (!COLUMN_ID.test(key)) {
+          problem.textContent = "A field name starts with a letter and has only letters, digits, and _.";
+        } else if (lower.has(key.toLowerCase())) {
+          problem.textContent = "That column is already shown.";
+        } else if (now.columns.length >= MAX_COLUMNS) {
+          problem.textContent = `A table shows at most ${MAX_COLUMNS} columns.`;
+        } else {
+          setColumns([...now.columns, key]);
+        }
+      });
+      const reset = document.createElement("button");
+      reset.type = "button";
+      reset.className = "small secondary";
+      reset.textContent = "Reset columns";
+      reset.dataset.key = "reset";
+      reset.dataset.act = "reset";
+      reset.addEventListener("click", () => setState({ ...defaults }));
+      const title = (text) => {
+        const h = document.createElement("h3");
+        h.textContent = text;
+        return h;
+      };
+      const sortLine = document.createElement("p");
+      sortLine.className = "hint";
+      sortLine.textContent = `Now ${describeSort()}. Click a column heading to sort by it; click again to reverse, and a third time for the order entered.`;
+      chooser.replaceChildren(title("Shown, left to right"), shown,
+        ...(more.children.length ? [title("More columns"), more] : []),
+        title("Add a field"), add, problem, sortLine, reset);
+      if (again) {
+        const el = $(again, chooser);
+        if (el && !el.disabled) el.focus();
+      }
+    }
+
+    function openChooser(open) {
+      chooser.hidden = !open;
+      chooserButton.setAttribute("aria-expanded", String(open));
+      if (open) {
+        renderChooser();
+        const first = $("input, button", chooser);
+        if (first) first.focus();
+      }
+    }
+
+    chooserButton.addEventListener("click", () => openChooser(chooser.hidden));
+    chooser.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        openChooser(false);
+        chooserButton.focus();
+      }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!chooser.hidden && !chooser.contains(event.target) && event.target !== chooserButton) openChooser(false);
+    });
+
+    function refresh() {
+      renderHead();
+      if (!chooser.hidden) renderChooser();
+      load();
+    }
+
+    // Show `rows`, one <tr> each; `decorate(tr, row)` adds classes and handlers.
+    function render(rows, decorate) {
+      const columns = state().columns.map(column);
+      const body = table.tBodies[0];
+      body.replaceChildren(...rows.map((row) => {
+        const tr = document.createElement("tr");
+        for (const c of columns) {
+          const td = document.createElement("td");
+          td.textContent = c.render(row);
+          if (c.className) td.className = c.className;
+          tr.append(td);
+        }
+        decorate(tr, row);
+        return tr;
+      }));
+    }
+
+    const handle = { state, refresh, render, describeSort };
+    TABLES[id] = handle;
+    renderHead();
+    return handle;
+  }
+
   // -- Session -----------------------------------------------------------
 
   function remember(value) {
@@ -428,6 +750,7 @@
     clearTimeout(saveTimer);
     layout = normalize(DEFAULT_LAYOUT);
     applyLayout();
+    for (const table of Object.values(TABLES)) table.refresh();
     $("#sign-in").hidden = false;
     $("#sign-in-form .error").textContent = message;
     const station = $("#sign-in-form [name=station]");
@@ -449,8 +772,7 @@
     if (!mayLog) setError("#entry", "You can view the log but not change it (no log permission).");
     resetEntry();
     renderJournal();
-    loadLayout();
-    loadLog();
+    loadLayout(); // then shows the log, sorted the operator's way
     flushJournal();
   }
 
@@ -610,17 +932,35 @@
     return text ? text.slice(11, 16) : "";
   }
 
-  function cell(row, text, className) {
-    const td = document.createElement("td");
-    td.textContent = text;
-    if (className) td.className = className;
-    row.append(td);
+  const LOG_COLUMNS = {
+    date: { label: "Date", sort: "qso_start", render: (q) => utcDate(q.qso_start) || field(q, "QSO_DATE") },
+    time: { label: "Time", sort: "qso_start", render: (q) => utcTime(q.qso_start) || field(q, "TIME_ON") },
+    call: { label: "Call", sort: "call", render: (q) => q.call || "(no call)", className: "call" },
+    band: { label: "Band", sort: "band", render: (q) => q.band || "" },
+    mode: { label: "Mode", sort: "mode", render: (q) => field(q, "SUBMODE") || q.mode || "" },
+    operator: { label: "By", sort: "operator", render: (q) => q.operator },
+    station: { label: "Station", sort: "station", render: (q) => q.station },
+    version: { label: "Ver", sort: "version", render: (q) => String(q.version) },
+    changed_at: { label: "Changed (UTC)", sort: "changed_at", render: (q) => q.changed_at.slice(0, 16).replace("T", " ") },
+  };
+  const FIELD_LABELS = {
+    FREQ: "Freq (MHz)", RST_SENT: "RST sent", RST_RCVD: "RST rcvd", NAME: "Name", COMMENT: "Comment",
+    GRIDSQUARE: "Grid", QTH: "QTH", STATE: "State", COUNTRY: "Country", TX_PWR: "Power (W)",
+    CONTEST_ID: "Contest", SRX: "Rcvd #", STX: "Sent #", SUBMODE: "Submode", TIME_OFF: "Time off",
+  };
+
+  function logColumn(key) {
+    if (LOG_COLUMNS[key]) return LOG_COLUMNS[key];
+    const name = key.slice("field:".length).toUpperCase();
+    return { label: FIELD_LABELS[name] || name, sort: `field:${name}`, render: (q) => field(q, name) };
   }
 
+  let logTable = null;
   let searchTimer = null;
 
   async function loadLog() {
-    const params = new URLSearchParams({ limit: "100" });
+    const order = logTable.state();
+    const params = new URLSearchParams({ limit: "100", sort: order.sort, newest_first: String(order.descending) });
     const call = $("#search").value.trim();
     if (call) params.set("call", call);
     if ($("#show-deleted").checked) params.set("include_deleted", "true");
@@ -631,22 +971,11 @@
       $("#count").textContent = e.message;
       return;
     }
-    const body = $("#log tbody");
-    body.replaceChildren();
-    for (const qso of qsos) {
-      const row = document.createElement("tr");
+    logTable.render(qsos, (row, qso) => {
       if (qso.deleted) row.className = "deleted";
-      cell(row, utcDate(qso.qso_start) || field(qso, "QSO_DATE"));
-      cell(row, utcTime(qso.qso_start) || field(qso, "TIME_ON"));
-      cell(row, qso.call || "(no call)", "call");
-      cell(row, qso.band || "");
-      cell(row, field(qso, "SUBMODE") || qso.mode || "");
-      cell(row, qso.operator);
-      cell(row, String(qso.version));
       row.addEventListener("click", () => openDetail(qso.id));
-      body.append(row);
-    }
-    $("#count").textContent = qsos.length === 100 ? "latest 100 shown" : `${qsos.length} shown`;
+    });
+    $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
   }
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
@@ -789,6 +1118,19 @@
   // -- Start -------------------------------------------------------------
 
   async function start() {
+    logTable = makeTable({
+      id: "log",
+      table: $("#log"),
+      toolbar: $("#log-tools"),
+      column: logColumn,
+      suggested: [...Object.keys(LOG_COLUMNS), ...Object.keys(FIELD_LABELS).map((f) => `field:${f}`)],
+      defaults: Object.freeze({
+        columns: ["date", "time", "call", "band", "mode", "operator", "version"],
+        sort: "entered",
+        descending: true,
+      }),
+      load: () => (session && !$("#app").hidden ? loadLog() : null),
+    });
     buildModuleHeads();
     applyLayout();
     fillSelect($("#entry [name=BAND]"), BANDS);
@@ -800,7 +1142,7 @@
     $("#arrange").addEventListener("click", () => arrange(!document.body.classList.contains("arranging")));
     $("#arrange-done").addEventListener("click", () => arrange(false));
     $("#arrange-reset").addEventListener("click", () => {
-      layout = normalize(DEFAULT_LAYOUT);
+      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables }; // columns have their own reset
       applyLayout();
       saveLayout();
     });

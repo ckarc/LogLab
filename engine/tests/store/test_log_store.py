@@ -542,3 +542,10 @@ def test_audit_columns_are_required_and_time_is_the_databases(
     ).fetchone()
     assert row is not None
     assert row[0] > datetime(2026, 1, 1, tzinfo=UTC)
+
+
+@pytest.mark.parametrize("sort", ["dxcc", "field:", "field:FREQ' OR 1=1", "q.entry_seq"])
+def test_find_refuses_an_unknown_sort(store: LogStore, sort: str) -> None:
+    """The store checks a sort itself, so no caller can put SQL into it."""
+    with pytest.raises(StoreError, match="cannot be sorted by"):
+        store.find(sort=sort)
