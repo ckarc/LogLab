@@ -114,8 +114,13 @@
       time && `${time.slice(0, 2)}:${time.slice(2, 4)} UTC`].filter(Boolean).join(" ");
   }
 
+  // QSOs on their way to the Engine right now. They are already in the
+  // journal, but are only shown as waiting if sending them fails, so storing a
+  // QSO does not flash the "Not logged yet" box.
+  const sending = new Set();
+
   function renderJournal() {
-    const entries = readJournal();
+    const entries = readJournal().filter((e) => !sending.has(e.id));
     const list = $("#journal-list");
     list.replaceChildren();
     for (const entry of entries) {
@@ -153,13 +158,19 @@
 
   // Send one journal entry. True when the Engine has logged it.
   async function send(entry) {
+    sending.add(entry.id);
     try {
       const result = await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
+      sending.delete(entry.id);
       updateEntry(entry.id, null);
       return result;
     } catch (e) {
+      sending.delete(entry.id);
       // Unreachable, an Engine error, or signed out: keep it and try again later.
-      if (e.status === 0 || e.status >= 500 || e.status === 401) return null;
+      if (e.status === 0 || e.status >= 500 || e.status === 401) {
+        renderJournal();
+        return null;
+      }
       updateEntry(entry.id, { problem: e.message });
       throw e;
     }
@@ -334,7 +345,6 @@
     };
     // Into the journal before it goes anywhere (Principle XV).
     const journaled = writeJournal([...readJournal(), entry]);
-    renderJournal();
     try {
       const result = journaled ? await send(entry) : await api("POST", "/qsos", { id: entry.id, fields: entry.fields });
       if (result === null) {
