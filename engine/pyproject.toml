@@ -9,7 +9,9 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 authors = [{ name = "Brian Krenzin, K9KSU" }]
-dependencies = []
+dependencies = [
+    "psycopg>=3.2",
+]
 
 [project.urls]
 Homepage = "https://github.com/ckarc/loglab"
