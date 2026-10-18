@@ -841,7 +841,17 @@
     for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "COMMENT"]) form[name].value = "";
     form.QSO_DATE.value = date;
     form.TIME_ON.value = time;
+    showCallZeros(form.CALL);
     form.CALL.focus();
+  }
+
+  // The Call box shows zeros slashed as they are typed. An input can only
+  // hold plain text, so the box's own text is made invisible and a copy with
+  // slashed zeros is drawn exactly over it; the value typed stays a plain 0.
+  function showCallZeros(input) {
+    const mirror = input.nextElementSibling;
+    mirror.replaceChildren(callsign(input.value.toUpperCase()));
+    mirror.scrollLeft = input.scrollLeft;
   }
 
   function entryFields(form) {
@@ -1180,6 +1190,10 @@
       if (event.propertyName === "opacity" && $("#stored").classList.contains("fading")) hideNotice();
     });
     $("#entry").addEventListener("submit", storeQso);
+    const callInput = $("#entry [name=CALL]");
+    for (const type of ["input", "scroll", "keyup", "select"]) {
+      callInput.addEventListener(type, () => showCallZeros(callInput));
+    }
     $("#send-now").addEventListener("click", flushJournal);
     window.addEventListener("online", flushJournal);
     setInterval(flushJournal, RETRY_MS);

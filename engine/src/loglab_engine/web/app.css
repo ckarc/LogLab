@@ -179,6 +179,25 @@ input[name="CALL"], input[name="callsign"] {
   letter-spacing: 0.04em;
 }
 
+/* The Call box: its own text is invisible (the caret and selection still
+   show) and a copy with slashed zeros is drawn in the same place. */
+.zero-field { position: relative; display: block; }
+.zero-field input { color: transparent; caret-color: var(--text); }
+.zero-mirror {
+  position: absolute;
+  inset: 0;
+  padding: 10px 12px; /* the input's padding plus its 1px border */
+  overflow: hidden;
+  white-space: pre;
+  pointer-events: none;
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1.5; /* as the input's, so the two lines of text coincide */
+}
+
 button {
   font: inherit;
   font-weight: 600;
