@@ -23,6 +23,7 @@ from loglab_engine.store import (
     ImportSummary,
     LogStore,
     QsoExistsError,
+    QsoFilter,
     QsoNotFoundError,
     StaleVersionError,
     StoreError,
@@ -319,7 +320,7 @@ def test_delete_is_recorded_and_recoverable(store: LogStore, shack: Actor, visit
     assert deleted.record == document.records[3]
     assert store.export_import(1).records == document.records[:3] + document.records[4:]
     assert victim not in {v.qso_id for v in store.find(limit=100)}
-    assert victim in {v.qso_id for v in store.find(limit=100, include_deleted=True)}
+    assert victim in {v.qso_id for v in store.find(QsoFilter(include_deleted=True), limit=100)}
 
     with pytest.raises(StoreError, match="already deleted"):
         store.delete_qso(victim, actor=shack)
@@ -366,8 +367,8 @@ def test_find_by_call_uses_the_current_version(store: LogStore, shack: Actor) ->
     """Search sees a QSO as it is now, not as it was."""
     qso_id = store.create_qso(_qso("Q1OLD"), actor=shack).qso_id
     store.edit_qso(qso_id, _qso("Q1NEW"), actor=shack, base_version=1)
-    assert store.find(call="q1old") == ()
-    assert [v.qso_id for v in store.find(call=" q1new ")] == [qso_id]
+    assert store.find(QsoFilter(call="q1old")) == ()
+    assert [v.qso_id for v in store.find(QsoFilter(call=" q1new "))] == [qso_id]
 
 
 def test_actors_must_be_identified(store: LogStore, shack: Actor) -> None:

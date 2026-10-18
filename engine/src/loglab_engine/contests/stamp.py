@@ -6,8 +6,10 @@
 A QSO logged in an operation is made as the operation's station callsign (its
 GOTA callsign at the GOTA station, ARRL Field Day Rule 4.1.1.1), names the
 operator who made it in ADIF ``OPERATOR``, carries the overlay's
-``CONTEST_ID``, and records the exchange the station sent. A field the QSO
-already has is never replaced: what the operator typed is kept as typed.
+``CONTEST_ID``, records the exchange the station sent, and names the
+operation in ``APP_LOGLAB_OPERATION``, so its QSOs can be found together. A
+field the QSO already has is never replaced: what the operator typed is kept
+as typed.
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from loglab_engine.adif import Field, Record
+
+# The ADIF application-defined field that names the operation a QSO was logged in.
+OPERATION_FIELD = "APP_LOGLAB_OPERATION"
 
 if TYPE_CHECKING:
     from loglab_engine.contests.overlay import Overlay
@@ -30,11 +35,14 @@ class Station:
     station_call: str
     operator: str
     sent: Mapping[str, str]
+    operation: str | None = None
 
 
 def stamp_fields(overlay: Overlay, station: Station) -> tuple[tuple[str, str], ...]:
     """The ADIF fields, in order, that ``station`` gives each QSO under ``overlay``."""
     fields = [("STATION_CALLSIGN", station.station_call), ("OPERATOR", station.operator)]
+    if station.operation is not None:
+        fields.append((OPERATION_FIELD, station.operation))
     if overlay.contest_id is not None:
         fields.append(("CONTEST_ID", overlay.contest_id))
     if overlay.exchange is not None:

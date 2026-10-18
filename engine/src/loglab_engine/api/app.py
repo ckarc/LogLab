@@ -26,7 +26,8 @@ from __future__ import annotations
 import base64
 import binascii
 import uuid
-from collections.abc import Awaitable, Callable, Iterable, Iterator
+from collections import Counter
+from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
 from datetime import UTC, date, datetime
 from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
@@ -46,6 +47,7 @@ from fastapi import (
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import (
+    AwareDatetime,
     BaseModel,
     ConfigDict,
     Field,
@@ -87,6 +89,7 @@ from loglab_engine.store import (
     NotSignedInError,
     Permission,
     QsoExistsError,
+    QsoFilter,
     QsoNotFoundError,
     QsoVersion,
     SignInError,
@@ -185,6 +188,42 @@ class OperationIn(_Strict):
         Field(max_length=6),
     ] = Field(default_factory=dict)
     ended: bool = False
+    starts_at: Annotated[AwareDatetime, Field(strict=False)] | None = None
+    ends_at: Annotated[AwareDatetime, Field(strict=False)] | None = None
+
+    @model_validator(mode="after")
+    def _hours(self) -> Self:
+        if self.starts_at and self.ends_at and self.ends_at <= self.starts_at:
+            msg = "the operation must end after it starts"
+            raise ValueError(msg)
+        return self
+
+
+class TallyOut(BaseModel):
+    """How many QSOs share one band and mode group, or one operator."""
+
+    band: str | None = None
+    mode_group: str | None = None
+    operator: str | None = None
+    qsos: int
+
+
+class OperationSummaryOut(BaseModel):
+    """What an operation has logged so far.
+
+    ``counted`` QSOs fall within its hours on a band and mode its overlay
+    counts; ``outside`` were made outside its hours, ``not_counted`` on a
+    band or mode it leaves out. Dupes are counted as logged.
+    """
+
+    operation: uuid.UUID
+    name: str
+    qsos: int
+    counted: int
+    outside: int
+    not_counted: int
+    by_band_mode: list[TallyOut]
+    by_operator: list[TallyOut]
 
 
 class OperationOut(BaseModel):
@@ -198,6 +237,8 @@ class OperationOut(BaseModel):
     gota_call: str | None
     sent: dict[str, str]
     ended: bool
+    starts_at: datetime | None
+    ends_at: datetime | None
     created_at: datetime
     changed_at: datetime
 
@@ -800,6 +841,7 @@ class QsoQuery(_Strict):
     include_deleted: bool = False
     newest_first: bool = True
     sort: SortKey = "entered"
+    operation: uuid.UUID | None = None
 
 
 # -- Operations ---------------------------------------------------------------
@@ -869,9 +911,12 @@ def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> l
     """
     _require(conn, who, Permission.VIEW)
     found = LogStore(conn).find(
-        call=query.call or None,
+        QsoFilter(
+            call=query.call or None,
+            operation=query.operation,
+            include_deleted=query.include_deleted,
+        ),
         limit=query.limit,
-        include_deleted=query.include_deleted,
         newest_first=query.newest_first,
         sort=query.sort,
     )
@@ -879,13 +924,18 @@ def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> l
 
 
 @api.get("/sections")
-def list_sections(who: Signed, conn: Conn) -> SectionsOut:
+def list_sections(
+    who: Signed,
+    conn: Conn,
+    operation: Annotated[uuid.UUID | None, Query()] = None,
+) -> SectionsOut:
     """The ARRL and RAC sections, each with how many current QSOs are in it.
 
-    This is what the Field Day section map colours in. Deleted QSOs do not count.
+    This is what the Field Day section map colours in. Deleted QSOs do not
+    count; with ``operation``, only the QSOs logged in that operation do.
     """
     _require(conn, who, Permission.VIEW)
-    tally = tally_sections(LogStore(conn).field_counts("ARRL_SECT"))
+    tally = tally_sections(LogStore(conn).field_counts("ARRL_SECT", operation))
     return SectionsOut(
         sections=[
             SectionOut(
@@ -915,16 +965,37 @@ def _operation_out(conn: Conn, op: Operation) -> OperationOut:
         gota_call=op.gota_call,
         sent=dict(op.sent),
         ended=op.ended,
+        starts_at=op.starts_at,
+        ends_at=op.ends_at,
         created_at=op.created_at,
         changed_at=op.changed_at,
     )
 
 
-def _station(conn: Conn, who: Actor, ref: OperationRef) -> tuple[Overlay, Station]:
-    """The overlay and station a QSO logged in operation ``ref`` is made under."""
+def _station(
+    conn: Conn,
+    who: Actor,
+    ref: OperationRef,
+    made: datetime | None = None,
+    *,
+    hours: bool = True,
+) -> tuple[Overlay, Station, Operation]:
+    """The overlay and station a QSO logged in operation ``ref`` is made under.
+
+    With ``hours``, a QSO ``made`` outside the operation's hours is refused,
+    and once the end time has passed the operation takes only QSOs made
+    during its hours: one typed in a browser that could not reach the Engine
+    until later is still logged (Principle XV).
+    """
     op = OperationStore(conn).get(ref.id)
     if op.ended:
         raise HTTPException(status.HTTP_409_CONFLICT, f"the operation {op.name} has ended")
+    if hours and made is not None and not op.open_at(made):
+        raise HTTPException(status.HTTP_409_CONFLICT, _outside(op, made))
+    if hours and made is None and op.over(datetime.now(UTC)):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"the operation {op.name} ended at {_utc(op.ends_at)}"
+        )
     found = _find(conn, op.overlay)
     if found is None:
         raise HTTPException(
@@ -935,7 +1006,29 @@ def _station(conn: Conn, who: Actor, ref: OperationRef) -> tuple[Overlay, Statio
             status.HTTP_422_UNPROCESSABLE_CONTENT, f"the operation {op.name} has no GOTA call"
         )
     call = op.gota_call if ref.gota and op.gota_call else op.station_call
-    return found, Station(station_call=call, operator=who.operator, sent=op.sent)
+    station = Station(station_call=call, operator=who.operator, sent=op.sent, operation=str(op.id))
+    return found, station, op
+
+
+def _outside(op: Operation, made: datetime) -> str:
+    return (
+        f"a QSO at {_utc(made)} is outside {op.name}'s hours"
+        f" ({_utc(op.starts_at)} to {_utc(op.ends_at)}), so it can't be logged in it"
+    )
+
+
+def _utc(when: datetime | None) -> str:
+    return when.astimezone(UTC).strftime("%Y-%m-%d %H%M UTC") if when else "an open time"
+
+
+def _made(fields: Mapping[str, str]) -> datetime | None:
+    """When a QSO was made, from its ``QSO_DATE`` and ``TIME_ON``, if both are valid."""
+    day = fields.get("QSO_DATE", "").strip()
+    time = fields.get("TIME_ON", "").strip().replace(":", "")[:4]
+    try:
+        return datetime.strptime(f"{day}{time}", "%Y%m%d%H%M").replace(tzinfo=UTC)
+    except ValueError:
+        return None
 
 
 def _setup(conn: Conn, body: OperationIn) -> OperationSetup:
@@ -964,6 +1057,8 @@ def _setup(conn: Conn, body: OperationIn) -> OperationSetup:
         gota_call=body.gota_call,
         sent=sent,
         ended=body.ended,
+        starts_at=body.starts_at,
+        ends_at=body.ends_at,
     )
 
 
@@ -985,8 +1080,11 @@ def list_operations(
 ) -> list[OperationOut]:
     """The operations operators can log in, newest first; ended ones on request."""
     _require(conn, who, Permission.VIEW)
+    now = datetime.now(UTC)
     return [
-        _operation_out(conn, op) for op in OperationStore(conn).list(include_ended=include_ended)
+        _operation_out(conn, op)
+        for op in OperationStore(conn).list(include_ended=include_ended)
+        if include_ended or not op.over(now)
     ]
 
 
@@ -995,6 +1093,45 @@ def get_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Operation
     """One operation."""
     _require(conn, who, Permission.VIEW)
     return _operation_out(conn, OperationStore(conn).get(operation_id))
+
+
+@api.get("/operations/{operation_id}/summary")
+def summarize_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationSummaryOut:
+    """How many QSOs an operation has logged, by band and mode group and by operator."""
+    _require(conn, who, Permission.VIEW)
+    op = OperationStore(conn).get(operation_id)
+    found = _find(conn, op.overlay, include_retired=True)
+    by_band_mode: Counter[tuple[str, str]] = Counter()
+    by_operator: Counter[str] = Counter()
+    qsos = outside = not_counted = 0
+    for v in LogStore(conn).operation_qsos(op.id):
+        qsos += 1
+        fields = {f.name.upper(): f.value for f in reversed(v.record.fields)}
+        by_operator[fields.get("OPERATOR", "").strip().upper() or v.operator] += 1
+        if v.qso_start is not None and not op.open_at(v.qso_start):
+            outside += 1
+            continue
+        band, group = (v.band or "").lower() or None, None
+        if found is not None and found.bands is not None and found.modes is not None:
+            band = found.bands.key(v.band, fields.get("PROP_MODE"))
+            group = found.modes.group(fields.get("MODE"), fields.get("SUBMODE"))
+            if band is None or group is None:
+                not_counted += 1
+                continue
+        by_band_mode[(band or "", group or "")] += 1
+    return OperationSummaryOut(
+        operation=op.id,
+        name=op.name,
+        qsos=qsos,
+        counted=qsos - outside - not_counted,
+        outside=outside,
+        not_counted=not_counted,
+        by_band_mode=[
+            TallyOut(band=b or None, mode_group=g or None, qsos=n)
+            for (b, g), n in sorted(by_band_mode.items())
+        ],
+        by_operator=[TallyOut(operator=o, qsos=n) for o, n in by_operator.most_common()],
+    )
 
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
@@ -1198,8 +1335,9 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
     fields: dict[str, str] = {}
     for f in body.fields:
         fields.setdefault(f.name.upper(), f.value)
+    op: Operation | None = None
     if body.operation is not None:
-        in_operation, at = _station(conn, who, body.operation)
+        in_operation, at, op = _station(conn, who, body.operation, hours=False)
         if in_operation.id != found.id:
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -1237,9 +1375,15 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
             for v in earlier
         ),
     )
+    status_, message = result.status, result.message
+    made = _made(fields)
+    if op is not None and made is not None and not op.open_at(made) and status_ != "incomplete":
+        status_ = "not_counted"
+        outside = _outside(op, made)
+        message = f"{outside[:1].upper()}{outside[1:]}."
     return ContestCheckOut(
         overlay=found.id,
-        status=result.status,
+        status=status_,
         station_call=station,
         year=year,
         band=result.band,
@@ -1249,7 +1393,7 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
         problems=[
             ProblemOut(field=p.field, label=p.label, message=p.message) for p in result.problems
         ],
-        message=result.message,
+        message=message,
     )
 
 
@@ -1280,7 +1424,8 @@ def create_qso(
     store = LogStore(conn)
     record = _record(body.fields)
     if body.operation is not None:
-        found, station = _station(conn, who, body.operation)
+        made = _made({f.name.upper(): f.value for f in reversed(record.fields)})
+        found, station, _ = _station(conn, who, body.operation, made)
         record = stamp(record, found, station)
     if body.id is None:
         version, created = store.create_qso(record, actor=who, note=body.note), True

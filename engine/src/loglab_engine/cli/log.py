@@ -44,6 +44,7 @@ from loglab_engine.store import (
     LogStore,
     MigrationError,
     Permission,
+    QsoFilter,
     QsoVersion,
     StoreError,
     connect,
@@ -238,7 +239,7 @@ def _export(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
 
 
 def _find(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
-    found = store.find(call=args.call, limit=args.limit, include_deleted=args.deleted)
+    found = store.find(QsoFilter(call=args.call, include_deleted=args.deleted), limit=args.limit)
     for version in found:
         out.write(_summary(version) + "\n")
     out.write(f"{len(found)} QSO(s) shown\n")

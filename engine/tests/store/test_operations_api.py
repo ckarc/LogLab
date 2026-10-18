@@ -224,3 +224,108 @@ def test_only_field_day_has_a_gota_call(client: TestClient, k9ksu: dict[str, str
     response = client.post("/api/v1/operations", headers=k9ksu, json=wfd)
     assert response.status_code == 422
     assert "GOTA" in response.json()["detail"]
+
+
+HOURS = {"starts_at": "2027-06-26T18:00:00Z", "ends_at": "2027-06-27T20:59:00Z"}
+
+
+def _at(day: str, time: str) -> list[dict[str, str]]:
+    changed = {"QSO_DATE": day, "TIME_ON": time}
+    return [{**f, "value": changed.get(f["name"], f["value"])} for f in QSO]
+
+
+def test_an_operation_keeps_its_hours_in_utc(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """Hours are given with a time zone and kept in UTC (Principle VIII)."""
+    body = {**FIELD_DAY, "starts_at": "2027-06-26T13:00:00-05:00", "ends_at": HOURS["ends_at"]}
+    response = client.post("/api/v1/operations", headers=k9ksu, json=body)
+    assert response.status_code == 201, response.text
+    assert response.json()["starts_at"].startswith("2027-06-26T18:00:00")
+    backwards = {**FIELD_DAY, "starts_at": HOURS["ends_at"], "ends_at": HOURS["starts_at"]}
+    assert client.post("/api/v1/operations", headers=k9ksu, json=backwards).status_code == 422
+    no_zone = {**FIELD_DAY, "starts_at": "2027-06-26T18:00:00"}
+    assert client.post("/api/v1/operations", headers=k9ksu, json=no_zone).status_code == 422
+
+
+def test_each_qso_names_its_operation(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """The operation's ID goes on every QSO logged in it, so they can be found together."""
+    qso = _log(client, k9ksu, field_day)
+    assert _values(qso)["APP_LOGLAB_OPERATION"] == field_day["id"]
+    own = client.post("/api/v1/qsos", headers=k9ksu, json={"fields": QSO})
+    assert own.status_code == 201, own.text
+    listed = client.get(f"/api/v1/qsos?operation={field_day['id']}", headers=k9ksu).json()
+    assert [q["id"] for q in listed] == [qso["id"]]
+    assert len(client.get("/api/v1/qsos", headers=k9ksu).json()) == 2
+
+
+def test_a_qso_outside_the_hours_is_refused(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """A QSO made before the start or after the end can't be logged in the operation."""
+    op = client.post("/api/v1/operations", headers=k9ksu, json={**FIELD_DAY, **HOURS}).json()
+    ref = {"id": op["id"]}
+    early = {"fields": _at("20270626", "1730"), "operation": ref}
+    check = client.post("/api/v1/overlays/arrl-fd/check", headers=k9ksu, json=early).json()
+    assert check["status"] == "not_counted"
+    assert "outside Field Day 2027's hours" in check["message"]
+    response = client.post("/api/v1/qsos", headers=k9ksu, json=early)
+    assert response.status_code == 409
+    assert "can't be logged" in response.json()["detail"]
+    after = {"fields": _at("20270627", "2100"), "operation": ref}
+    assert client.post("/api/v1/qsos", headers=k9ksu, json=after).status_code == 409
+    during = {"fields": _at("20270626", "1830"), "operation": ref}
+    check = client.post("/api/v1/overlays/arrl-fd/check", headers=k9ksu, json=during).json()
+    assert check["status"] == "new"
+
+
+def test_after_its_end_an_operation_takes_only_qsos_made_during_it(
+    client: TestClient, k9ksu: dict[str, str]
+) -> None:
+    """A QSO typed during the contest but sent late is still logged (Principle XV)."""
+    past = {"starts_at": "2020-06-27T18:00:00Z", "ends_at": "2020-06-28T20:59:00Z"}
+    op = client.post("/api/v1/operations", headers=k9ksu, json={**FIELD_DAY, **past}).json()
+    assert client.get("/api/v1/operations", headers=k9ksu).json() == []
+    ref = {"id": op["id"]}
+    late = {"fields": _at("20200627", "1900"), "operation": ref}
+    assert client.post("/api/v1/qsos", headers=k9ksu, json=late).status_code == 201
+    after = {"fields": _at("20200629", "0100"), "operation": ref}
+    response = client.post("/api/v1/qsos", headers=k9ksu, json=after)
+    assert response.status_code == 409
+    assert "outside" in response.json()["detail"]
+
+
+def test_the_summary_counts_by_band_mode_and_operator(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str]
+) -> None:
+    """Counts by band and mode group, and by operator."""
+    op = client.post("/api/v1/operations", headers=k9ksu, json={**FIELD_DAY, **HOURS}).json()
+    ref = {"id": op["id"]}
+
+    def log(headers: dict[str, str], fields: list[dict[str, str]]) -> None:
+        body = {"fields": fields, "operation": ref}
+        assert client.post("/api/v1/qsos", headers=headers, json=body).status_code == 201
+
+    log(k9ksu, _at("20270626", "1830"))
+    other = [{**f, "value": "K1ABC"} if f["name"] == "CALL" else f for f in _at("20270626", "1900")]
+    log(w0xyz, other)
+    summary = client.get(f"/api/v1/operations/{op['id']}/summary", headers=k9ksu).json()
+    assert (summary["qsos"], summary["counted"], summary["outside"]) == (2, 2, 0)
+    assert summary["by_band_mode"] == [
+        {"band": "20m", "mode_group": "CW", "operator": None, "qsos": 2}
+    ]
+    assert {t["operator"]: t["qsos"] for t in summary["by_operator"]} == {"W0XYZ": 1, "K9KSU": 1}
+
+
+def test_the_map_counts_only_the_operations_qsos(
+    client: TestClient, k9ksu: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """In an operation the section map shows its QSOs, not the rest of the log."""
+    _log(client, k9ksu, field_day)
+    own = [{**f, "value": "MN"} if f["name"] == "ARRL_SECT" else f for f in QSO]
+    assert client.post("/api/v1/qsos", headers=k9ksu, json={"fields": own}).status_code == 201
+
+    def worked(path: str) -> dict[str, int]:
+        found = client.get(path, headers=k9ksu).json()["sections"]
+        return {s["code"]: s["qsos"] for s in found if s["qsos"]}
+
+    assert worked(f"/api/v1/sections?operation={field_day['id']}") == {"CT": 1}
+    assert worked("/api/v1/sections") == {"CT": 1, "MN": 1}
