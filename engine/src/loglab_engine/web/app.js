@@ -34,9 +34,17 @@
     version: 1,
     modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false })),
     tables: {},
+    panels: {},
     detail: null,
     theme: "auto",
   });
+  // Panels: parts of a module the operator places above, below, or beside
+  // the module's main content, the way boxes are placed on the page. Each
+  // sits in a `.panels` block next to its `.panel-main`.
+  const PANELS = {
+    "map.to-work": { title: "Sections to work", of: "the map", place: "bottom" },
+  };
+  const PLACES = ["top", "bottom", "left", "right"];
   // Auto follows the computer's light or dark setting. The choice is saved
   // with the operator's layout; this browser remembers the last one so the
   // page opens in it before the Engine answers.
@@ -298,8 +306,13 @@
       }).map((f) => f.toUpperCase()).slice(0, MAX_DETAIL_FIELDS);
       detail = { fields };
     }
+    const panels = {};
+    for (const id of Object.keys(PANELS)) {
+      const place = saved && saved.panels && saved.panels[id];
+      if (PLACES.includes(place)) panels[id] = place;
+    }
     const theme = saved && saved.theme in THEMES ? saved.theme : "auto";
-    return { version: 1, modules, tables, detail, theme };
+    return { version: 1, modules, tables, panels, detail, theme };
   }
 
   function applyTheme(theme) {
@@ -393,6 +406,7 @@
         b.setAttribute("aria-pressed", String(b.dataset.width === m.width));
       }
     });
+    applyPanels();
     pack();
     const tray = $("#tray");
     tray.replaceChildren();
@@ -608,6 +622,149 @@
     event.preventDefault();
     if (place(id, index, width, side)) saveLayout();
     event.currentTarget.focus();
+  }
+
+  // -- Panels inside a module ---------------------------------------------
+
+  const panelEl = (id) => document.querySelector(`.panel[data-panel="${id}"]`);
+  const panelPlace = (id) => layout.panels[id] || PANELS[id].place;
+
+  // Put each panel in its place: before or after the row that holds the
+  // main content, or in that row to its left or right.
+  function applyPanels() {
+    for (const [id, panel] of Object.entries(PANELS)) {
+      const el = panelEl(id);
+      const place = panelPlace(id);
+      if (!el || el.dataset.place === place) continue;
+      const block = el.closest(".panels");
+      const row = $(".panels-row", block);
+      if (place === "top") block.insertBefore(el, row);
+      else if (place === "bottom") block.append(el);
+      else if (place === "left") row.insertBefore(el, $(".panel-main", row));
+      else row.append(el);
+      el.dataset.place = place;
+      const handle = $(".panel-head .where", el);
+      if (handle) handle.textContent = panelWhere(place, panel);
+    }
+  }
+
+  const panelWhere = (place, panel) => ({
+    top: `Above ${panel.of}`, bottom: `Below ${panel.of}`,
+    left: `Left of ${panel.of}`, right: `Right of ${panel.of}`,
+  })[place];
+
+  function placePanel(id, place) {
+    if (panelPlace(id) === place) return false;
+    layout.panels = { ...layout.panels, [id]: place };
+    applyPanels();
+    return true;
+  }
+
+  // Where a panel dropped at (x, y) goes: the side of the module's panel
+  // block the pointer is nearest, measured when the drag starts.
+  function panelTarget(x, y, r) {
+    const across = (x - (r.left + r.width / 2)) / (r.width / 2);
+    const down = (y - (r.top + r.height / 2)) / (r.height / 2);
+    if (Math.abs(across) > Math.abs(down)) return across < 0 ? "left" : "right";
+    return down < 0 ? "top" : "bottom";
+  }
+
+  // Carried like a box: an outline where it will sit, and a card that
+  // follows the pointer. The panel moves in the page as it is carried, which
+  // ends any pointer capture, so the page itself follows the pointer.
+  function startPanelDrag(event, id) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const handle = event.currentTarget;
+    const el = panelEl(id);
+    const panel = PANELS[id];
+    const before = { ...layout.panels };
+    const area = el.closest(".panels").getBoundingClientRect();
+    const grab = handle.getBoundingClientRect();
+    const dx = event.clientX - grab.left;
+    const dy = event.clientY - grab.top;
+    const ghost = document.createElement("div");
+    ghost.className = "ghost";
+    ghost.setAttribute("aria-hidden", "true");
+    const ghostName = document.createElement("span");
+    ghostName.textContent = `⠿ ${panel.title}`;
+    const ghostWhere = document.createElement("span");
+    ghostWhere.className = "ghost-where";
+    ghostWhere.textContent = panelWhere(panelPlace(id), panel);
+    ghost.append(ghostName, ghostWhere);
+    ghost.style.width = `${Math.min(Math.max(grab.width, 260), 360)}px`;
+    document.body.append(ghost);
+    el.classList.add("placing");
+    document.body.classList.add("moving");
+    const follow = (e) => {
+      ghost.style.transform = `translate(${e.clientX - dx}px, ${e.clientY - dy}px)`;
+    };
+    follow(event);
+    const pointer = event.pointerId;
+    const onMove = (e) => {
+      if (e.pointerId !== pointer) return;
+      follow(e);
+      const place = panelTarget(e.clientX, e.clientY, area);
+      ghostWhere.textContent = panelWhere(place, panel);
+      placePanel(id, place);
+    };
+    const finish = (keep) => {
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("pointercancel", onCancel);
+      ghost.remove();
+      el.classList.remove("placing");
+      document.body.classList.remove("moving");
+      if (keep) {
+        saveLayout();
+      } else {
+        layout.panels = before;
+        applyPanels();
+      }
+    };
+    const onUp = (e) => { if (e.pointerId === pointer) finish(true); };
+    const onCancel = (e) => { if (e.pointerId === pointer) finish(false); };
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("pointercancel", onCancel);
+  }
+
+  // From the keyboard, an arrow key moves the panel to that side.
+  function keyMovePanel(event, id) {
+    const place = { ArrowUp: "top", ArrowDown: "bottom", ArrowLeft: "left", ArrowRight: "right" }[event.key];
+    if (!place) return;
+    event.preventDefault();
+    if (placePanel(id, place)) saveLayout();
+    event.currentTarget.focus();
+  }
+
+  function buildPanelHeads() {
+    for (const [id, panel] of Object.entries(PANELS)) {
+      const el = panelEl(id);
+      if (!el) continue;
+      const head = document.createElement("div");
+      head.className = "panel-head";
+      const handle = document.createElement("button");
+      handle.type = "button";
+      handle.className = "handle";
+      handle.title = `Drag to put it above, below, or beside ${panel.of}.`;
+      handle.setAttribute("aria-label",
+        `Move ${panel.title}: drag it, or use the arrow keys to put it above, below, left or right of ${panel.of}`);
+      const grip = document.createElement("span");
+      grip.className = "grip";
+      grip.setAttribute("aria-hidden", "true");
+      grip.textContent = "⠿";
+      const name = document.createElement("span");
+      name.className = "module-title";
+      name.textContent = panel.title;
+      const where = document.createElement("span");
+      where.className = "where hint";
+      handle.append(grip, name, where);
+      handle.addEventListener("pointerdown", (event) => startPanelDrag(event, id));
+      handle.addEventListener("keydown", (event) => keyMovePanel(event, id));
+      head.append(handle);
+      el.prepend(head);
+    }
   }
 
   function buildModuleHeads() {
@@ -1651,6 +1808,7 @@
       load: () => (session && !$("#app").hidden ? loadLog() : null),
     });
     buildModuleHeads();
+    buildPanelHeads();
     if (SOLO) {
       document.body.classList.add("solo");
       document.title = `${MODULES[SOLO]} · LogLab`;
@@ -1691,6 +1849,7 @@
     $("#arrange-done").addEventListener("click", () => arrange(false));
     $("#arrange-reset").addEventListener("click", () => {
       // Columns and a QSO's fields have their own resets.
+      // Panels go back to their places with the boxes.
       layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables, detail: layout.detail, theme: layout.theme };
       applyLayout();
       saveLayout();

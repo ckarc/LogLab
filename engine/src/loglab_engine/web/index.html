@@ -108,21 +108,28 @@
           <button type="button" id="map-in" class="small secondary" aria-label="Zoom in">+</button>
           <button type="button" id="map-fit" class="small secondary">Whole map</button>
         </div>
-        <div class="map-frame">
-          <svg id="map-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of ARRL and RAC sections">
-            <defs>
-              <pattern id="map-stripes" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
-                <rect width="6" height="6" class="map-stripe-bg"></rect>
-                <rect width="3" height="6" class="map-stripe"></rect>
-              </pattern>
-            </defs>
-          </svg>
+        <div class="panels" data-panels="map">
+          <div class="panels-row">
+            <div class="panel-main">
+              <div class="map-frame">
+                <svg id="map-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of ARRL and RAC sections">
+                  <defs>
+                    <pattern id="map-stripes" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                      <rect width="6" height="6" class="map-stripe-bg"></rect>
+                      <rect width="3" height="6" class="map-stripe"></rect>
+                    </pattern>
+                  </defs>
+                </svg>
+              </div>
+              <p id="map-info" class="hint" aria-live="polite">Tap a section for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+              <p id="map-error" class="error" role="alert"></p>
+            </div>
+          </div>
+          <div class="panel" data-panel="map.to-work">
+            <h3 id="map-missing-head"></h3>
+            <ul id="map-missing"></ul>
+          </div>
         </div>
-        <p id="map-info" class="hint" aria-live="polite">Tap a section for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
-        <p id="map-note" class="notice" hidden></p>
-        <p id="map-error" class="error" role="alert"></p>
-        <h3 id="map-missing-head"></h3>
-        <ul id="map-missing"></ul>
       </section>
 
       <section id="detail" class="card module" data-module="detail" hidden>

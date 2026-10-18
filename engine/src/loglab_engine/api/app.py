@@ -181,6 +181,10 @@ SortKey = Annotated[
     ),
 ]
 TableId = Literal["log"]
+# A panel inside a module, which the operator places on one side of the
+# module's main content: the map's list of sections still to work.
+PanelId = Literal["map.to-work"]
+PanelPlace = Literal["top", "bottom", "left", "right"]
 
 
 class ModuleLayout(_Strict):
@@ -235,7 +239,7 @@ class DetailLayout(_Strict):
 
 
 class Layout(_Strict):
-    """An operator's workspace: its modules in order, its tables, and a QSO's fields.
+    """An operator's workspace: its modules in order, its tables, panels, and a QSO's fields.
 
     ``detail`` is ``None`` until the operator chooses, and the page's default is used.
     ``theme`` is light, dark, or ``auto`` to follow the computer's setting.
@@ -244,6 +248,7 @@ class Layout(_Strict):
     version: Literal[1] = 1
     modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
     tables: dict[TableId, TableLayout] = Field(default_factory=dict)
+    panels: dict[PanelId, PanelPlace] = Field(default_factory=dict)
     detail: DetailLayout | None = None
     theme: Literal["auto", "light", "dark"] = "auto"
 

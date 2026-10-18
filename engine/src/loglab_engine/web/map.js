@@ -104,17 +104,6 @@
     $("#map-missing-head").textContent = missing.length
       ? `Still to work (${missing.length})`
       : "Every section worked!";
-    const notes = [];
-    if (result.without_section) {
-      notes.push(`${plural(result.without_section, "QSO")} ${result.without_section === 1 ? "has" : "have"} no section, so ${result.without_section === 1 ? "it is" : "they are"} not on the map.`);
-    }
-    if (result.unrecognized.length) {
-      const named = result.unrecognized.map((u) => `${u.value} (${plural(u.qsos, "QSO")})`).join(", ");
-      notes.push(`Not a section, so not on the map: ${named}.`);
-    }
-    const note = $("#map-note");
-    note.textContent = notes.join(" ");
-    note.hidden = notes.length === 0;
   }
 
   async function refresh() {
