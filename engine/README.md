@@ -139,9 +139,10 @@ own reference is at `/api/docs`.
   empty; it searches all the ADIF 3.1 QSO fields by either name, grouped
   (contact, station worked, my station, contest, QSL and awards,
   propagation), and an APP_ or user-defined field can be named exactly. Any
-  other field a QSO has is still shown below them. **Add field** searches the
-  same list. A field left empty is not saved. The choice is saved with the
-  layout, per operator (`detail.fields`).
+  other field a QSO has is still shown below them. Fields are never added
+  QSO by QSO: **Fields** is the one place that sets them. A field left empty
+  is not saved. The choice is saved with the layout, per operator
+  (`detail.fields`).
 - **QRZ.com lookup** is optional. Each operator saves their own QRZ.com login
   from the **QRZ.com lookup** link on the New QSO form
   (`GET`/`PUT`/`DELETE /api/v1/callbook/qrz`; the password is never sent
