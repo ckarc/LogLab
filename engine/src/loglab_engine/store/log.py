@@ -699,6 +699,25 @@ class LogStore:
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
+    def field_counts(self, name: str) -> dict[str, int]:
+        """How many current QSOs carry each value of the ADIF field ``name``.
+
+        Values are compared ignoring case and surrounding spaces, and are
+        returned in capitals. QSOs without the field (or with it empty) are
+        counted under ``""``. Deleted QSOs are left out.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT coalesce(upper(btrim(log.field_value(v.fields, %s))), ''), count(*)
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            WHERE NOT q.deleted
+            GROUP BY 1
+            """,
+            (name,),
+        ).fetchall()
+        return {str(value): int(count) for value, count in rows}
+
     def import_batch(self, import_id: int) -> ImportBatch:
         """An import's identity and original header.
 
