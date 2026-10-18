@@ -253,6 +253,7 @@ LAYOUT = {
         {"id": "log", "width": "full", "side": "left", "hidden": False},
         {"id": "entry", "width": "half", "side": "right", "hidden": False},
         {"id": "journal", "width": "half", "side": "left", "hidden": True},
+        {"id": "map", "width": "third", "side": "middle", "hidden": False},
     ],
     "tables": {
         "log": {
@@ -294,6 +295,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 1, "modules": [{"id": "radar"}]}, "id"),
         ({"version": 1, "modules": [{"id": "log", "width": "wide"}]}, "width"),
         ({"version": 1, "modules": [{"id": "log", "width": "half", "side": "middle"}]}, "side"),
+        ({"version": 1, "modules": [{"id": "log", "width": "full", "side": "centre"}]}, "side"),
         ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
         ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
         (
