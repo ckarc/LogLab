@@ -78,6 +78,9 @@
     return data;
   }
 
+  // lookup.js (the QRZ.com lookup) reaches the Engine through the same API.
+  window.LogLab = Object.freeze({ api });
+
   function describe(data) {
     if (!data || data.detail === undefined) return "";
     if (typeof data.detail === "string") return data.detail;
@@ -941,7 +944,7 @@
   function resetEntry() {
     const form = $("#entry");
     const { date, time } = utcNow();
-    for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "COMMENT"]) form[name].value = "";
+    for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "QTH", "STATE", "GRIDSQUARE", "COMMENT"]) form[name].value = "";
     form.QSO_DATE.value = date;
     form.TIME_ON.value = time;
     showCallZeros(form.CALL);
@@ -978,6 +981,9 @@
     add("RST_SENT", form.RST_SENT.value);
     add("RST_RCVD", form.RST_RCVD.value);
     add("NAME", form.NAME.value);
+    add("QTH", form.QTH.value);
+    add("STATE", form.STATE.value);
+    add("GRIDSQUARE", form.GRIDSQUARE.value);
     add("COMMENT", form.COMMENT.value);
     return fields;
   }

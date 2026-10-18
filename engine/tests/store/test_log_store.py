@@ -78,10 +78,10 @@ def _qso(call: str = "Q1ABC", **extra: str) -> Record:
 # -- Lossless storage (Principle IV) -----------------------------------------
 
 
-def test_log_and_reference_are_separate_schemas_and_reference_is_empty(
+def test_log_and_reference_are_separate_schemas(
     conn: psycopg.Connection[TupleRow],
 ) -> None:
-    """Principle VI: the log's tables are in ``log``; ``reference`` exists and holds nothing yet."""
+    """Principle VI: the log's tables are in ``log``; ``reference`` holds the callbook cache."""
     rows = conn.execute(
         "SELECT table_schema, table_name FROM information_schema.tables "
         "WHERE table_schema IN ('log', 'reference')",
@@ -89,7 +89,13 @@ def test_log_and_reference_are_separate_schemas_and_reference_is_empty(
     tables = {(str(schema), str(name)) for schema, name in rows}
     assert ("log", "qso") in tables
     assert ("log", "qso_version") in tables
-    assert not [t for t in tables if t[0] == "reference"]
+    assert {t for t in tables if t[0] == "reference"} == {("reference", "callbook_entry")}
+    links = conn.execute(
+        "SELECT count(*) FROM information_schema.referential_constraints r"
+        " JOIN information_schema.table_constraints t ON t.constraint_name = r.constraint_name"
+        " WHERE t.table_schema = 'reference' OR r.unique_constraint_schema = 'reference'",
+    ).fetchone()
+    assert links == (0,)  # nothing ties reference data to the log
 
 
 def test_ghosts_import_and_export_back_byte_for_byte(store: LogStore, shack: Actor) -> None:

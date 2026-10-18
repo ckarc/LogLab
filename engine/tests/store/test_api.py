@@ -73,6 +73,8 @@ def test_the_web_client_is_served_with_a_strict_policy(client: TestClient) -> No
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/app.css").status_code == 200
+    assert client.get("/static/lookup.js").status_code == 200
+    assert client.get("/static/lookup.css").status_code == 200
 
 
 @pytest.mark.parametrize(
