@@ -69,7 +69,7 @@
             <button type="submit">Store QSO</button>
             <span class="error" role="alert"></span>
             <span id="lookup-note" class="hint" aria-live="polite"></span>
-            <button type="button" id="qrz-open" class="link qrz-open">QRZ.com lookup</button>
+            <button type="button" id="qrz-open" class="link qrz-open">QRZ.com</button>
           </div>
         </form>
         <p id="stored" class="notice" hidden></p>
@@ -158,19 +158,32 @@
   <datalist id="adif-field-list"></datalist>
 
   <dialog id="qrz-dialog" class="card qrz-dialog">
+    <h2>QRZ.com</h2>
+    <form id="qrz-book-form" method="dialog" autocomplete="off">
+      <h3>Your QRZ logbook</h3>
+      <p class="hint">Each QSO you log from now on is copied to your QRZ logbook, and edits and deletes follow it. Use the API key from your logbook's settings on QRZ.com. With no internet, QSOs wait in LogLab and go out when QRZ.com can be reached; logging never waits on it.</p>
+      <p id="qrz-book-state" class="hint"></p>
+      <label>Logbook API key <input name="api_key" required minlength="8" maxlength="64" spellcheck="false" placeholder="ABCD-1234-EF56-7890"></label>
+      <label>Logbook callsign <input name="book_call" maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="your own call, or a club call"></label>
+      <div class="actions">
+        <button type="submit" value="save">Save key</button>
+        <button type="button" id="qrz-book-remove" class="danger" hidden>Stop sending</button>
+      </div>
+      <p class="error" role="alert"></p>
+    </form>
     <form id="qrz-form" method="dialog" autocomplete="off">
-      <h2>QRZ.com lookup</h2>
-      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. It uses your own QRZ.com login, saved for you alone. With no internet, logging works exactly the same; nothing is filled in.</p>
+      <h3>Callsign lookup</h3>
+      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. With no internet, nothing is filled in and logging works the same.</p>
       <p id="qrz-state" class="hint"></p>
       <label>QRZ.com username <input name="username" required maxlength="64" autocapitalize="characters" spellcheck="false"></label>
       <label>QRZ.com password <input name="password" type="password" required maxlength="128"></label>
       <div class="actions">
-        <button type="submit" value="save">Save</button>
+        <button type="submit" value="save">Save login</button>
         <button type="button" id="qrz-remove" class="danger" hidden>Remove my login</button>
-        <button type="button" id="qrz-close" class="secondary">Close</button>
       </div>
       <p class="error" role="alert"></p>
     </form>
+    <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
   </dialog>
 
   <footer class="foot">
