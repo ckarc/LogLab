@@ -249,9 +249,6 @@ button:disabled { opacity: 0.45; cursor: default; filter: none; transform: none;
   border: 1px solid var(--notice-edge);
   border-radius: 12px;
 }
-#stored.ok { background: rgba(15, 157, 107, 0.12); border-color: rgba(15, 157, 107, 0.40); transition: opacity 0.8s; }
-#stored.ok::before { content: "✓ "; color: var(--ok); font-weight: 700; }
-#stored.fading { opacity: 0; }
 
 /* -- The log ----------------------------------------------------------- */
 
@@ -457,5 +454,4 @@ body.arranging .module.placing { outline: 2px dashed var(--accent); background: 
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
-  #stored.fading { display: none; }
 }

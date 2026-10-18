@@ -111,7 +111,9 @@ own reference is at `/api/docs`.
   browser's journal until the Engine has logged it. If the Engine cannot be
   reached, the QSO waits under "Not logged yet" and is sent again every 15
   seconds, or when you press **Send now** or sign back in. Sending it again
-  never logs it twice: the Engine recognises the ID.
+  never logs it twice: the Engine recognises the ID. A QSO that is logged
+  simply appears in the Log; the page shows a notice only when something
+  needs your attention.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
 - Each box on the page is a module. The lock in the top bar is **Locked**
