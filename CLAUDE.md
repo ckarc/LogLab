@@ -53,7 +53,8 @@ every line. That means:
 - The log and reference data live in separate PostgreSQL schemas.
 - All timestamps are UTC (Principle VIII).
 - QSO changes go through the versioned, audited path only (Principle VII).
-- A QSO is "logged" only when stored in two independent places (Principle XV).
+- A QSO is "logged" once the Engine has committed it to durable storage;
+  clients journal what they submit until then (Principle XV).
 - Everything must work with no internet connection (Principle V).
 
 ## Agent rules (Rust)
