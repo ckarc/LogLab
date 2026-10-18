@@ -163,12 +163,23 @@ TableId = Literal["log"]
 
 
 class ModuleLayout(_Strict):
-    """One module of the workspace: its width, the side a half sits on, and whether it is shown."""
+    """One module of the workspace: its width, the side it sits on, and whether it is shown.
+
+    A third sits on the left, middle or right; a half on the left or right;
+    a full-width box ignores it.
+    """
 
     id: ModuleId
-    width: Literal["half", "full"] = "full"
-    side: Literal["left", "right"] = "left"
+    width: Literal["third", "half", "full"] = "full"
+    side: Literal["left", "middle", "right"] = "left"
     hidden: bool = False
+
+    @model_validator(mode="after")
+    def _middle_is_for_thirds(self) -> Self:
+        if self.side == "middle" and self.width != "third":
+            msg = "only a third can sit on the middle side"
+            raise ValueError(msg)
+        return self
 
 
 class TableLayout(_Strict):

@@ -67,3 +67,6 @@
 }
 .map-stripe-bg { fill: var(--glass-strong); }
 .map-stripe { fill: var(--accent); }
+
+/* On a page of its own, the map fills the window. */
+body.solo #map-svg { max-height: calc(100vh - 230px); }
