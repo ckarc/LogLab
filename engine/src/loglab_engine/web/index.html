@@ -15,7 +15,7 @@
   <header class="bar">
     <span class="brand">LogLab</span>
     <span id="who" class="who" hidden></span>
-    <button id="arrange" class="link" type="button" aria-pressed="false" hidden>Arrange</button>
+    <button id="arrange" class="lock" type="button" aria-pressed="false" title="Unlock to move boxes" hidden>🔒 Locked</button>
     <button id="sign-out" class="link" type="button" hidden>Sign out</button>
   </header>
 
@@ -34,11 +34,10 @@
 
     <div id="app" hidden>
       <div id="arrange-bar" class="card arrange-bar" hidden>
-        <span class="hint" id="arrange-hint">Drag a box by its ⠿ handle, or use its arrows. Your layout is saved for you and follows you to any workstation.</span>
+        <span class="hint" id="arrange-hint">Drag a box by its ⠿ handle. Let go on the centre line for full width, or left or right of it for half width on that side. Your layout is saved for you and follows you to any workstation.</span>
         <span id="tray"></span>
         <span class="spacer"></span>
         <button type="button" id="arrange-reset" class="small secondary">Reset to default</button>
-        <button type="button" id="arrange-done" class="small">Done</button>
       </div>
 
       <div id="workspace" class="workspace">
@@ -46,7 +45,7 @@
         <h2>New QSO <span class="hint">all times UTC</span></h2>
         <form id="entry" autocomplete="off">
           <div class="grid">
-            <label class="wide">Call <input name="CALL" required maxlength="20" autocapitalize="characters" spellcheck="false"></label>
+            <label class="wide">Call <span class="zero-field"><input name="CALL" required maxlength="20" autocapitalize="characters" spellcheck="false"><span class="zero-mirror" aria-hidden="true"></span></span></label>
             <label>Date (UTC) <input name="QSO_DATE" type="date" required></label>
             <label>Time (UTC) <span class="row"><input name="TIME_ON" required maxlength="5" inputmode="numeric" pattern="([01][0-9]|2[0-3]):?[0-5][0-9]" placeholder="HHMM" title="24-hour UTC time, like 1805"><button type="button" id="now" class="small">Now</button></span></label>
             <label>Band <select name="BAND" required></select></label>
