@@ -6,7 +6,10 @@ on PostgreSQL. See [`../CONSTITUTION.md`](../CONSTITUTION.md).
 
 ## Run the gates locally
 
-Requires [uv](https://docs.astral.sh/uv/).
+Requires [uv](https://docs.astral.sh/uv/) and a PostgreSQL 16 server the
+current user can create databases on. The storage tests create and drop their
+own `loglab_test_*` databases; point libpq at the server with the usual
+`PGHOST`/`PGUSER`/... variables if it isn't the local default.
 
 ```sh
 cd engine
@@ -30,3 +33,33 @@ uv run loglab-adif roundtrip ghosts.adi -o copy.adi   # read, rewrite, prove not
 
 Ghost files are test data. Never import them into a real log or upload them to
 any service.
+
+## The log in PostgreSQL
+
+`loglab-log` stores QSOs in PostgreSQL. The log lives in the `log` schema and
+reference data in `reference` (Principle VI). Every QSO is a series of complete
+ADIF snapshots: an edit, a delete, and a restore each add a version that
+records the operator, station, and UTC time, and nothing is ever erased
+(Principle VII). Storing a QSO is not yet *logging* it: that needs a second
+independent copy (Principle XV), which comes later.
+
+```sh
+createdb loglab                                   # once
+uv run loglab-log migrate                         # apply schema migrations
+uv run loglab-log import ghosts.adi --operator K9KSU --station shack
+uv run loglab-log find -n 5                       # QSO IDs, newest last
+uv run loglab-log edit 1a2b3c4d --set RST_RCVD=339 --operator K9KSU --station shack
+uv run loglab-log delete 1a2b3c4d --operator K9KSU --station shack
+uv run loglab-log history 1a2b3c4d                # every version, who, when, what changed
+uv run loglab-log restore 1a2b3c4d --operator K9KSU --station shack
+uv run loglab-log export --import 1 -o copy.adi   # that import, with its own header
+uv run loglab-log export -o log.adi               # the whole log, with a LogLab header
+```
+
+`--database` (or `$LOGLAB_DATABASE`) takes any libpq connection string; the
+default is `dbname=loglab`.
+
+Migrations are numbered SQL files in `src/loglab_engine/store/migrations`.
+Each runs in its own transaction and is recorded with its SHA-256; if an
+applied file is ever changed, every later run refuses to start. Never edit an
+applied migration. Add a new one.

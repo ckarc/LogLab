@@ -32,6 +32,27 @@ jobs:
     defaults:
       run:
         working-directory: engine
+    # The storage tests run against a real PostgreSQL, the same major version
+    # as the Engine's deployment target; they fail, never skip, without it.
+    services:
+      postgres:
+        image: postgres:16@sha256:ca0bd484cb98bf4b24eb1010e73fb3fcbd6714d240fbc1a10eea5b7dbecb641d
+        env:
+          POSTGRES_USER: loglab
+          POSTGRES_PASSWORD: loglab-ci-only
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U loglab"
+          --health-interval 2s
+          --health-timeout 5s
+          --health-retries 30
+    env:
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: loglab
+      PGPASSWORD: loglab-ci-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -39,6 +60,10 @@ jobs:
       - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
       - name: Install locked environment
         run: uv sync --locked
+      - name: PostgreSQL client library (libpq) and server
+        run: |
+          uv run python -c "import psycopg; print('libpq', psycopg.pq.version())"
+          uv run python -c "import psycopg; print(psycopg.connect('dbname=postgres').info.server_version)"
       - name: Format check
         run: uv run ruff format --check
       - name: Lint
