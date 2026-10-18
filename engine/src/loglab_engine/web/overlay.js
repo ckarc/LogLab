@@ -134,6 +134,40 @@
       const when = shortHours(operation);
       name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}${when ? ` · ${when}` : ""}`;
     }
+    tick();
+  }
+
+  // A countdown beside the label: to the start until the operation begins,
+  // then to its end. The last hour shows in red.
+  const countdown = $("#op-countdown");
+  function tick() {
+    const now = Date.now();
+    const start = operation?.starts_at ? Date.parse(operation.starts_at) : null;
+    const end = operation?.ends_at ? Date.parse(operation.ends_at) : null;
+    let text = "";
+    let left = null;
+    if (start !== null && now < start) {
+      left = start - now;
+      text = `starts in ${span(left)}`;
+    } else if (end !== null && now <= end) {
+      left = end - now;
+      text = `ends in ${span(left)}`;
+    } else if (end !== null) {
+      text = "ended";
+    }
+    countdown.hidden = !text;
+    countdown.textContent = text;
+    countdown.classList.toggle("soon", left !== null && left < 3600e3 && text.startsWith("ends"));
+  }
+  setInterval(tick, 1000);
+
+  // "2d 04:10:33", or "04:10:33" under a day.
+  function span(ms) {
+    const s = Math.floor(ms / 1000);
+    const two = (n) => String(n).padStart(2, "0");
+    const clock = `${two(Math.floor(s / 3600) % 24)}:${two(Math.floor(s / 60) % 60)}:${two(s % 60)}`;
+    const days = Math.floor(s / 86400);
+    return days ? `${days}d ${clock}` : clock;
   }
 
   // An operation's hours, short enough for the label: "Jan 30 1600 – Jan 31 2159".
