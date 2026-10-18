@@ -134,6 +134,14 @@ own reference is at `/api/docs`.
   back to the order entered. The Engine does the sorting, over the whole log
   (`GET /api/v1/qsos?sort=call`, `sort=band` by frequency, or
   `sort=field:FREQ`; `newest_first` sets the direction).
+- An open QSO shows each field by its plain name with its ADIF name beside
+  it. **Fields** picks the fields every QSO always shows, in order, even when
+  empty; it searches all the ADIF 3.1 QSO fields by either name, grouped
+  (contact, station worked, my station, contest, QSL and awards,
+  propagation), and an APP_ or user-defined field can be named exactly. Any
+  other field a QSO has is still shown below them. **Add field** searches the
+  same list. A field left empty is not saved. The choice is saved with the
+  layout, per operator (`detail.fields`).
 - **QRZ.com lookup** is optional. Each operator saves their own QRZ.com login
   from the **QRZ.com lookup** link on the New QSO form
   (`GET`/`PUT`/`DELETE /api/v1/callbook/qrz`; the password is never sent
