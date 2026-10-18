@@ -302,13 +302,24 @@ class DetailLayout(_Strict):
         return self
 
 
+OverlayId = Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9-]{0,31}$")]
+
+
+class OverlayArrangement(_Strict):
+    """How an operator arranged the page in one overlay, kept while they use another."""
+
+    modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
+    tables: dict[TableId, TableLayout] = Field(default_factory=dict)
+
+
 class Layout(_Strict):
     """An operator's workspace: its modules in order, its tables, panels, and a QSO's fields.
 
     ``detail`` is ``None`` until the operator chooses, and the page's default is used.
     ``theme`` is light, dark, or ``auto`` to follow the computer's setting.
     ``operation`` is the operation the operator logs in, or ``None`` for
-    everyday logging under their own call.
+    everyday logging under their own call. ``by_overlay`` keeps how they
+    arranged the page in each other overlay, to bring back when they return.
     """
 
     version: Literal[1] = 1
@@ -318,6 +329,9 @@ class Layout(_Strict):
     detail: DetailLayout | None = None
     theme: Literal["auto", "light", "dark"] = "auto"
     operation: OperationRef | None = None
+    by_overlay: Annotated[dict[OverlayId, OverlayArrangement], Field(max_length=8)] = Field(
+        default_factory=dict
+    )
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
@@ -902,6 +916,10 @@ def _setup(body: OperationIn) -> OperationSetup:
         if unknown:
             detail = f"{detail} {found.name} does not send {', '.join(sorted(unknown))}.".strip()
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
+    if body.gota_call is not None and not found.gota:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"{found.name} has no GOTA station"
+        )
     if body.gota_call is not None and body.gota_call.upper() == body.station_call.upper():
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -916,6 +934,16 @@ def _setup(body: OperationIn) -> OperationSetup:
         sent=sent,
         ended=body.ended,
     )
+
+
+def _may_set_up(conn: Conn, who: Actor, body: OperationIn) -> None:
+    if IdentityStore(conn).may(who, Permission.ADMIN):
+        return
+    _require(conn, who, Permission.LOG)
+    if body.station_call.upper() != who.operator or body.gota_call is not None:
+        raise NotAuthorizedError(
+            f"only an administrator sets up an operation under a call other than {who.operator}"
+        )
 
 
 @api.get("/operations")
@@ -938,8 +966,12 @@ def get_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Operation
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
 def create_operation(body: OperationIn, who: Signed, conn: Conn) -> OperationOut:
-    """Set up an operation, such as Field Day under a club call. Administrators only."""
-    _require(conn, who, Permission.ADMIN)
+    """Set up an operation, such as Field Day under a club call.
+
+    Under a club call (any call but your own, or with a GOTA call), only an
+    administrator can; under your own call, anyone who may log.
+    """
+    _may_set_up(conn, who, body)
     return _operation_out(OperationStore(conn).create(who, _setup(body)))
 
 
@@ -948,7 +980,12 @@ def update_operation(
     operation_id: uuid.UUID, body: OperationIn, who: Signed, conn: Conn
 ) -> OperationOut:
     """Change an operation, or end it with ``ended``. QSOs already logged keep their fields."""
-    _require(conn, who, Permission.ADMIN)
+    _may_set_up(conn, who, body)
+    if (
+        not IdentityStore(conn).may(who, Permission.ADMIN)
+        and OperationStore(conn).get(operation_id).station_call != who.operator
+    ):
+        raise NotAuthorizedError("only an administrator changes a club's operation")
     return _operation_out(OperationStore(conn).update(who, operation_id, _setup(body)))
 
 

@@ -232,7 +232,8 @@ class Overlay(_Strict):
     """One operation overlay.
 
     ``contest_id`` is the ADIF ``CONTEST_ID`` its QSOs carry; the everyday
-    overlay has none, no exchange, and never checks for dupes.
+    overlay has none, no exchange, and never checks for dupes. ``gota`` says
+    the contest has a GOTA station, with a callsign of its own.
     """
 
     format: Literal[1]
@@ -247,6 +248,7 @@ class Overlay(_Strict):
     exchange: Exchange | None = None
     entry: Entry
     layout: Layout | None = None
+    gota: bool = False
 
     @model_validator(mode="after")
     def _contest_is_whole(self) -> Self:

@@ -10,11 +10,13 @@
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
   <link rel="stylesheet" href="/static/lotw.css">
+  <link rel="stylesheet" href="/static/overlay.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
   <script src="/static/lotw.js" defer></script>
+  <script src="/static/overlay.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -47,7 +49,7 @@
 
       <div id="workspace" class="workspace">
       <section class="card module" data-module="entry">
-        <h2>New QSO <span class="hint">all times UTC</span></h2>
+        <h2>New QSO <span class="hint">all times UTC</span> <span id="overlay-name" class="overlay-name" hidden></span></h2>
         <form id="entry" autocomplete="off">
           <div class="grid">
             <label class="wide">Call <span class="zero-field"><input name="CALL" required maxlength="20" autocapitalize="characters" spellcheck="false"><span class="zero-mirror" aria-hidden="true"></span></span></label>
@@ -73,6 +75,7 @@
             <button type="button" id="qrz-open" class="link qrz-open">QRZ.com</button>
           </div>
         </form>
+        <p id="dupe-note" class="dupe-note" aria-live="polite" hidden></p>
         <p id="stored" class="notice" hidden></p>
       </section>
 
@@ -180,6 +183,16 @@
     </div>
     <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
 
+    <h3>Operation</h3>
+    <p id="op-current" class="hint"></p>
+    <label class="op-choice">Log as <select id="op-choice"></select></label>
+    <label class="inline" id="op-gota-row" hidden><input type="checkbox" id="op-gota"> This is the GOTA station <span id="op-gota-call" class="hint"></span></label>
+    <div class="menu-items">
+      <button type="button" id="op-new" class="link">Set up an operation</button>
+      <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
+    </div>
+    <p id="op-error" class="error" role="alert"></p>
+
     <h3>Layout</h3>
     <div class="menu-items">
       <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
@@ -195,6 +208,25 @@
     <div class="menu-foot">
       <button type="button" id="sign-out" class="secondary small">Sign out</button>
     </div>
+  </dialog>
+
+  <dialog id="op-dialog" class="card qrz-dialog op-dialog" aria-labelledby="op-title">
+    <h2 id="op-title">Set up an operation</h2>
+    <p class="hint">An operation is one use of an overlay, like Field Day under the club call. Every operator signs in as themselves and picks it from the Menu; each QSO is logged as the station call, with the operator noted on it.</p>
+    <form id="op-form" autocomplete="off">
+      <label>Overlay <select name="overlay"></select></label>
+      <p id="op-summary" class="hint"></p>
+      <label>Name <input name="name" required maxlength="60" placeholder="e.g. Field Day 2027"></label>
+      <label>Station call <input name="station_call" required maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="the club call, or your own"></label>
+      <label id="op-gota-field">GOTA call <input name="gota_call" maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="optional; must differ from the station call"></label>
+      <div id="op-sent"></div>
+      <div class="actions">
+        <button type="submit">Save</button>
+        <button type="button" id="op-end" class="danger" hidden>End this operation</button>
+        <button type="button" id="op-cancel" class="secondary">Cancel</button>
+      </div>
+      <p class="error" role="alert"></p>
+    </form>
   </dialog>
 
   <dialog id="qrz-dialog" class="card qrz-dialog">
