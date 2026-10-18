@@ -114,6 +114,13 @@ own reference is at `/api/docs`.
   never logs it twice: the Engine recognises the ID.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
+- Each box on the page is a module. Press **Arrange** to drag boxes into a new
+  order by their ⠿ handle (or move them with the arrows or the arrow keys),
+  make two sit side by side at half width, or hide the New QSO or Log box.
+  The Engine keeps each operator's layout in its own `workspace` schema,
+  apart from the log, so it follows them to any workstation or tablet
+  (`GET`/`PUT /api/v1/layout`). "Not logged yet" can be moved but never
+  hidden.
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

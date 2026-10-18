@@ -13,6 +13,7 @@
   <header class="bar">
     <span class="brand">LogLab</span>
     <span id="who" class="who" hidden></span>
+    <button id="arrange" class="link" type="button" aria-pressed="false" hidden>Arrange</button>
     <button id="sign-out" class="link" type="button" hidden>Sign out</button>
   </header>
 
@@ -30,7 +31,16 @@
     </section>
 
     <div id="app" hidden>
-      <section class="card">
+      <div id="arrange-bar" class="card arrange-bar" hidden>
+        <span class="hint" id="arrange-hint">Drag a box by its ⠿ handle, or use its arrows. Your layout is saved for you and follows you to any workstation.</span>
+        <span id="tray"></span>
+        <span class="spacer"></span>
+        <button type="button" id="arrange-reset" class="small secondary">Reset to default</button>
+        <button type="button" id="arrange-done" class="small">Done</button>
+      </div>
+
+      <div id="workspace" class="workspace">
+      <section class="card module" data-module="entry">
         <h2>New QSO <span class="hint">all times UTC</span></h2>
         <form id="entry" autocomplete="off">
           <div class="grid">
@@ -53,13 +63,13 @@
         <p id="stored" class="notice" hidden></p>
       </section>
 
-      <section id="journal" class="card" hidden>
+      <section id="journal" class="card module" data-module="journal" hidden>
         <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
         <ul id="journal-list"></ul>
         <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
       </section>
 
-      <section class="card">
+      <section class="card module" data-module="log">
         <h2>Log</h2>
         <div class="filters">
           <input id="search" type="search" placeholder="Find a call" maxlength="20" spellcheck="false">
@@ -74,7 +84,7 @@
         </div>
       </section>
 
-      <section id="detail" class="card" hidden>
+      <section id="detail" class="card module" data-module="detail" hidden>
         <h2><span id="detail-title"></span> <button id="close-detail" class="link" type="button">Close</button></h2>
         <p id="detail-meta" class="hint"></p>
         <form id="edit">
@@ -93,6 +103,7 @@
         <h3>History</h3>
         <ol id="history"></ol>
       </section>
+      </div>
     </div>
   </main>
 

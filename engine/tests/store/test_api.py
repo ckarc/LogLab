@@ -243,3 +243,60 @@ def test_unknown_qsos_are_404(client: TestClient, k9ksu: dict[str, str]) -> None
     missing = "/api/v1/qsos/00000000-0000-0000-0000-000000000000"
     assert client.get(missing, headers=k9ksu).status_code == 404
     assert client.post(f"{missing}/delete", headers=k9ksu, json={}).status_code == 404
+
+
+LAYOUT = {
+    "version": 1,
+    "modules": [
+        {"id": "log", "width": "full", "hidden": False},
+        {"id": "entry", "width": "half", "hidden": False},
+        {"id": "journal", "width": "half", "hidden": True},
+    ],
+}
+
+
+def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
+    client: TestClient,
+    k9ksu: dict[str, str],
+    w0xyz: dict[str, str],
+) -> None:
+    """Saved under the operator, it comes back at another station; others are unaffected."""
+    assert client.get("/api/v1/layout", headers=k9ksu).json() == {"layout": None}
+    saved = client.put("/api/v1/layout", headers=k9ksu, json=LAYOUT)
+    assert saved.status_code == 200, saved.text
+    elsewhere = _sign_in(client, "K9KSU", ADMIN_SECRET, "fd-3")
+    assert client.get("/api/v1/layout", headers=elsewhere).json() == {"layout": LAYOUT}
+    assert client.get("/api/v1/layout", headers=w0xyz).json() == {"layout": None}
+    changed = {"version": 1, "modules": [{"id": "log", "width": "full", "hidden": False}]}
+    assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
+    assert client.get("/api/v1/layout", headers=k9ksu).json() == {"layout": changed}
+
+
+@pytest.mark.parametrize(
+    ("body", "fragment"),
+    [
+        ({"version": 1, "modules": []}, "at least 1"),
+        ({"version": 2, "modules": [{"id": "log"}]}, "version"),
+        ({"version": 1, "modules": [{"id": "radar"}]}, "id"),
+        ({"version": 1, "modules": [{"id": "log", "width": "wide"}]}, "width"),
+        ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
+        ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
+    ],
+)
+def test_a_bad_layout_is_refused(
+    client: TestClient,
+    k9ksu: dict[str, str],
+    body: dict[str, object],
+    fragment: str,
+) -> None:
+    """Layouts are checked at the boundary like everything else (Principle XII)."""
+    response = client.put("/api/v1/layout", headers=k9ksu, json=body)
+    assert response.status_code == 422
+    assert fragment in response.text
+    assert client.get("/api/v1/layout", headers=k9ksu).json() == {"layout": None}
+
+
+def test_a_layout_needs_a_signed_in_operator(client: TestClient) -> None:
+    """No session, no layout (Principle XIII)."""
+    assert client.get("/api/v1/layout").status_code == 401
+    assert client.put("/api/v1/layout", json=LAYOUT).status_code == 401

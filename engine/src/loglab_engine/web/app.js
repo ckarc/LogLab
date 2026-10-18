@@ -8,6 +8,8 @@
 // Each QSO gets its unique ID when it is typed and waits in this browser's
 // journal until the Engine has logged it, so a dropped link never loses one and
 // sending it again never duplicates it (Principle XV).
+// Each box on the page is a module the operator can move, widen, or hide. The
+// Engine keeps their layout, so it follows them to any workstation.
 "use strict";
 
 (() => {
@@ -20,6 +22,16 @@
   const MODES = ["SSB", "CW", "FT8", "FT4", "FM", "AM", "RTTY", "PSK", "DIGITALVOICE", "JS8", "OLIVIA", "SSTV"];
   // FT4 is a submode of MFSK in ADIF; the entry form writes it correctly.
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
+
+  const MODULES = { entry: "New QSO", journal: "Not logged yet", log: "Log", detail: "QSO detail" };
+  // The journal is never hidden: the operator must always see what is not
+  // logged yet (Principle XV). The detail panel opens from the log.
+  const HIDEABLE = new Set(["entry", "log"]);
+  const DEFAULT_LAYOUT = Object.freeze({
+    version: 1,
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", hidden: false })),
+  });
+  const SAVE_AFTER_MS = 400;
 
   const $ = (selector, root = document) => root.querySelector(selector);
   let session = null;
@@ -197,6 +209,197 @@
     if (sent) await loadLog();
   }
 
+  // -- Workspace: modules the operator arranges --------------------------
+
+  let layout = structuredClone(DEFAULT_LAYOUT);
+  let saveTimer = null;
+
+  const moduleEl = (id) => $(`.module[data-module="${id}"]`);
+
+  // Keep what is known from a saved layout, in its order; add anything new.
+  function normalize(saved) {
+    const seen = new Set();
+    const modules = [];
+    for (const m of (saved && saved.modules) || []) {
+      if (!(m.id in MODULES) || seen.has(m.id)) continue;
+      seen.add(m.id);
+      modules.push({ id: m.id, width: m.width === "half" ? "half" : "full", hidden: HIDEABLE.has(m.id) && m.hidden === true });
+    }
+    for (const id of Object.keys(MODULES)) {
+      if (!seen.has(id)) modules.push({ id, width: "full", hidden: false });
+    }
+    return { version: 1, modules };
+  }
+
+  // The page's order never changes, only where each box is drawn, so the
+  // keyboard and screen readers keep a stable order.
+  function applyLayout() {
+    layout.modules.forEach((m, index) => {
+      const el = moduleEl(m.id);
+      el.style.order = String(index);
+      el.classList.toggle("half", m.width === "half");
+      el.classList.toggle("off", m.hidden);
+      const head = $(".module-head", el);
+      $("[data-act=earlier]", head).disabled = index === 0;
+      $("[data-act=later]", head).disabled = index === layout.modules.length - 1;
+      const width = $("[data-act=width]", head);
+      width.textContent = m.width === "half" ? "Full width" : "Half width";
+    });
+    const tray = $("#tray");
+    tray.replaceChildren();
+    for (const m of layout.modules.filter((x) => x.hidden)) {
+      const show = document.createElement("button");
+      show.type = "button";
+      show.className = "small secondary";
+      show.textContent = `Show ${MODULES[m.id]}`;
+      show.addEventListener("click", () => changeLayout(m.id, { hidden: false }));
+      tray.append(show);
+    }
+  }
+
+  function saveLayout() {
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(async () => {
+      if (!session) return;
+      try {
+        await api("PUT", "/layout", layout);
+        $("#arrange-hint").classList.remove("error");
+      } catch (e) {
+        $("#arrange-hint").textContent = `Your layout was not saved: ${e.message}`;
+        $("#arrange-hint").classList.add("error");
+      }
+    }, SAVE_AFTER_MS);
+  }
+
+  function changeLayout(id, change) {
+    layout.modules = layout.modules.map((m) => (m.id === id ? { ...m, ...change } : m));
+    applyLayout();
+    saveLayout();
+  }
+
+  function move(id, to) {
+    const from = layout.modules.findIndex((m) => m.id === id);
+    const clamped = Math.max(0, Math.min(layout.modules.length - 1, to));
+    if (from === clamped) return false;
+    const [m] = layout.modules.splice(from, 1);
+    layout.modules.splice(clamped, 0, m);
+    applyLayout();
+    return true;
+  }
+
+  async function loadLayout() {
+    try {
+      const saved = await api("GET", "/layout");
+      layout = normalize(saved.layout || DEFAULT_LAYOUT);
+    } catch {
+      layout = normalize(DEFAULT_LAYOUT); // shown as the default until the Engine answers
+    }
+    applyLayout();
+  }
+
+  function arrange(on) {
+    document.body.classList.toggle("arranging", on);
+    $("#arrange-bar").hidden = !on;
+    $("#arrange").setAttribute("aria-pressed", String(on));
+  }
+
+  function toolButton(act, text, label) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "small secondary";
+    button.dataset.act = act;
+    button.textContent = text;
+    if (label) button.setAttribute("aria-label", label);
+    return button;
+  }
+
+  // Dragging uses pointer events, so it works with a mouse, a pen, or a finger.
+  function startDrag(event, id) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    const el = moduleEl(id);
+    const handle = event.currentTarget;
+    handle.setPointerCapture(event.pointerId);
+    el.classList.add("dragging");
+    const onMove = (e) => {
+      el.style.pointerEvents = "none";
+      const under = document.elementFromPoint(e.clientX, e.clientY);
+      el.style.pointerEvents = "";
+      const target = under && under.closest(".module");
+      if (!target || target === el) return;
+      const box = target.getBoundingClientRect();
+      const after = target.classList.contains("half") && el.classList.contains("half")
+        ? e.clientX > box.left + box.width / 2
+        : e.clientY > box.top + box.height / 2;
+      const ids = layout.modules.map((m) => m.id);
+      const from = ids.indexOf(id);
+      let to = ids.indexOf(target.dataset.module) + (after ? 1 : 0);
+      if (from < to) to -= 1;
+      move(id, to);
+    };
+    const onUp = () => {
+      handle.removeEventListener("pointermove", onMove);
+      handle.removeEventListener("pointerup", onUp);
+      handle.removeEventListener("pointercancel", onUp);
+      el.classList.remove("dragging");
+      saveLayout();
+    };
+    handle.addEventListener("pointermove", onMove);
+    handle.addEventListener("pointerup", onUp);
+    handle.addEventListener("pointercancel", onUp);
+  }
+
+  function buildModuleHeads() {
+    for (const [id, title] of Object.entries(MODULES)) {
+      const head = document.createElement("div");
+      head.className = "module-head";
+      const grip = document.createElement("button");
+      grip.type = "button";
+      grip.className = "grip";
+      grip.textContent = "⠿";
+      grip.title = "Drag to move";
+      grip.setAttribute("aria-label", `Move ${title}: drag, or use the arrow keys`);
+      grip.addEventListener("pointerdown", (event) => startDrag(event, id));
+      grip.addEventListener("keydown", (event) => {
+        const step = { ArrowUp: -1, ArrowLeft: -1, ArrowDown: 1, ArrowRight: 1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        const at = layout.modules.findIndex((m) => m.id === id);
+        if (move(id, at + step)) saveLayout();
+        grip.focus();
+      });
+      const name = document.createElement("span");
+      name.className = "module-title";
+      name.textContent = title;
+      const earlier = toolButton("earlier", "↑", `Move ${title} earlier`);
+      earlier.addEventListener("click", () => {
+        if (move(id, layout.modules.findIndex((m) => m.id === id) - 1)) saveLayout();
+      });
+      const later = toolButton("later", "↓", `Move ${title} later`);
+      later.addEventListener("click", () => {
+        if (move(id, layout.modules.findIndex((m) => m.id === id) + 1)) saveLayout();
+      });
+      const width = toolButton("width", "Half width");
+      width.addEventListener("click", () => {
+        const m = layout.modules.find((x) => x.id === id);
+        changeLayout(id, { width: m.width === "half" ? "full" : "half" });
+      });
+      head.append(grip, name, earlier, later, width);
+      if (HIDEABLE.has(id)) {
+        const hide = toolButton("hide", "Hide");
+        hide.addEventListener("click", () => changeLayout(id, { hidden: true }));
+        head.append(hide);
+      }
+      const placeholder = document.createElement("p");
+      placeholder.className = "hint placeholder";
+      placeholder.textContent = id === "journal"
+        ? "Appears here when a QSO is waiting to be logged."
+        : "Appears here when you open a QSO from the log.";
+      moduleEl(id).prepend(head);
+      if (id === "journal" || id === "detail") head.after(placeholder);
+    }
+  }
+
   // -- Session -----------------------------------------------------------
 
   function remember(value) {
@@ -220,6 +423,11 @@
     $("#app").hidden = true;
     $("#who").hidden = true;
     $("#sign-out").hidden = true;
+    $("#arrange").hidden = true;
+    arrange(false);
+    clearTimeout(saveTimer);
+    layout = normalize(DEFAULT_LAYOUT);
+    applyLayout();
     $("#sign-in").hidden = false;
     $("#sign-in-form .error").textContent = message;
     const station = $("#sign-in-form [name=station]");
@@ -232,6 +440,7 @@
     $("#app").hidden = false;
     $("#who").hidden = false;
     $("#sign-out").hidden = false;
+    $("#arrange").hidden = false;
     $("#who").textContent = `${session.operator} at ${session.station}`;
     const mayLog = session.permissions.includes("log");
     for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore, #add-field")) {
@@ -240,6 +449,7 @@
     if (!mayLog) setError("#entry", "You can view the log but not change it (no log permission).");
     resetEntry();
     renderJournal();
+    loadLayout();
     loadLog();
     flushJournal();
   }
@@ -579,12 +789,21 @@
   // -- Start -------------------------------------------------------------
 
   async function start() {
+    buildModuleHeads();
+    applyLayout();
     fillSelect($("#entry [name=BAND]"), BANDS);
     fillSelect($("#entry [name=MODE]"), MODES);
     $("#entry [name=BAND]").value = "20m";
 
     $("#sign-in-form").addEventListener("submit", signIn);
     $("#sign-out").addEventListener("click", signOut);
+    $("#arrange").addEventListener("click", () => arrange(!document.body.classList.contains("arranging")));
+    $("#arrange-done").addEventListener("click", () => arrange(false));
+    $("#arrange-reset").addEventListener("click", () => {
+      layout = normalize(DEFAULT_LAYOUT);
+      applyLayout();
+      saveLayout();
+    });
     $("#stored").addEventListener("transitionend", (event) => {
       if (event.propertyName === "opacity" && $("#stored").classList.contains("fading")) hideNotice();
     });
