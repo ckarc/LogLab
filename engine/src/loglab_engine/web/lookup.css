@@ -1,0 +1,22 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The QRZ.com lookup: a note beside Store QSO, and the login dialog. */
+
+#lookup-note { transition: opacity 0.8s; }
+#lookup-note.fading { opacity: 0; }
+#lookup-note.warn { color: var(--danger); font-weight: 500; }
+.qrz-open { margin-left: auto; font-size: 13px; }
+
+.qrz-dialog {
+  width: min(440px, calc(100vw - 32px));
+  padding: 24px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+.qrz-dialog::backdrop { background: rgba(10, 14, 30, 0.35); backdrop-filter: blur(4px); }
+.qrz-dialog form > label { margin-bottom: 12px; }
+.qrz-dialog .error { margin-top: 10px; }

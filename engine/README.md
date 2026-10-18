@@ -128,6 +128,17 @@ own reference is at `/api/docs`.
   back to the order entered. The Engine does the sorting, over the whole log
   (`GET /api/v1/qsos?sort=call`, `sort=band` by frequency, or
   `sort=field:FREQ`; `newest_first` sets the direction).
+- **QRZ.com lookup** is optional. Each operator saves their own QRZ.com login
+  from the **QRZ.com lookup** link on the New QSO form
+  (`GET`/`PUT`/`DELETE /api/v1/callbook/qrz`; the password is never sent
+  back). Leaving the Call box then fills in Name, QTH, State, and Grid from
+  QRZ.com, never over anything already typed (`GET /api/v1/lookup?call=W1AW`).
+  Every answer is kept in the `reference` schema, apart from the log, so a
+  call is fetched once (Principle VI); `refresh=true` fetches it again. With
+  no login, or no internet, nothing is filled in and logging works exactly
+  the same (Principle V); after QRZ.com cannot be reached the Engine leaves
+  it alone for a minute. The Engine has to send the password to QRZ.com, so
+  it is stored as typed: anyone who can read the database can read it.
 - The server listens only on this computer by default. `--host` and `--port`
   change that; there is no HTTPS yet, so do not open it to the internet.
 

@@ -10,6 +10,10 @@ Every request except signing in and the status check is made by a signed-in
 operator, who must hold the permission it needs (Principle XIII): ``view`` to
 read, ``log`` to change QSOs. All times are UTC (Principle VIII).
 
+Callsign lookup through QRZ.com is optional: with no login saved, or no
+internet, a lookup answers that it could not fill anything in, and logging
+works exactly the same (Principle V).
+
 A QSO is logged once the Engine has committed it to the database (Principle
 XV). A client may enter a QSO under an ID it chose when the QSO was typed, so
 sending it again from its journal never creates a duplicate.
@@ -49,6 +53,7 @@ from pydantic import (
 from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
 from loglab_engine.adif import Field as AdifField
+from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http_fetch
 from loglab_engine.store import (
     Actor,
     IdentityStore,
@@ -68,6 +73,8 @@ from loglab_engine.store import (
 
 if TYPE_CHECKING:
     from psycopg.rows import TupleRow
+
+    from loglab_engine.callbook.service import LookupResult
 
 SOURCE: Final = "https://github.com/ckarc/loglab"
 MAX_FIELDS: Final = 500
@@ -190,6 +197,52 @@ class Layout(_Strict):
             msg = "each module may appear only once"
             raise ValueError(msg)
         return self
+
+
+class LookupQuery(_Strict):
+    """Which call to look up, and whether to fetch a fresh copy instead of the kept one."""
+
+    model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
+
+    call: Annotated[
+        str,
+        StringConstraints(min_length=1, max_length=20, pattern=r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"),
+    ]
+    refresh: bool = False
+
+
+class LookupOut(BaseModel):
+    """What the callbook says about a call, or why it could not say.
+
+    ``status`` is ``found``, ``not_found``, ``not_set_up`` (no QRZ.com login),
+    ``unreachable`` (no internet, or QRZ.com is down), or ``login_failed``.
+    """
+
+    status: str
+    call: str
+    name: str | None
+    qth: str | None
+    state: str | None
+    country: str | None
+    grid: str | None
+    cached: bool
+    fetched_at: datetime | None
+    message: str
+
+
+class QrzLoginIn(_Strict):
+    """The operator's own QRZ.com username and password."""
+
+    username: Annotated[str, StringConstraints(min_length=1, max_length=64, strip_whitespace=True)]
+    password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class QrzLoginOut(BaseModel):
+    """Whether the operator has a QRZ.com login saved. The password is never returned."""
+
+    username: str | None
+    status: str | None
+    message: str
 
 
 class LayoutOut(BaseModel):
@@ -482,6 +535,75 @@ def restore_qso(qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn) -> 
     return _written(LogStore(conn).restore_qso(qso_id, actor=who, note=body.note))
 
 
+def _callbook(request: Request, conn: Conn) -> Callbook:
+    link: Link = request.app.state.qrz
+    return Callbook(conn, link)
+
+
+Books = Annotated[Callbook, Depends(_callbook)]
+
+
+def _lookup_out(result: LookupResult) -> LookupOut:
+    entry = result.entry
+    return LookupOut(
+        status=result.status.value,
+        call=result.call,
+        name=None if entry is None else entry.name,
+        qth=None if entry is None else entry.qth,
+        state=None if entry is None else entry.state,
+        country=None if entry is None else entry.country,
+        grid=None if entry is None else entry.grid,
+        cached=result.cached,
+        fetched_at=result.fetched_at,
+        message=result.message,
+    )
+
+
+@api.get("/lookup")
+def lookup(
+    who: Signed, conn: Conn, books: Books, query: Annotated[LookupQuery, Query()]
+) -> LookupOut:
+    """Who and where a call is: kept answers first, then QRZ.com with the operator's login.
+
+    Always answers 200; ``status`` says whether anything was found. A call is
+    fetched from QRZ.com once and kept (Principle VI); ``refresh`` fetches it again.
+    """
+    _require(conn, who, Permission.VIEW)
+    return _lookup_out(books.lookup(who, query.call.upper(), refresh=query.refresh))
+
+
+_LOGIN_MESSAGE: Final = {
+    None: "Saved. QRZ.com accepted your login.",
+    LookupStatus.LOGIN_FAILED: "Saved, but QRZ.com refused this username and password.",
+    LookupStatus.UNREACHABLE: "Saved. QRZ.com can't be reached right now to check it.",
+}
+
+
+@api.get("/callbook/qrz")
+def get_qrz_login(who: Signed, books: Books) -> QrzLoginOut:
+    """The QRZ.com username the signed-in operator saved, if any."""
+    username = books.login_name(who)
+    message = "QRZ.com is not set up." if username is None else f"Using QRZ.com as {username}."
+    return QrzLoginOut(username=username, status=None, message=message)
+
+
+@api.put("/callbook/qrz")
+def put_qrz_login(body: QrzLoginIn, who: Signed, books: Books) -> QrzLoginOut:
+    """Save the signed-in operator's QRZ.com login, and try it if QRZ.com can be reached."""
+    result = books.save_login(who, body.username, body.password)
+    return QrzLoginOut(
+        username=body.username,
+        status=None if result is None else result.value,
+        message=_LOGIN_MESSAGE[result],
+    )
+
+
+@api.delete("/callbook/qrz", status_code=status.HTTP_204_NO_CONTENT)
+def delete_qrz_login(who: Signed, books: Books) -> None:
+    """Remove the signed-in operator's QRZ.com login."""
+    books.remove_login(who)
+
+
 _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (SignInError, status.HTTP_401_UNAUTHORIZED),
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
@@ -519,8 +641,11 @@ async def _security_headers(
 # -- The application ----------------------------------------------------------
 
 
-def create_app(database: str) -> FastAPI:
-    """The Engine's API and web client, using the PostgreSQL database ``database``."""
+def create_app(database: str, qrz_fetch: Callable[[str], bytes] = http_fetch) -> FastAPI:
+    """The Engine's API and web client, using the PostgreSQL database ``database``.
+
+    ``qrz_fetch`` is how the Engine reaches QRZ.com; tests give it a stand-in.
+    """
     app = FastAPI(
         title="LogLab Engine",
         version=__version__,
@@ -531,6 +656,7 @@ def create_app(database: str) -> FastAPI:
         openapi_url="/api/v1/openapi.json",
     )
     app.state.database = database
+    app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch))
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)
