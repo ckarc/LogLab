@@ -412,6 +412,10 @@ body.arranging .module-head {
 .handle:hover { filter: none; border-color: var(--accent); }
 .handle .grip { color: var(--accent); font-size: 18px; line-height: 1; }
 .handle .module-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+/* Pop out: a box in a window of its own. */
+h2 .popout { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--muted); }
+h2 .popout:hover { color: var(--accent); }
+#all-boxes { font-size: 13px; font-weight: 500; color: var(--muted); text-decoration: none; }
 .widths { display: flex; gap: 4px; }
 .widths button { min-width: 34px; padding-left: 8px; padding-right: 8px; }
 .widths button[aria-pressed="true"] { color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
