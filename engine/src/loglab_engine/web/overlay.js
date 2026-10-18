@@ -282,6 +282,7 @@
   // -- Wiring ----------------------------------------------------------------
 
   document.addEventListener("loglab:layout-loaded", load);
+  document.addEventListener("loglab:overlays-changed", load); // the overlay editor saved one
   document.addEventListener("loglab:entry-reset", () => {
     timeTyped = false;
     clearNote();

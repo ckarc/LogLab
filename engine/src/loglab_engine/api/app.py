@@ -1118,6 +1118,15 @@ def save_overlay(overlay_id: str, body: OverlaySave, who: Signed, conn: Conn) ->
             status.HTTP_422_UNPROCESSABLE_CONTENT, "the overlay's id must match its address"
         )
     current = _editable(conn, overlay_id)
+    name = body.definition.name.strip().lower()
+    if any(
+        o.id != overlay_id and not o.retired and o.name.strip().lower() == name
+        for o in _catalog(conn)
+    ):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"another overlay is already called {body.definition.name}; give this one its own name",
+        )
     if (current.version if current else 0) != body.base_version:
         raise StaleVersionError(
             f"the overlay {overlay_id} was changed by someone else; open it again"

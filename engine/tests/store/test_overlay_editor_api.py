@@ -192,3 +192,12 @@ def test_an_operation_uses_an_overlay_from_the_editor(
     response = client.delete("/api/v1/overlays/club-fd?base_version=1", headers=k9ksu)
     assert response.status_code == 409
     assert "Field Day 2027" in response.json()["detail"]
+
+
+def test_two_overlays_cannot_share_a_name(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """Operators pick an overlay by its name, so each name is used once."""
+    assert _save(client, k9ksu, _copy(client, k9ksu)).status_code == 200
+    again = _save(client, k9ksu, _copy(client, k9ksu, id="club-fd-2"))
+    assert again.status_code == 409
+    builtin = _save(client, k9ksu, _copy(client, k9ksu, id="club-fd-3", name="arrl field day"))
+    assert builtin.status_code == 409
