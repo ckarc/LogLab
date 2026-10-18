@@ -7,7 +7,11 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>LogLab</title>
   <link rel="stylesheet" href="/static/app.css">
+  <link rel="stylesheet" href="/static/lookup.css">
+  <link rel="stylesheet" href="/static/map.css">
   <script src="/static/app.js" defer></script>
+  <script src="/static/lookup.js" defer></script>
+  <script src="/static/map.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -52,11 +56,18 @@
             <label>RST sent <input name="RST_SENT" maxlength="8"></label>
             <label>RST rcvd <input name="RST_RCVD" maxlength="8"></label>
             <label>Name <input name="NAME" maxlength="60"></label>
+            <label>QTH <input name="QTH" maxlength="64"></label>
+            <label>State <input name="STATE" maxlength="32"></label>
+            <label>Grid <input name="GRIDSQUARE" maxlength="8" spellcheck="false"></label>
+            <label>Class <input name="CLASS" maxlength="8" autocapitalize="characters" spellcheck="false" placeholder="e.g. 3A" title="Field Day class: transmitters and category, like 3A"></label>
+            <label>Section <input name="ARRL_SECT" maxlength="8" autocapitalize="characters" spellcheck="false" placeholder="e.g. KS" title="ARRL or RAC section, like KS or ONE"></label>
             <label class="wide">Comment <input name="COMMENT" maxlength="200"></label>
           </div>
           <div class="actions">
             <button type="submit">Store QSO</button>
             <span class="error" role="alert"></span>
+            <span id="lookup-note" class="hint" aria-live="polite"></span>
+            <button type="button" id="qrz-open" class="link qrz-open">QRZ.com lookup</button>
           </div>
         </form>
         <p id="stored" class="notice" hidden></p>
@@ -84,6 +95,32 @@
         </div>
       </section>
 
+      <section id="map" class="card module" data-module="map">
+        <h2>Field Day sections <span class="hint">ARRL and RAC sections with a QSO in the log</span></h2>
+        <div class="map-tools">
+          <span id="map-count" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" id="map-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="map-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="map-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="map-frame">
+          <svg id="map-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of ARRL and RAC sections">
+            <defs>
+              <pattern id="map-stripes" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+                <rect width="6" height="6" class="map-stripe-bg"></rect>
+                <rect width="3" height="6" class="map-stripe"></rect>
+              </pattern>
+            </defs>
+          </svg>
+        </div>
+        <p id="map-info" class="hint" aria-live="polite">Tap a section for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+        <p id="map-note" class="notice" hidden></p>
+        <p id="map-error" class="error" role="alert"></p>
+        <h3 id="map-missing-head"></h3>
+        <ul id="map-missing"></ul>
+      </section>
+
       <section id="detail" class="card module" data-module="detail" hidden>
         <h2><span id="detail-title"></span> <button id="close-detail" class="link" type="button">Close</button></h2>
         <p id="detail-meta" class="hint"></p>
@@ -106,6 +143,22 @@
       </div>
     </div>
   </main>
+
+  <dialog id="qrz-dialog" class="card qrz-dialog">
+    <form id="qrz-form" method="dialog" autocomplete="off">
+      <h2>QRZ.com lookup</h2>
+      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. It uses your own QRZ.com login, saved for you alone. With no internet, logging works exactly the same; nothing is filled in.</p>
+      <p id="qrz-state" class="hint"></p>
+      <label>QRZ.com username <input name="username" required maxlength="64" autocapitalize="characters" spellcheck="false"></label>
+      <label>QRZ.com password <input name="password" type="password" required maxlength="128"></label>
+      <div class="actions">
+        <button type="submit" value="save">Save</button>
+        <button type="button" id="qrz-remove" class="danger" hidden>Remove my login</button>
+        <button type="button" id="qrz-close" class="secondary">Close</button>
+      </div>
+      <p class="error" role="alert"></p>
+    </form>
+  </dialog>
 
   <footer class="foot">
     <span id="version">LogLab</span> · AGPL-3.0 ·

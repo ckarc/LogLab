@@ -25,10 +25,12 @@
   // FT4 is a submode of MFSK in ADIF; the entry form writes it correctly.
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
 
-  const MODULES = { entry: "New QSO", journal: "Not logged yet", log: "Log", detail: "QSO detail" };
+  const MODULES = {
+    entry: "New QSO", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections",
+  };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "log"]);
+  const HIDEABLE = new Set(["entry", "log", "map"]);
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
     modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false })),
@@ -77,6 +79,9 @@
     if (!response.ok) throw new ApiError(response.status, describe(data) || response.statusText);
     return data;
   }
+
+  // lookup.js (the QRZ.com lookup) reaches the Engine through the same API.
+  window.LogLab = Object.freeze({ api });
 
   function describe(data) {
     if (!data || data.detail === undefined) return "";
@@ -941,7 +946,7 @@
   function resetEntry() {
     const form = $("#entry");
     const { date, time } = utcNow();
-    for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "COMMENT"]) form[name].value = "";
+    for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "QTH", "STATE", "GRIDSQUARE", "CLASS", "ARRL_SECT", "COMMENT"]) form[name].value = "";
     form.QSO_DATE.value = date;
     form.TIME_ON.value = time;
     showCallZeros(form.CALL);
@@ -978,6 +983,11 @@
     add("RST_SENT", form.RST_SENT.value);
     add("RST_RCVD", form.RST_RCVD.value);
     add("NAME", form.NAME.value);
+    add("QTH", form.QTH.value);
+    add("STATE", form.STATE.value);
+    add("GRIDSQUARE", form.GRIDSQUARE.value);
+    add("CLASS", form.CLASS.value.toUpperCase());
+    add("ARRL_SECT", form.ARRL_SECT.value.toUpperCase());
     add("COMMENT", form.COMMENT.value);
     return fields;
   }
@@ -1090,6 +1100,7 @@
     FREQ: "Freq (MHz)", RST_SENT: "RST sent", RST_RCVD: "RST rcvd", NAME: "Name", COMMENT: "Comment",
     GRIDSQUARE: "Grid", QTH: "QTH", STATE: "State", COUNTRY: "Country", TX_PWR: "Power (W)",
     CONTEST_ID: "Contest", SRX: "Rcvd #", STX: "Sent #", SUBMODE: "Submode", TIME_OFF: "Time off",
+    CLASS: "Class", ARRL_SECT: "Section",
   };
 
   function logColumn(key) {
@@ -1119,6 +1130,8 @@
       row.addEventListener("click", () => openDetail(qso.id));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
+    // Other modules that show the log (map.js) follow it.
+    document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
