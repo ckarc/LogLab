@@ -21,7 +21,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterator
 from datetime import datetime
 from importlib.resources import files
-from typing import TYPE_CHECKING, Annotated, Final
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
 import psycopg
 from fastapi import (
@@ -37,7 +37,14 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    StringConstraints,
+    ValidationError,
+    model_validator,
+)
 
 from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
@@ -55,6 +62,7 @@ from loglab_engine.store import (
     SignInError,
     StaleVersionError,
     StoreError,
+    WorkspaceStore,
     connect,
 )
 
@@ -125,6 +133,38 @@ class QsoChange(_Strict):
     """Why a QSO is being deleted or restored."""
 
     note: Note | None = None
+
+
+ModuleId = Literal["entry", "journal", "log", "detail"]
+
+
+class ModuleLayout(_Strict):
+    """One module of the workspace: how wide it is, and whether it is shown."""
+
+    id: ModuleId
+    width: Literal["half", "full"] = "full"
+    hidden: bool = False
+
+
+class Layout(_Strict):
+    """An operator's workspace: the modules in the order they appear."""
+
+    version: Literal[1] = 1
+    modules: Annotated[list[ModuleLayout], Field(min_length=1, max_length=32)]
+
+    @model_validator(mode="after")
+    def _each_module_once(self) -> Self:
+        ids = [m.id for m in self.modules]
+        if len(ids) != len(set(ids)):
+            msg = "each module may appear only once"
+            raise ValueError(msg)
+        return self
+
+
+class LayoutOut(BaseModel):
+    """The operator's saved layout, or ``None`` to use the page's default."""
+
+    layout: Layout | None
 
 
 class SessionOut(BaseModel):
@@ -309,6 +349,25 @@ def sign_out(who: Signed, conn: Conn, authorization: Annotated[str, Header()]) -
     """End this session."""
     del who  # authenticated above; an ended session cannot sign out again
     IdentityStore(conn).sign_out(authorization.partition(" ")[2].strip())
+
+
+@api.get("/layout")
+def get_layout(who: Signed, conn: Conn) -> LayoutOut:
+    """The signed-in operator's workspace layout; it follows them to any workstation."""
+    saved = WorkspaceStore(conn).layout(who)
+    if saved is None:
+        return LayoutOut(layout=None)
+    try:
+        return LayoutOut(layout=Layout.model_validate(saved, strict=False))
+    except ValidationError:
+        return LayoutOut(layout=None)  # saved by an older page: start from the default
+
+
+@api.put("/layout")
+def put_layout(body: Layout, who: Signed, conn: Conn) -> LayoutOut:
+    """Save the signed-in operator's workspace layout."""
+    WorkspaceStore(conn).save_layout(who, body.model_dump())
+    return LayoutOut(layout=body)
 
 
 @api.get("/qsos")

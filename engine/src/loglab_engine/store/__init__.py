@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""QSO storage in PostgreSQL: schema migrations, operator sign-in, and the audited log."""
+"""QSO storage in PostgreSQL: schema migrations, operator sign-in, the audited log, and layouts."""
 
 from loglab_engine.store.db import connect, default_database
 from loglab_engine.store.identity import (
@@ -36,6 +36,7 @@ from loglab_engine.store.migrate import (
     migrate,
     pending_migrations,
 )
+from loglab_engine.store.workspace import WorkspaceStore
 
 __all__ = [
     "Action",
@@ -60,6 +61,7 @@ __all__ = [
     "SignInError",
     "StaleVersionError",
     "StoreError",
+    "WorkspaceStore",
     "applied_migrations",
     "connect",
     "default_database",
