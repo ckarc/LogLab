@@ -12,7 +12,9 @@ read, ``log`` to change QSOs. All times are UTC (Principle VIII).
 
 Callsign lookup through QRZ.com is optional: with no login saved, or no
 internet, a lookup answers that it could not fill anything in, and logging
-works exactly the same (Principle V).
+works exactly the same (Principle V). So is Logbook of the World: QSOs wait
+to be sent until an operator sends them, and a send or a fetch with no
+internet changes nothing and says so.
 
 A QSO is logged once the Engine has committed it to the database (Principle
 XV). A client may enter a QSO under an ID it chose when the QSO was typed, so
@@ -21,9 +23,11 @@ sending it again from its journal never creates a duplicate.
 
 from __future__ import annotations
 
+import base64
+import binascii
 import uuid
 from collections.abc import Awaitable, Callable, Iterator
-from datetime import datetime
+from datetime import date, datetime
 from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
@@ -54,6 +58,18 @@ from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
 from loglab_engine.adif import Field as AdifField
 from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http_fetch
+from loglab_engine.lotw import (
+    CertificateError,
+    LocationError,
+    Lotw,
+    LotwClient,
+    Place,
+    Setup,
+    Transport,
+    https,
+)
+from loglab_engine.lotw import Link as LotwLink
+from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.reference import SECTIONS, tally_sections
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.store import (
@@ -84,6 +100,7 @@ MAX_VALUE: Final = 64 * 1024
 MAX_NAME: Final = 64
 MAX_NOTE: Final = 1000
 MAX_LIST: Final = 500
+MAX_P12_BASE64: Final = 96 * 1024
 # The web client loads nothing from anywhere else, so it works offline (Principle V).
 _CSP: Final = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -379,6 +396,113 @@ def _record(fields: list[AdifFieldModel]) -> Record:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
 
 
+class LotwCertificateIn(_Strict):
+    """A LoTW callsign certificate: TrustedQSL's ``.p12`` file, in base64, and its password."""
+
+    p12_base64: Annotated[str, StringConstraints(min_length=1, max_length=MAX_P12_BASE64)]
+    password: Annotated[str, StringConstraints(max_length=128)]
+
+
+class LotwLoginIn(_Strict):
+    """The operator's LoTW website username and password, for fetching confirmations."""
+
+    username: Annotated[str, StringConstraints(min_length=1, max_length=64, strip_whitespace=True)]
+    password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class LotwLocationModel(_Strict):
+    """Where the station is, as LoTW records it with each upload.
+
+    The call and DXCC entity come from the certificate. US stations name a
+    state and may name a county; Canadian stations name a province.
+    """
+
+    grid: Annotated[str, StringConstraints(min_length=4, max_length=6, strip_whitespace=True)]
+    ituz: Annotated[int, Field(ge=1, le=90)]
+    cqz: Annotated[int, Field(ge=1, le=40)]
+    us_state: Annotated[str, StringConstraints(max_length=2)] | None = None
+    us_county: Annotated[str, StringConstraints(max_length=40)] | None = None
+    ca_province: Annotated[str, StringConstraints(max_length=2)] | None = None
+
+
+class LotwCertificateOut(BaseModel):
+    """What the saved certificate says. Its key and password are never returned."""
+
+    call: str
+    dxcc: int
+    entity: str
+    qso_first: date
+    qso_last: date | None
+    expires: datetime
+
+
+class LotwSetupOut(BaseModel):
+    """The operator's LoTW set-up, and how many of their QSOs wait to be sent.
+
+    ``problem`` says what stops sending, if anything is set up wrongly.
+    """
+
+    certificate: LotwCertificateOut | None
+    username: str | None
+    location: LotwLocationModel | None
+    waiting: int
+    qsl_since: str | None
+    problem: str | None
+    message: str
+
+
+class LotwSkippedOut(BaseModel):
+    """A waiting QSO that was not sent, and why."""
+
+    id: uuid.UUID
+    call: str | None
+    reason: str
+
+
+class LotwUploadOut(BaseModel):
+    """What sending did.
+
+    ``status`` is ``done``, ``nothing``, ``not_set_up``, ``unreachable``,
+    ``rejected`` or ``certificate_problem``.
+    """
+
+    status: str
+    sent: int
+    skipped: list[LotwSkippedOut]
+    remaining: int
+    message: str
+
+
+class LotwDownloadOut(BaseModel):
+    """What fetching confirmations did.
+
+    ``status`` is ``done``, ``not_set_up``, ``unreachable`` or ``login_failed``.
+    """
+
+    status: str
+    confirmed: int
+    already: int
+    unmatched: int
+    message: str
+
+
+class LotwPlaceOut(BaseModel):
+    """A state or province a station location can name, with its (ITU, CQ) zones."""
+
+    code: str
+    name: str
+    zones: list[tuple[int, int]]
+    counties: list[str]
+
+
+class LotwPlacesOut(BaseModel):
+    """The places LoTW lists, for the station-location form."""
+
+    us_states: list[LotwPlaceOut]
+    ca_provinces: list[LotwPlaceOut]
+    source: str
+
+
 # -- Dependencies -------------------------------------------------------------
 
 
@@ -664,6 +788,159 @@ def delete_qrz_login(who: Signed, books: Books) -> None:
     books.remove_login(who)
 
 
+def _lotw(request: Request, conn: Conn) -> Lotw:
+    link: LotwLink = request.app.state.lotw
+    return Lotw(conn, link, f"LogLab Engine {__version__}")
+
+
+LotwService = Annotated[Lotw, Depends(_lotw)]
+
+
+def _setup_out(setup: Setup) -> LotwSetupOut:
+    cert = setup.certificate
+    location = setup.location
+    if cert is None:
+        message = "LoTW is not set up."
+    elif location is None:
+        message = f"Certificate for {cert.call} saved. Add your station location to send QSOs."
+    else:
+        waiting = setup.waiting
+        message = (
+            f"Nothing is waiting to go to LoTW as {cert.call}."
+            if waiting == 0
+            else f"{waiting} QSO{'' if waiting == 1 else 's'} waiting to go to LoTW as {cert.call}."
+        )
+    return LotwSetupOut(
+        certificate=None
+        if cert is None
+        else LotwCertificateOut(
+            call=cert.call,
+            dxcc=cert.dxcc,
+            entity=cert.entity,
+            qso_first=cert.qso_first,
+            qso_last=cert.qso_last,
+            expires=cert.expires,
+        ),
+        username=setup.username,
+        location=None
+        if location is None
+        else LotwLocationModel(
+            grid=location.grid,
+            ituz=location.ituz,
+            cqz=location.cqz,
+            us_state=location.us_state,
+            us_county=location.us_county,
+            ca_province=location.ca_province,
+        ),
+        waiting=setup.waiting,
+        qsl_since=setup.qsl_since,
+        problem=setup.problem,
+        message=setup.problem or message,
+    )
+
+
+@api.get("/lotw")
+def get_lotw(who: Signed, lotw: LotwService) -> LotwSetupOut:
+    """The signed-in operator's LoTW set-up, and how many QSOs wait to be sent."""
+    return _setup_out(lotw.setup(who))
+
+
+@api.get("/lotw/places")
+def get_lotw_places(who: Signed) -> LotwPlacesOut:
+    """The US states and counties and Canadian provinces LoTW knows, with their zones."""
+    del who  # signed in is enough
+    t = lotw_tables()
+
+    def out(place: Place) -> LotwPlaceOut:
+        return LotwPlaceOut(
+            code=place.code,
+            name=place.name,
+            zones=list(place.zones),
+            counties=list(place.counties),
+        )
+
+    return LotwPlacesOut(
+        us_states=[out(p) for p in t.us_states.values()],
+        ca_provinces=[out(p) for p in t.ca_provinces.values()],
+        source=t.source,
+    )
+
+
+@api.put("/lotw/certificate")
+def put_lotw_certificate(body: LotwCertificateIn, who: Signed, lotw: LotwService) -> LotwSetupOut:
+    """Save the operator's callsign certificate, after checking it opens with its password."""
+    try:
+        p12 = base64.b64decode(body.p12_base64, validate=True)
+    except binascii.Error as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "the certificate file is not base64"
+        ) from error
+    try:
+        lotw.save_certificate(who, p12, body.password)
+    except CertificateError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    return _setup_out(lotw.setup(who))
+
+
+@api.put("/lotw/login")
+def put_lotw_login(body: LotwLoginIn, who: Signed, lotw: LotwService) -> LotwSetupOut:
+    """Save the operator's LoTW website login, for fetching confirmations."""
+    lotw.save_login(who, body.username, body.password)
+    return _setup_out(lotw.setup(who))
+
+
+@api.put("/lotw/location")
+def put_lotw_location(body: LotwLocationModel, who: Signed, lotw: LotwService) -> LotwSetupOut:
+    """Save the station location LoTW records with each upload."""
+    try:
+        lotw.save_location(who, body.model_dump())
+    except LocationError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+    return _setup_out(lotw.setup(who))
+
+
+@api.delete("/lotw", status_code=status.HTTP_204_NO_CONTENT)
+def delete_lotw(who: Signed, lotw: LotwService) -> None:
+    """Remove the operator's whole LoTW set-up: certificate, login and location."""
+    lotw.remove(who)
+
+
+@api.post("/lotw/upload")
+def lotw_upload(who: Signed, conn: Conn, lotw: LotwService) -> LotwUploadOut:
+    """Sign the operator's waiting QSOs with their certificate and send them to LoTW.
+
+    Always answers 200; ``status`` says what happened. QSOs LoTW accepted get
+    ``LOTW_QSL_SENT`` ``Y``, as a new audited version (Principle VII).
+    """
+    _require(conn, who, Permission.LOG)
+    result = lotw.upload(who)
+    return LotwUploadOut(
+        status=result.outcome.value,
+        sent=result.sent,
+        skipped=[LotwSkippedOut(id=s.qso_id, call=s.call, reason=s.reason) for s in result.skipped],
+        remaining=result.remaining,
+        message=result.message,
+    )
+
+
+@api.post("/lotw/download")
+def lotw_download(who: Signed, conn: Conn, lotw: LotwService) -> LotwDownloadOut:
+    """Fetch new confirmations from LoTW and mark the QSOs they confirm.
+
+    Always answers 200; ``status`` says what happened. Confirmed QSOs get
+    ``LOTW_QSL_RCVD`` ``Y``, as a new audited version (Principle VII).
+    """
+    _require(conn, who, Permission.LOG)
+    result = lotw.download(who)
+    return LotwDownloadOut(
+        status=result.outcome.value,
+        confirmed=result.confirmed,
+        already=result.already,
+        unmatched=result.unmatched,
+        message=result.message,
+    )
+
+
 _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (SignInError, status.HTTP_401_UNAUTHORIZED),
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
@@ -701,10 +978,15 @@ async def _security_headers(
 # -- The application ----------------------------------------------------------
 
 
-def create_app(database: str, qrz_fetch: Callable[[str], bytes] = http_fetch) -> FastAPI:
+def create_app(
+    database: str,
+    qrz_fetch: Callable[[str], bytes] = http_fetch,
+    lotw_transport: Transport = https,
+) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
-    ``qrz_fetch`` is how the Engine reaches QRZ.com; tests give it a stand-in.
+    ``qrz_fetch`` and ``lotw_transport`` are how the Engine reaches QRZ.com and
+    LoTW; tests give them stand-ins.
     """
     app = FastAPI(
         title="LogLab Engine",
@@ -717,6 +999,7 @@ def create_app(database: str, qrz_fetch: Callable[[str], bytes] = http_fetch) ->
     )
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch))
+    app.state.lotw = LotwLink(LotwClient(lotw_transport))
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)
