@@ -46,9 +46,24 @@ class Operation:
     ended: bool
     created_at: datetime
     changed_at: datetime
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+    def open_at(self, when: datetime) -> bool:
+        """Whether ``when`` falls within the operation's hours (open ends always do)."""
+        return (self.starts_at is None or when >= self.starts_at) and (
+            self.ends_at is None or when <= self.ends_at
+        )
+
+    def over(self, now: datetime) -> bool:
+        """Whether the operation has been ended, or its end time has passed."""
+        return self.ended or (self.ends_at is not None and now > self.ends_at)
 
 
-_COLUMNS = "id, overlay, name, station_call, gota_call, sent, ended, created_at, changed_at"
+_COLUMNS = (
+    "id, overlay, name, station_call, gota_call, sent, ended, created_at, changed_at,"
+    " starts_at, ends_at"
+)
 
 
 def _operation(row: TupleRow) -> Operation:
@@ -63,6 +78,8 @@ def _operation(row: TupleRow) -> Operation:
         ended=row[6],
         created_at=row[7],
         changed_at=row[8],
+        starts_at=row[9],
+        ends_at=row[10],
     )
 
 
@@ -76,6 +93,8 @@ class OperationSetup:
     gota_call: str | None
     sent: Mapping[str, str]
     ended: bool = False
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
 
 
 class OperationStore:
@@ -127,8 +146,9 @@ class OperationStore:
         return self._write(
             f"""
             INSERT INTO workspace.operation
-                (id, overlay, name, station_call, gota_call, sent, ended, session_id)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                (id, overlay, name, station_call, gota_call, sent, ended, session_id,
+                 starts_at, ends_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING {_COLUMNS}
             """,  # noqa: S608 - constant columns
             (
@@ -140,6 +160,8 @@ class OperationStore:
                 Jsonb(dict(setup.sent)),
                 setup.ended,
                 actor.session_id,
+                setup.starts_at,
+                setup.ends_at,
             ),
         )
 
@@ -154,7 +176,7 @@ class OperationStore:
             f"""
             UPDATE workspace.operation
             SET overlay = %s, name = %s, station_call = %s, gota_call = %s, sent = %s,
-                ended = %s, session_id = %s
+                ended = %s, session_id = %s, starts_at = %s, ends_at = %s
             WHERE id = %s
             RETURNING {_COLUMNS}
             """,  # noqa: S608 - constant columns
@@ -166,6 +188,8 @@ class OperationStore:
                 Jsonb(dict(setup.sent)),
                 setup.ended,
                 actor.session_id,
+                setup.starts_at,
+                setup.ends_at,
                 operation_id,
             ),
         )

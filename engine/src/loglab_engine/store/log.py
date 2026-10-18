@@ -215,6 +215,20 @@ class QsoVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class QsoFilter:
+    """Which QSOs :meth:`LogStore.find` lists.
+
+    ``call`` keeps those with that call; ``operation`` those logged in that
+    operation (whose ``APP_LOGLAB_OPERATION`` names it); ``include_deleted``
+    adds deleted ones.
+    """
+
+    call: str | None = None
+    operation: uuid.UUID | None = None
+    include_deleted: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ImportBatch:
     """An imported file: its identity and the header it arrived with."""
 
@@ -741,14 +755,13 @@ class LogStore:
 
     def find(
         self,
+        which: QsoFilter = QsoFilter(),  # noqa: B008 - frozen, so safe to share
         *,
-        call: str | None = None,
         limit: int = 20,
-        include_deleted: bool = False,
         newest_first: bool = False,
         sort: str = "entered",
     ) -> tuple[QsoVersion, ...]:
-        """Current QSOs in the order they were entered, optionally only those with ``call``.
+        """Current QSOs in the order they were entered, narrowed by ``which``.
 
         With ``newest_first``, the most recently entered come first: the
         ``limit`` latest QSOs rather than the earliest. ``sort`` orders them by
@@ -767,14 +780,17 @@ class LogStore:
             {_VERSION_JOINS}
             WHERE (%(call)s::text IS NULL OR v.call = upper(btrim(%(call)s::text)))
               AND (%(deleted)s OR NOT q.deleted)
+              AND (%(operation)s::text IS NULL OR %(operation)s::text
+                   = btrim(log.field_value(v.fields, 'APP_LOGLAB_OPERATION')))
             ORDER BY {order_by}
             LIMIT %(limit)s
             """,  # noqa: S608 - constant fragments only; values are parameters
             {
-                "call": call,
-                "deleted": include_deleted,
+                "call": which.call,
+                "deleted": which.include_deleted,
                 "limit": max(limit, 0),
                 "field": sort_field,
+                "operation": None if which.operation is None else str(which.operation),
             },
         ).fetchall()
         return tuple(_version(row) for row in rows)
@@ -881,22 +897,41 @@ class LogStore:
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
-    def field_counts(self, name: str) -> dict[str, int]:
+    def operation_qsos(self, operation_id: uuid.UUID) -> tuple[QsoVersion, ...]:
+        """Every current QSO logged in the operation ``operation_id``, oldest first."""
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE NOT q.deleted
+              AND btrim(log.field_value(v.fields, 'APP_LOGLAB_OPERATION')) = %s
+            ORDER BY v.qso_start, q.entry_seq
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            (str(operation_id),),
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
+    def field_counts(self, name: str, operation: uuid.UUID | None = None) -> dict[str, int]:
         """How many current QSOs carry each value of the ADIF field ``name``.
 
         Values are compared ignoring case and surrounding spaces, and are
         returned in capitals. QSOs without the field (or with it empty) are
-        counted under ``""``. Deleted QSOs are left out.
+        counted under ``""``. Deleted QSOs are left out. With ``operation``,
+        only the QSOs logged in that operation count.
         """
         rows = self._conn.execute(
             """
-            SELECT coalesce(upper(btrim(log.field_value(v.fields, %s))), ''), count(*)
+            SELECT coalesce(upper(btrim(log.field_value(v.fields, %(name)s))), ''), count(*)
             FROM log.qso q
             JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
             WHERE NOT q.deleted
+              AND (%(operation)s::text IS NULL OR %(operation)s::text
+                   = btrim(log.field_value(v.fields, 'APP_LOGLAB_OPERATION')))
             GROUP BY 1
             """,
-            (name,),
+            {"name": name, "operation": None if operation is None else str(operation)},
         ).fetchall()
         return {str(value): int(count) for value, count in rows}
 

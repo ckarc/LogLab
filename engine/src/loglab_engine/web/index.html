@@ -51,7 +51,8 @@
 
       <div id="workspace" class="workspace">
       <section class="card module" data-module="entry">
-        <h2>New QSO <span class="hint">all times UTC</span> <span id="overlay-name" class="overlay-name" hidden></span></h2>
+        <h2>New QSO <span class="hint">all times UTC</span></h2>
+        <p id="logging-as" class="logging-as" hidden><span></span> <button type="button" class="link small">Change</button></p>
         <form id="entry" autocomplete="off">
           <div class="grid">
             <label class="wide">Call <span class="zero-field"><input name="CALL" required maxlength="20" autocapitalize="characters" spellcheck="false"><span class="zero-mirror" aria-hidden="true"></span></span></label>
@@ -92,10 +93,12 @@
         <div class="filters">
           <input id="search" type="search" placeholder="Find a call" maxlength="20" spellcheck="false">
           <label class="inline"><input id="show-deleted" type="checkbox"> Show deleted</label>
+          <select id="log-operation" class="log-operation" aria-label="Which QSOs the Log shows" hidden><option value="">All QSOs</option></select>
           <span id="count" class="hint"></span>
           <span id="log-tools" class="table-tools"></span>
           <button type="button" id="lotw-open" class="link lotw-open">LoTW</button>
         </div>
+        <div id="op-tally" class="op-tally" hidden></div>
         <div class="table-wrap">
           <table id="log">
             <thead><tr></tr></thead>
@@ -105,7 +108,7 @@
       </section>
 
       <section id="map" class="card module" data-module="map">
-        <h2>Field Day sections <span class="hint">ARRL and RAC sections with a QSO in the log</span></h2>
+        <h2>Field Day sections <span class="hint">ARRL and RAC sections <span id="map-scope">with a QSO in the log</span></span></h2>
         <div class="map-tools">
           <span id="map-count" aria-live="polite"></span>
           <span class="spacer"></span>
@@ -221,6 +224,13 @@
       <p id="op-summary" class="hint"></p>
       <label>Name <input name="name" required maxlength="60" placeholder="e.g. Field Day 2027"></label>
       <label>Station call <input name="station_call" required maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="the club call, or your own"></label>
+      <div class="op-hours">
+        <label>Starts on (UTC) <input name="starts_day" type="date"></label>
+        <label>at <input name="starts_time" maxlength="5" inputmode="numeric" placeholder="HHMM, like 1800"></label>
+        <label>Ends on (UTC) <input name="ends_day" type="date"></label>
+        <label>at <input name="ends_time" maxlength="5" inputmode="numeric" placeholder="HHMM, like 2059"></label>
+      </div>
+      <p id="op-period" class="hint"></p>
       <label id="op-gota-field">GOTA call <input name="gota_call" maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="optional; must differ from the station call"></label>
       <div id="op-sent"></div>
       <div class="actions">
