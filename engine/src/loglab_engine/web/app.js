@@ -18,7 +18,6 @@
   const SESSION_KEY = "loglab.session";
   const JOURNAL_KEY = "loglab.journal";
   const RETRY_MS = 15000;
-  const FADE_AFTER_MS = 4000; // a "Logged" notice fades; warnings stay until dealt with
   // ADIF 3.1.7 band and mode enumerations most used on the air.
   const BANDS = ["160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "6m", "2m", "1.25m", "70cm"];
   const MODES = ["SSB", "CW", "FT8", "FT4", "FM", "AM", "RTTY", "PSK", "DIGITALVOICE", "JS8", "OLIVIA", "SSTV"];
@@ -1140,10 +1139,8 @@
             : "sign in again to send it.");
         notice.hidden = false;
       } else {
-        notice.textContent = result.message;
-        notice.classList.add("ok");
-        notice.hidden = false;
-        fadeTimer = setTimeout(() => notice.classList.add("fading"), FADE_AFTER_MS);
+        // Logged: it appears in the Log, which is confirmation enough. Only
+        // problems get a notice.
         await loadLog();
       }
       resetEntry();
@@ -1156,13 +1153,8 @@
     }
   }
 
-  let fadeTimer = null;
-
   function hideNotice() {
-    clearTimeout(fadeTimer);
-    const notice = $("#stored");
-    notice.hidden = true;
-    notice.classList.remove("ok", "fading");
+    $("#stored").hidden = true;
   }
 
   function setError(selector, message) {
@@ -1423,9 +1415,6 @@
       layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables }; // columns have their own reset
       applyLayout();
       saveLayout();
-    });
-    $("#stored").addEventListener("transitionend", (event) => {
-      if (event.propertyName === "opacity" && $("#stored").classList.contains("fading")) hideNotice();
     });
     $("#entry").addEventListener("submit", storeQso);
     const callInput = $("#entry [name=CALL]");
