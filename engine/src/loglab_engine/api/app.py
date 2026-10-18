@@ -61,9 +61,10 @@ from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
-from loglab_engine.contests import Earlier, Overlay, Worked, overlays
+from loglab_engine.contests import Earlier, Overlay, Worked, overlays, sent_problems
 from loglab_engine.contests import check as contest_check
 from loglab_engine.contests import overlay as find_overlay
+from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -93,6 +94,12 @@ from loglab_engine.store import (
     StoreError,
     WorkspaceStore,
     connect,
+)
+from loglab_engine.store.operation import (
+    Operation,
+    OperationNotFoundError,
+    OperationSetup,
+    OperationStore,
 )
 from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 
@@ -141,6 +148,59 @@ class AdifFieldModel(_Strict):
 Note = Annotated[str, StringConstraints(max_length=MAX_NOTE)]
 
 
+class OperationRef(_Strict):
+    """The operation a QSO is logged in, and whether it is the GOTA station's.
+
+    The Engine adds the operation's fields to the QSO (see
+    :mod:`loglab_engine.contests.stamp`): its station callsign, or its GOTA
+    callsign with ``gota``; the signed-in operator as ``OPERATOR``; its
+    ``CONTEST_ID``; and its sent exchange.
+    """
+
+    id: Annotated[uuid.UUID, Field(strict=False)]
+    gota: bool = False
+
+
+_CALL_PATTERN: Final = r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
+CallSign = Annotated[str, StringConstraints(max_length=20, pattern=_CALL_PATTERN)]
+
+
+class OperationIn(_Strict):
+    """An operation as an administrator sets it up.
+
+    ``sent`` holds the overlay's sent exchange by part, like
+    ``{"class": "3A", "section": "KS"}``.
+    """
+
+    overlay: Annotated[str, StringConstraints(min_length=1, max_length=32)]
+    name: Annotated[str, StringConstraints(min_length=1, max_length=60, strip_whitespace=True)]
+    station_call: CallSign
+    gota_call: CallSign | None = None
+    sent: Annotated[
+        dict[
+            Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,31}$")],
+            Annotated[str, StringConstraints(max_length=40)],
+        ],
+        Field(max_length=6),
+    ] = Field(default_factory=dict)
+    ended: bool = False
+
+
+class OperationOut(BaseModel):
+    """An operation: its overlay, calls, and the exchange it sends."""
+
+    id: uuid.UUID
+    overlay: str
+    overlay_name: str
+    name: str
+    station_call: str
+    gota_call: str | None
+    sent: dict[str, str]
+    ended: bool
+    created_at: datetime
+    changed_at: datetime
+
+
 class QsoCreate(_Strict):
     """A new QSO: its fields, in order, and optionally the ID its client gave it.
 
@@ -152,6 +212,7 @@ class QsoCreate(_Strict):
     id: Annotated[uuid.UUID, Field(strict=False)] | None = None
     fields: Annotated[list[AdifFieldModel], Field(min_length=1, max_length=MAX_FIELDS)]
     note: Note | None = None
+    operation: OperationRef | None = None
 
 
 class QsoEdit(_Strict):
@@ -246,6 +307,8 @@ class Layout(_Strict):
 
     ``detail`` is ``None`` until the operator chooses, and the page's default is used.
     ``theme`` is light, dark, or ``auto`` to follow the computer's setting.
+    ``operation`` is the operation the operator logs in, or ``None`` for
+    everyday logging under their own call.
     """
 
     version: Literal[1] = 1
@@ -254,6 +317,7 @@ class Layout(_Strict):
     panels: dict[PanelId, PanelPlace] = Field(default_factory=dict)
     detail: DetailLayout | None = None
     theme: Literal["auto", "light", "dark"] = "auto"
+    operation: OperationRef | None = None
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
@@ -414,9 +478,6 @@ class SectionsOut(BaseModel):
     source: str
 
 
-_CALL_PATTERN: Final = r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
-
-
 class ContestCheckIn(_Strict):
     """A QSO to check against the log in a contest overlay, before or after it is stored.
 
@@ -430,6 +491,7 @@ class ContestCheckIn(_Strict):
         None
     )
     exclude: Annotated[uuid.UUID, Field(strict=False)] | None = None
+    operation: OperationRef | None = None
 
 
 class WorkedOut(BaseModel):
@@ -748,7 +810,7 @@ def get_layout(who: Signed, conn: Conn) -> LayoutOut:
 @api.put("/layout")
 def put_layout(body: Layout, who: Signed, conn: Conn) -> LayoutOut:
     """Save the signed-in operator's workspace layout."""
-    WorkspaceStore(conn).save_layout(who, body.model_dump())
+    WorkspaceStore(conn).save_layout(who, body.model_dump(mode="json"))
     return LayoutOut(layout=body)
 
 
@@ -795,6 +857,99 @@ def list_sections(who: Signed, conn: Conn) -> SectionsOut:
         without_section=tally.without_section,
         source=SECTIONS_SOURCE,
     )
+
+
+def _operation_out(op: Operation) -> OperationOut:
+    found = find_overlay(op.overlay)
+    return OperationOut(
+        id=op.id,
+        overlay=op.overlay,
+        overlay_name=found.name if found is not None else op.overlay,
+        name=op.name,
+        station_call=op.station_call,
+        gota_call=op.gota_call,
+        sent=dict(op.sent),
+        ended=op.ended,
+        created_at=op.created_at,
+        changed_at=op.changed_at,
+    )
+
+
+def _station(conn: Conn, who: Actor, ref: OperationRef) -> tuple[Overlay, Station]:
+    """The overlay and station a QSO logged in operation ``ref`` is made under."""
+    op = OperationStore(conn).get(ref.id)
+    if op.ended:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the operation {op.name} has ended")
+    found = find_overlay(op.overlay)
+    if found is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"the operation {op.name} uses an overlay this Engine lacks"
+        )
+    if ref.gota and op.gota_call is None:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, f"the operation {op.name} has no GOTA call"
+        )
+    call = op.gota_call if ref.gota and op.gota_call else op.station_call
+    return found, Station(station_call=call, operator=who.operator, sent=op.sent)
+
+
+def _setup(body: OperationIn) -> OperationSetup:
+    found = _overlay(body.overlay)
+    problems = sent_problems(found, body.sent)
+    unknown = set(body.sent) - {p.key for p in (found.exchange.sent if found.exchange else ())}
+    if problems or unknown:
+        detail = " ".join(p.message for p in problems)
+        if unknown:
+            detail = f"{detail} {found.name} does not send {', '.join(sorted(unknown))}.".strip()
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, detail)
+    if body.gota_call is not None and body.gota_call.upper() == body.station_call.upper():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            "the GOTA call must differ from the station call (ARRL Field Day Rule 4.1.1.1)",
+        )
+    sent = {k: v.strip().upper() for k, v in body.sent.items()}
+    return OperationSetup(
+        overlay=found.id,
+        name=body.name,
+        station_call=body.station_call,
+        gota_call=body.gota_call,
+        sent=sent,
+        ended=body.ended,
+    )
+
+
+@api.get("/operations")
+def list_operations(
+    who: Signed,
+    conn: Conn,
+    include_ended: Annotated[bool, Query()] = False,  # noqa: FBT002
+) -> list[OperationOut]:
+    """The operations operators can log in, newest first; ended ones on request."""
+    _require(conn, who, Permission.VIEW)
+    return [_operation_out(op) for op in OperationStore(conn).list(include_ended=include_ended)]
+
+
+@api.get("/operations/{operation_id}")
+def get_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationOut:
+    """One operation."""
+    _require(conn, who, Permission.VIEW)
+    return _operation_out(OperationStore(conn).get(operation_id))
+
+
+@api.post("/operations", status_code=status.HTTP_201_CREATED)
+def create_operation(body: OperationIn, who: Signed, conn: Conn) -> OperationOut:
+    """Set up an operation, such as Field Day under a club call. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return _operation_out(OperationStore(conn).create(who, _setup(body)))
+
+
+@api.put("/operations/{operation_id}")
+def update_operation(
+    operation_id: uuid.UUID, body: OperationIn, who: Signed, conn: Conn
+) -> OperationOut:
+    """Change an operation, or end it with ``ended``. QSOs already logged keep their fields."""
+    _require(conn, who, Permission.ADMIN)
+    return _operation_out(OperationStore(conn).update(who, operation_id, _setup(body)))
 
 
 @api.get("/overlays")
@@ -848,6 +1003,15 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
     fields: dict[str, str] = {}
     for f in body.fields:
         fields.setdefault(f.name.upper(), f.value)
+    if body.operation is not None:
+        in_operation, at = _station(conn, who, body.operation)
+        if in_operation.id != found.id:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                f"that operation uses the {in_operation.name} overlay, not {found.name}",
+            )
+        for name, value in stamp_fields(found, at):
+            fields.setdefault(name, value)
     station = (
         body.station_call
         or fields.get("STATION_CALLSIGN", "").strip()
@@ -920,6 +1084,9 @@ def create_qso(
     _require(conn, who, Permission.LOG)
     store = LogStore(conn)
     record = _record(body.fields)
+    if body.operation is not None:
+        found, station = _station(conn, who, body.operation)
+        record = stamp(record, found, station)
     if body.id is None:
         version, created = store.create_qso(record, actor=who, note=body.note), True
     else:
@@ -1260,6 +1427,7 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
     (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
+    (OperationNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
     (StaleVersionError, status.HTTP_409_CONFLICT),
     (LogbookTakenError, status.HTTP_409_CONFLICT),
