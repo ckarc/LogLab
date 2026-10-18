@@ -34,6 +34,7 @@
     version: 1,
     modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false })),
     tables: {},
+    detail: null,
   });
   const SAVE_AFTER_MS = 400;
   // One box on a page of its own: /?module=map shows only the section map,
@@ -50,6 +51,15 @@
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const MAX_COLUMNS = 40;
+  // The ADIF fields the page knows by a plain name (adif-fields.js).
+  const ADIF_FIELDS = new Map((window.LOGLAB_ADIF_FIELDS || []).map(([name, label, group]) => [name, { label, group }]));
+  const FIELD_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
+  const MAX_DETAIL_FIELDS = 80;
+  // What a QSO's detail shows, even when empty, until the operator chooses.
+  const DEFAULT_DETAIL = Object.freeze([
+    "CALL", "QSO_DATE", "TIME_ON", "BAND", "MODE", "FREQ", "RST_SENT", "RST_RCVD",
+    "NAME", "QTH", "STATE", "GRIDSQUARE", "COMMENT",
+  ]);
 
   const $ = (selector, root = document) => root.querySelector(selector);
   let session = null;
@@ -271,7 +281,18 @@
         descending: t.descending !== false,
       };
     }
-    return { version: 1, modules, tables };
+    let detail = null;
+    const chosen = saved && saved.detail && saved.detail.fields;
+    if (Array.isArray(chosen)) {
+      const names = new Set();
+      const fields = chosen.filter((f) => {
+        const ok = typeof f === "string" && FIELD_NAME.test(f) && !names.has(f.toUpperCase());
+        if (ok) names.add(f.toUpperCase());
+        return ok;
+      }).map((f) => f.toUpperCase()).slice(0, MAX_DETAIL_FIELDS);
+      detail = { fields };
+    }
+    return { version: 1, modules, tables, detail };
   }
 
   const arranging = () => document.body.classList.contains("arranging");
@@ -852,7 +873,8 @@
       const add = document.createElement("form");
       add.className = "row";
       const name = document.createElement("input");
-      name.placeholder = "Any ADIF field, like GRIDSQUARE";
+      name.placeholder = "Search fields, like Grid or POTA";
+      name.setAttribute("list", "adif-field-list");
       name.maxLength = 64;
       name.spellcheck = false;
       name.dataset.key = "add";
@@ -868,8 +890,11 @@
       add.append(name, addButton);
       add.addEventListener("submit", (event) => {
         event.preventDefault();
-        const key = `field:${name.value.trim().toUpperCase()}`;
-        if (!COLUMN_ID.test(key)) {
+        const picked = fieldFromText(name.value);
+        const key = `field:${picked || name.value.trim().toUpperCase()}`;
+        if (!picked && name.value.trim() && FIELD_NAME.test(name.value.trim())) {
+          problem.textContent = "More than one field matches: pick one from the list.";
+        } else if (!COLUMN_ID.test(key)) {
           problem.textContent = "A field name starts with a letter and has only letters, digits, and _.";
         } else if (lower.has(key.toLowerCase())) {
           problem.textContent = "That column is already shown.";
@@ -1205,17 +1230,36 @@
     version: { label: "Ver", sort: "version", render: (q) => String(q.version) },
     changed_at: { label: "Changed (UTC)", sort: "changed_at", render: (q) => q.changed_at.slice(0, 16).replace("T", " ") },
   };
-  const FIELD_LABELS = {
-    FREQ: "Freq (MHz)", RST_SENT: "RST sent", RST_RCVD: "RST rcvd", NAME: "Name", COMMENT: "Comment",
-    GRIDSQUARE: "Grid", QTH: "QTH", STATE: "State", COUNTRY: "Country", TX_PWR: "Power (W)",
-    CONTEST_ID: "Contest", SRX: "Rcvd #", STX: "Sent #", SUBMODE: "Submode", TIME_OFF: "Time off",
-    CLASS: "Class", ARRL_SECT: "Section",
-  };
+  // Fields offered first in the Log's column chooser; any other is found by name.
+  const SUGGESTED_FIELDS = [
+    "FREQ", "RST_SENT", "RST_RCVD", "NAME", "COMMENT", "GRIDSQUARE", "QTH", "STATE", "COUNTRY", "TX_PWR",
+    "CONTEST_ID", "SRX", "STX", "SUBMODE", "TIME_OFF", "CLASS", "ARRL_SECT",
+  ];
+
+  const fieldLabel = (name) => (ADIF_FIELDS.get(name.toUpperCase()) || { label: name.toUpperCase() }).label;
+
+  // What the operator typed in a field search: an ADIF name, or a plain name
+  // ("Power (W)", "grid") that stands for one, or a field the list does not
+  // know (APP_ and user-defined fields). Null when it only partly matches
+  // known fields ("pota" could be POTA_REF or MY_POTA_REF), so they pick one.
+  function fieldFromText(text) {
+    const typed = text.trim();
+    if (!typed) return null;
+    const upper = typed.toUpperCase();
+    if (ADIF_FIELDS.has(upper)) return upper;
+    for (const [name, f] of ADIF_FIELDS) {
+      if (f.label.toUpperCase() === upper || `${f.label} (${name})`.toUpperCase() === upper) return name;
+    }
+    for (const [name, f] of ADIF_FIELDS) {
+      if (name.includes(upper) || f.label.toUpperCase().includes(upper)) return null;
+    }
+    return FIELD_NAME.test(typed) ? upper : null;
+  }
 
   function logColumn(key) {
     if (LOG_COLUMNS[key]) return LOG_COLUMNS[key];
     const name = key.slice("field:".length).toUpperCase();
-    return { label: FIELD_LABELS[name] || name, sort: `field:${name}`, render: (q) => field(q, name) };
+    return { label: fieldLabel(name), sort: `field:${name}`, render: (q) => field(q, name) };
   }
 
   let logTable = null;
@@ -1245,27 +1289,219 @@
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 
-  function fieldRow(f) {
+  // The fields a QSO's detail always shows, in order: the operator's choice.
+  const detailFields = () => (layout.detail ? layout.detail.fields : DEFAULT_DETAIL);
+
+  function setDetailFields(fields) {
+    layout.detail = fields === null ? null : { fields };
+    saveLayout();
+    if (current) showFields(current);
+    if (!$("#detail-chooser").hidden) renderDetailChooser();
+  }
+
+  // One field of the open QSO. A known field shows its plain name with its
+  // ADIF name beside it; a new row asks which field, searching by either.
+  // A field the operator always shows stays on screen when cleared. A field
+  // left empty is not saved.
+  function fieldRow(f, { pinned = false } = {}) {
     const row = document.createElement("tr");
-    const name = document.createElement("input");
-    name.value = f.name;
-    name.maxLength = 64;
-    name.dataset.type = f.type || "";
-    name.setAttribute("aria-label", "Field name");
+    row.dataset.type = f.type || "";
+    const nameCell = document.createElement("td");
+    if (f.name) {
+      row.dataset.name = f.name;
+      const label = document.createElement("span");
+      label.className = "field-label";
+      label.textContent = fieldLabel(f.name);
+      const adif = document.createElement("span");
+      adif.className = "field-adif";
+      adif.textContent = f.name.toUpperCase();
+      nameCell.append(label, adif);
+    } else {
+      const name = document.createElement("input");
+      name.maxLength = 80;
+      name.spellcheck = false;
+      name.placeholder = "Search fields, like Power or POTA";
+      name.setAttribute("list", "adif-field-list");
+      name.setAttribute("aria-label", "Which field");
+      name.addEventListener("change", () => {
+        const chosen = fieldFromText(name.value);
+        name.setCustomValidity(chosen || !name.value.trim() ? "" : "Pick a field from the list.");
+        if (!chosen) return;
+        // Already on screen: go to it rather than adding it twice.
+        const existing = [...$("#edit tbody").rows].find((r) => r !== row && (r.dataset.name || "").toUpperCase() === chosen);
+        if (existing) {
+          row.remove();
+          $("input", existing).focus();
+          return;
+        }
+        row.replaceWith(fieldRow({ name: chosen, value: $("input[aria-label=Value]", row).value, type: null }));
+        const added = [...$("#edit tbody").rows].find((r) => r.dataset.name === chosen);
+        if (added) $("input", added).focus();
+      });
+      nameCell.append(name);
+    }
     const value = document.createElement("input");
     value.value = f.value;
     value.setAttribute("aria-label", "Value");
+    if (f.name) value.setAttribute("aria-label", `${fieldLabel(f.name)} value`);
     const remove = document.createElement("button");
     remove.type = "button";
     remove.className = "link";
-    remove.textContent = "Remove";
-    remove.addEventListener("click", () => row.remove());
-    for (const el of [name, value, remove]) {
-      const td = document.createElement("td");
-      td.append(el);
-      row.append(td);
-    }
+    remove.textContent = pinned ? "Clear" : "Remove";
+    remove.addEventListener("click", () => {
+      if (pinned) {
+        value.value = "";
+        value.focus();
+      } else {
+        row.remove();
+      }
+    });
+    const valueCell = document.createElement("td");
+    valueCell.append(value);
+    const removeCell = document.createElement("td");
+    removeCell.append(remove);
+    row.append(nameCell, valueCell, removeCell);
     return row;
+  }
+
+  // The fields the operator always shows come first, in their order, empty or
+  // not; then every other field the QSO has, so nothing it holds is hidden.
+  function showFields(qso) {
+    const typed = new Map([...$("#edit tbody").rows]
+      .filter((r) => r.dataset.name && current && current.id === qso.id)
+      .map((r) => [r.dataset.name.toUpperCase(), $("input", r).value]));
+    const have = new Map(qso.fields.map((f) => [f.name.toUpperCase(), f]));
+    const pinned = detailFields();
+    const rows = pinned.map((name) => {
+      const f = have.get(name) || { name, value: "", type: null };
+      return fieldRow({ ...f, value: typed.has(name) ? typed.get(name) : f.value }, { pinned: true });
+    });
+    const shown = new Set(pinned);
+    for (const f of qso.fields) {
+      const name = f.name.toUpperCase();
+      if (!shown.has(name)) rows.push(fieldRow({ ...f, value: typed.has(name) ? typed.get(name) : f.value }));
+    }
+    $("#edit tbody").replaceChildren(...rows);
+  }
+
+  // -- Which fields a QSO shows: the Fields chooser --
+
+  function detailChooserRow(name, chosen, index, count) {
+    const li = document.createElement("li");
+    const label = document.createElement("label");
+    label.className = "inline";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = chosen;
+    box.dataset.key = name;
+    box.dataset.act = "toggle";
+    box.addEventListener("change", () => {
+      const fields = detailFields();
+      if (box.checked) {
+        if (fields.length < MAX_DETAIL_FIELDS) setDetailFields([...fields, name]);
+      } else {
+        setDetailFields(fields.filter((f) => f !== name));
+      }
+    });
+    const adif = document.createElement("span");
+    adif.className = "field-adif";
+    adif.textContent = name;
+    label.append(box, ` ${fieldLabel(name)} `, adif);
+    li.append(label);
+    if (chosen) {
+      for (const [act, text, step] of [["up", "↑", -1], ["down", "↓", 1]]) {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "small secondary";
+        b.textContent = text;
+        b.dataset.key = name;
+        b.dataset.act = act;
+        b.setAttribute("aria-label", `Move ${fieldLabel(name)} ${step < 0 ? "up" : "down"}`);
+        b.disabled = step < 0 ? index === 0 : index === count - 1;
+        b.addEventListener("click", () => {
+          const fields = [...detailFields()];
+          fields.splice(index, 1);
+          fields.splice(index + step, 0, name);
+          setDetailFields(fields);
+        });
+        li.append(b);
+      }
+    }
+    return li;
+  }
+
+  function renderDetailChooser() {
+    const chooser = $("#detail-chooser");
+    const focused = document.activeElement;
+    const again = chooser.contains(focused) && focused.dataset.act
+      ? `[data-key="${focused.dataset.key}"][data-act="${focused.dataset.act}"]` : null;
+    const search = $("#detail-search");
+    const text = search.value.trim().toUpperCase();
+    const matches = (name) => !text || name.includes(text) || fieldLabel(name).toUpperCase().includes(text);
+    const fields = detailFields();
+    const chosen = new Set(fields);
+    const title = (words) => {
+      const h = document.createElement("h3");
+      h.textContent = words;
+      return h;
+    };
+    const parts = [];
+    const shown = document.createElement("ol");
+    fields.forEach((name, i) => { if (matches(name)) shown.append(detailChooserRow(name, true, i, fields.length)); });
+    if (shown.children.length || !text) parts.push(title("Always shown, top to bottom"), shown);
+    if (!fields.length) parts.push(Object.assign(document.createElement("p"), { className: "hint", textContent: "None: a QSO shows only the fields it has." }));
+    const groups = new Map();
+    for (const [name, f] of ADIF_FIELDS) {
+      if (chosen.has(name) || !matches(name)) continue;
+      if (!groups.has(f.group)) groups.set(f.group, document.createElement("ul"));
+      groups.get(f.group).append(detailChooserRow(name, false, 0, 0));
+    }
+    for (const [group, list] of groups) parts.push(title(group), list);
+    // A field the list does not know (APP_ or user-defined) can be named exactly.
+    const typed = search.value.trim();
+    const found = groups.size || shown.children.length;
+    if (typed && !found && FIELD_NAME.test(typed) && !ADIF_FIELDS.has(text) && !chosen.has(text)) {
+      const add = document.createElement("button");
+      add.type = "button";
+      add.className = "small";
+      add.textContent = `Always show ${text}`;
+      add.dataset.key = "add";
+      add.dataset.act = "add";
+      add.addEventListener("click", () => {
+        search.value = "";
+        setDetailFields([...detailFields(), text]);
+      });
+      parts.push(title("Not a standard ADIF field"), add);
+    } else if (text && !found) {
+      parts.push(Object.assign(document.createElement("p"), { className: "hint", textContent: "No field matches." }));
+    }
+    const reset = document.createElement("button");
+    reset.type = "button";
+    reset.className = "small secondary";
+    reset.textContent = "Reset fields";
+    reset.dataset.key = "reset";
+    reset.dataset.act = "reset";
+    reset.addEventListener("click", () => setDetailFields(null));
+    const end = document.createElement("div");
+    end.className = "chooser-end";
+    end.append(reset);
+    $("#detail-chooser-list").replaceChildren(...parts, end);
+    if (again) {
+      const el = $(again, chooser);
+      if (el && !el.disabled) el.focus();
+    }
+  }
+
+  function openDetailChooser(open) {
+    const chooser = $("#detail-chooser");
+    chooser.hidden = !open;
+    $("#detail-fields").setAttribute("aria-expanded", String(open));
+    $("#detail").classList.toggle("raised", open);
+    if (open) {
+      $("#detail-search").value = "";
+      renderDetailChooser();
+      $("#detail-search").focus();
+    }
   }
 
   async function openDetail(id) {
@@ -1283,14 +1519,16 @@
     $("#detail-meta").textContent =
       `ID ${qso.id} · version ${qso.version} · last changed ${qso.changed_at.slice(0, 16).replace("T", " ")} UTC ` +
       `by ${qso.operator} at ${qso.station}`;
-    const rows = $("#edit tbody");
-    rows.replaceChildren(...qso.fields.map(fieldRow));
+    $("#edit tbody").replaceChildren();
+    current = qso;
+    showFields(qso);
     $("#edit-note").value = "";
     setError("#edit", "");
     $("#delete").hidden = qso.deleted;
     $("#restore").hidden = !qso.deleted;
     $("#edit button[type=submit]").hidden = qso.deleted;
     $("#add-field").hidden = qso.deleted;
+    $("#detail-fields").hidden = qso.deleted;
     renderHistory(history);
     $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
   }
@@ -1356,9 +1594,11 @@
   function editedFields() {
     const fields = [];
     for (const row of $("#edit tbody").rows) {
-      const [name, value] = row.querySelectorAll("input");
-      if (!name.value.trim()) continue;
-      fields.push({ name: name.value.trim(), value: value.value, type: name.dataset.type || null });
+      const name = row.dataset.name || fieldFromText($("input", row).value);
+      const value = $("input[aria-label$=alue]", row).value;
+      if (!value.trim()) continue; // an empty field is not kept
+      if (!name) throw new Error(`Pick which field "${value}" goes in from the list.`);
+      fields.push({ name, value, type: row.dataset.type || null });
     }
     return fields;
   }
@@ -1388,7 +1628,7 @@
       table: $("#log"),
       toolbar: $("#log-tools"),
       column: logColumn,
-      suggested: [...Object.keys(LOG_COLUMNS), ...Object.keys(FIELD_LABELS).map((f) => `field:${f}`)],
+      suggested: [...Object.keys(LOG_COLUMNS), ...SUGGESTED_FIELDS.map((f) => `field:${f}`)],
       defaults: Object.freeze({
         columns: ["date", "time", "call", "band", "mode", "operator", "version"],
         sort: "entered",
@@ -1412,7 +1652,8 @@
     $("#sign-out").addEventListener("click", signOut);
     $("#arrange").addEventListener("click", () => arrange(!arranging()));
     $("#arrange-reset").addEventListener("click", () => {
-      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables }; // columns have their own reset
+      // Columns and a QSO's fields have their own resets.
+      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables, detail: layout.detail };
       applyLayout();
       saveLayout();
     });
@@ -1443,16 +1684,41 @@
     $("#show-deleted").addEventListener("change", loadLog);
     $("#close-detail").addEventListener("click", closeDetail);
     $("#add-field").addEventListener("click", () => {
-      $("#edit tbody").append(fieldRow({ name: "", value: "", type: null }));
+      const row = fieldRow({ name: "", value: "", type: null });
+      $("#edit tbody").append(row);
+      $("input", row).focus();
+    });
+    const fieldList = $("#adif-field-list");
+    for (const [name, f] of ADIF_FIELDS) {
+      const option = document.createElement("option");
+      option.value = name;
+      option.label = f.label;
+      fieldList.append(option);
+    }
+    $("#detail-fields").addEventListener("click", () => openDetailChooser($("#detail-chooser").hidden));
+    $("#detail-search").addEventListener("input", renderDetailChooser);
+    $("#detail-chooser").addEventListener("keydown", (event) => {
+      if (event.key === "Escape") {
+        openDetailChooser(false);
+        $("#detail-fields").focus();
+      }
+    });
+    document.addEventListener("pointerdown", (event) => {
+      if (!$("#detail-chooser").hidden && !$("#detail-chooser").contains(event.target) && event.target !== $("#detail-fields")) {
+        openDetailChooser(false);
+      }
     });
     $("#edit").addEventListener("submit", (event) => {
       event.preventDefault();
       if (!current) return;
-      change("PUT", `/qsos/${current.id}`, {
-        base_version: current.version,
-        fields: editedFields(),
-        note: note(),
-      });
+      let fields;
+      try {
+        fields = editedFields();
+      } catch (e) {
+        setError("#edit", e.message);
+        return;
+      }
+      change("PUT", `/qsos/${current.id}`, { base_version: current.version, fields, note: note() });
     });
     $("#delete").addEventListener("click", () => {
       if (current && confirm("Delete this QSO? It is kept in the history and can be restored.")) {
