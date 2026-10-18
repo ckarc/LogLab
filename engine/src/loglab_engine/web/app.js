@@ -543,7 +543,7 @@
     const head = table.tHead.rows[0];
     const chooserButton = document.createElement("button");
     chooserButton.type = "button";
-    chooserButton.className = "small secondary";
+    chooserButton.className = "link table-columns";
     chooserButton.textContent = "Columns";
     chooserButton.setAttribute("aria-expanded", "false");
     const chooser = document.createElement("div");
