@@ -248,6 +248,20 @@ th { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: upp
 #log tbody tr:last-child td { border-bottom: none; }
 #log td.call { font-weight: 700; letter-spacing: 0.03em; }
 tr.deleted td { color: var(--deleted); text-decoration: line-through; }
+/* Slashed zero in callsigns: a stroke drawn over the 0, whatever the font. */
+.zero { position: relative; display: inline-block; }
+.zero::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0.09em;
+  height: 0.78em;
+  background: currentColor;
+  border-radius: 0.05em;
+  transform: translate(-50%, -46%) rotate(32deg);
+  pointer-events: none;
+}
 
 table.fields td { padding: 4px 6px; border-bottom: none; }
 table.fields td:first-child { width: 30%; }

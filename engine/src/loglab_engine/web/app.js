@@ -719,7 +719,7 @@
         const tr = document.createElement("tr");
         for (const c of columns) {
           const td = document.createElement("td");
-          td.textContent = c.render(row);
+          td.append(c.render(row));
           if (c.className) td.className = c.className;
           tr.append(td);
         }
@@ -931,6 +931,24 @@
 
   // -- The log -----------------------------------------------------------
 
+  // A callsign with its zeros drawn slashed, so N0OY never reads as NOOY. Only
+  // the drawing changes: the text is still a plain 0, so copying, searching,
+  // and everything stored or exported keep the callsign exactly as entered.
+  function callsign(text) {
+    const out = document.createDocumentFragment();
+    for (const part of text.split(/(0)/)) {
+      if (part === "0") {
+        const zero = document.createElement("span");
+        zero.className = "zero";
+        zero.textContent = "0";
+        out.append(zero);
+      } else if (part) {
+        out.append(part);
+      }
+    }
+    return out;
+  }
+
   function field(qso, name) {
     const found = qso.fields.find((f) => f.name.toUpperCase() === name);
     return found ? found.value : "";
@@ -947,7 +965,7 @@
   const LOG_COLUMNS = {
     date: { label: "Date", sort: "qso_start", render: (q) => utcDate(q.qso_start) || field(q, "QSO_DATE") },
     time: { label: "Time", sort: "qso_start", render: (q) => utcTime(q.qso_start) || field(q, "TIME_ON") },
-    call: { label: "Call", sort: "call", render: (q) => q.call || "(no call)", className: "call" },
+    call: { label: "Call", sort: "call", render: (q) => (q.call ? callsign(q.call) : "(no call)"), className: "call" },
     band: { label: "Band", sort: "band", render: (q) => q.band || "" },
     mode: { label: "Mode", sort: "mode", render: (q) => field(q, "SUBMODE") || q.mode || "" },
     operator: { label: "By", sort: "operator", render: (q) => q.operator },
@@ -1026,7 +1044,7 @@
     }
     current = qso;
     $("#detail").hidden = false;
-    $("#detail-title").textContent = `${qso.call || "QSO"}${qso.deleted ? " (deleted)" : ""}`;
+    $("#detail-title").replaceChildren(qso.call ? callsign(qso.call) : "QSO", qso.deleted ? " (deleted)" : "");
     $("#detail-meta").textContent =
       `ID ${qso.id} · version ${qso.version} · last changed ${qso.changed_at.slice(0, 16).replace("T", " ")} UTC ` +
       `by ${qso.operator} at ${qso.station}`;
