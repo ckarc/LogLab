@@ -54,6 +54,8 @@ from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
 from loglab_engine.adif import Field as AdifField
 from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http_fetch
+from loglab_engine.reference import SECTIONS, tally_sections
+from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.store import (
     Actor,
     IdentityStore,
@@ -142,7 +144,7 @@ class QsoChange(_Strict):
     note: Note | None = None
 
 
-ModuleId = Literal["entry", "journal", "log", "detail"]
+ModuleId = Literal["entry", "journal", "log", "detail", "map"]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
 ColumnId = Annotated[
@@ -288,6 +290,37 @@ class QsoWritten(BaseModel):
     qso: QsoOut
     created: bool
     message: str
+
+
+class SectionOut(BaseModel):
+    """One ARRL or RAC section, and how many QSOs in the log are with it."""
+
+    code: str
+    name: str
+    division: str
+    country: str
+    qsos: int
+
+
+class ValueCount(BaseModel):
+    """A field value and how many QSOs carry it."""
+
+    value: str
+    qsos: int
+
+
+class SectionsOut(BaseModel):
+    """Every ARRL and RAC section and how many QSOs the log has in each.
+
+    A QSO's section is its ADIF ``ARRL_SECT`` field. ``unrecognized`` lists the
+    values that name no section; ``without_section`` counts QSOs with none.
+    """
+
+    sections: list[SectionOut]
+    worked: int
+    unrecognized: list[ValueCount]
+    without_section: int
+    source: str
 
 
 class StatusOut(BaseModel):
@@ -473,6 +506,32 @@ def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> l
         sort=query.sort,
     )
     return [_qso_out(v) for v in found]
+
+
+@api.get("/sections")
+def list_sections(who: Signed, conn: Conn) -> SectionsOut:
+    """The ARRL and RAC sections, each with how many current QSOs are in it.
+
+    This is what the Field Day section map colours in. Deleted QSOs do not count.
+    """
+    _require(conn, who, Permission.VIEW)
+    tally = tally_sections(LogStore(conn).field_counts("ARRL_SECT"))
+    return SectionsOut(
+        sections=[
+            SectionOut(
+                code=s.code,
+                name=s.name,
+                division=s.division,
+                country=s.country,
+                qsos=tally.worked.get(s.code, 0),
+            )
+            for s in SECTIONS
+        ],
+        worked=len(tally.worked),
+        unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
+        without_section=tally.without_section,
+        source=SECTIONS_SOURCE,
+    )
 
 
 @api.get("/qsos/{qso_id}")
