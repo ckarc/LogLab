@@ -211,11 +211,14 @@ class Entry(_Strict):
     """The New QSO box: the ADIF fields it asks for, in order.
 
     With ``live``, the date and time are those of the moment the QSO is stored,
-    unless the operator typed them.
+    unless the operator typed them. Tab moves through the fields in order; with
+    ``store_after``, the Store QSO button comes right after that field instead
+    of after the last one.
     """
 
     fields: Annotated[tuple[FieldName, ...], Field(min_length=1, max_length=40)]
     live: bool = False
+    store_after: FieldName | None = None
 
     @model_validator(mode="after")
     def _has_call(self) -> Self:
@@ -224,6 +227,9 @@ class Entry(_Strict):
             raise ValueError(msg)
         if len(self.fields) != len(set(self.fields)):
             msg = "each field may appear only once"
+            raise ValueError(msg)
+        if self.store_after is not None and self.store_after not in self.fields:
+            msg = "the Store QSO button must follow a field the New QSO box asks for"
             raise ValueError(msg)
         return self
 

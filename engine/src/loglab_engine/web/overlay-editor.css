@@ -65,3 +65,4 @@
 .ov-fields li { cursor: grab; border-radius: 8px; }
 .ov-fields li.dragging { opacity: 0.5; background: var(--field); }
 .ov-grip { color: var(--muted); padding: 0 4px; user-select: none; }
+.ov-fields li .ov-store { flex: 1; font-size: 13px; font-weight: 600; color: var(--accent, var(--text)); padding: 3px 0 3px 26px; }

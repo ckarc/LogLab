@@ -70,6 +70,7 @@ def test_a_minimal_overlay_parses() -> None:
         _minimal(surprise=True),
         _minimal(entry={"fields": ["NAME"]}),
         _minimal(entry={"fields": ["CALL", "CALL"]}),
+        _minimal(entry={"fields": ["CALL"], "store_after": "NAME"}),
         _minimal(contest_id="TEST"),
         _minimal(dupes={"per": ["band"], "rule": "x"}),
         _minimal(id="Bad Id"),
@@ -79,6 +80,7 @@ def test_a_minimal_overlay_parses() -> None:
         "unknown key",
         "no call",
         "field twice",
+        "store after a field it lacks",
         "half a contest",
         "dupes, no contest",
         "id",
@@ -89,6 +91,13 @@ def test_an_overlay_that_is_not_whole_is_refused(raw: dict[str, object]) -> None
     """A wrong overlay is refused, never half-loaded (Principle XII)."""
     with pytest.raises(OverlayError):
         parse(_bytes(raw), "test.json")
+
+
+def test_the_store_button_can_follow_any_field_new_qso_asks_for() -> None:
+    """Tab can reach Store QSO straight after the exchange, before the rest."""
+    raw = _minimal(entry={"fields": ["CALL", "NAME", "COMMENT"], "store_after": "NAME"})
+    assert parse(_bytes(raw), "test.json").entry.store_after == "NAME"
+    assert parse(_bytes(_minimal()), "test.json").entry.store_after is None
 
 
 def test_an_overlay_must_be_named_after_its_id() -> None:
