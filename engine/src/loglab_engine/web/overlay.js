@@ -22,7 +22,8 @@
   const note = $("#dupe-note");
 
   let overlays = []; // every overlay, Everyday first
-  let operations = []; // the operations not ended
+  let operations = []; // the operations open to log in
+  let everyOperation = []; // ended ones too, for the Log's choice of QSOs
   let overlay = null; // the overlay in use
   let operation = null; // the operation in use, or null for everyday logging
   let timeTyped = false;
@@ -37,7 +38,11 @@
 
   async function load() {
     try {
-      [overlays, operations] = await Promise.all([LogLab.api("GET", "/overlays"), LogLab.api("GET", "/operations")]);
+      [overlays, operations, everyOperation] = await Promise.all([
+        LogLab.api("GET", "/overlays"),
+        LogLab.api("GET", "/operations"),
+        LogLab.api("GET", "/operations?include_ended=true"),
+      ]);
     } catch (e) {
       $("#op-error").textContent = `Operations could not be loaded: ${e.message}`;
       return;
@@ -73,13 +78,9 @@
       }
     }
     LogLab.setDefaultLayout(overlay.layout ? arrangement(overlay) : null);
-    const gota = Boolean(LogLab.layout().operation?.gota && operation?.gota_call);
-    const name = $("#overlay-name");
-    name.hidden = !operation;
-    if (operation) {
-      name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}`;
-    }
+    showLoggingAs();
     renderMenu();
+    renderLogChoice();
     clearNote();
     check();
   }
@@ -88,6 +89,24 @@
   function arrangement(o) {
     const modules = o.layout.modules.map((m) => ({ id: m.id, width: m.width, side: m.side, hidden: m.hidden }));
     return { modules, tables: { log: { columns: [...o.layout.log_columns], sort: "entered", descending: true } } };
+  }
+
+  // Which call QSOs are being made as, always in sight on New QSO: the
+  // operation's call, or the operator's own while an operation is running,
+  // so nobody forgets they switched.
+  function showLoggingAs() {
+    const banner = $("#logging-as");
+    const own = LogLab.session()?.operator || "";
+    const gota = Boolean(LogLab.layout().operation?.gota && operation?.gota_call);
+    banner.classList.toggle("in-operation", Boolean(operation));
+    if (operation) {
+      const call = gota ? operation.gota_call : operation.station_call;
+      $("span", banner).textContent = `Logging as ${callText(call)}${gota ? " (GOTA)" : ""} for ${operation.name}. You are noted as the operator, ${callText(own)}.`;
+    } else if (operations.length) {
+      const running = operations.map((op) => op.name).join(", ");
+      $("span", banner).textContent = `Logging as ${callText(own)}, your own call. Not in ${running}.`;
+    }
+    banner.hidden = !operation && !operations.length;
   }
 
   // Zeros in callsigns are written slashed, as everywhere else on the page.
@@ -114,6 +133,7 @@
     operation = next;
     overlay = nextOverlay;
     show();
+    document.dispatchEvent(new CustomEvent("loglab:log-changed")); // the map counts this operation's QSOs
   }
 
   // -- The Menu ------------------------------------------------------------
@@ -143,7 +163,88 @@
   function describe(op) {
     const sent = Object.values(op.sent).join(" ");
     return `${op.overlay_name}: QSOs are made as ${op.station_call}${op.gota_call ? ` (GOTA ${op.gota_call})` : ""}` +
-      `${sent ? `, sending ${sent}` : ""}, with you noted as the operator on each one.`;
+      `${sent ? `, sending ${sent}` : ""}, with you noted as the operator on each one.${hours(op) ? ` ${hours(op)}` : ""}`;
+  }
+
+  // An operation's hours, in UTC, as a sentence.
+  const utc = (iso) => iso.slice(0, 16).replace("T", " ");
+  function hours(op) {
+    if (op.starts_at && op.ends_at) return `Runs ${utc(op.starts_at)} to ${utc(op.ends_at)} UTC.`;
+    if (op.starts_at) return `Starts ${utc(op.starts_at)} UTC.`;
+    if (op.ends_at) return `Ends ${utc(op.ends_at)} UTC.`;
+    return "";
+  }
+
+  // -- The Log: one operation's QSOs, and its tally --------------------------
+
+  const logChoice = $("#log-operation");
+  let followed; // the operation the Log last switched to by itself
+
+  // In an operation the Log shows only its QSOs, like the map; logging under
+  // your own call, the whole log. Another operation, or all QSOs, can still
+  // be picked by hand until the operator switches again.
+  function renderLogChoice() {
+    const before = logChoice.value;
+    const active = operation ? operation.id : "";
+    const wanted = active !== followed ? active : before;
+    followed = active;
+    logChoice.replaceChildren(new Option("All QSOs", ""));
+    for (const op of everyOperation) logChoice.append(new Option(`${op.name} only`, op.id));
+    logChoice.value = everyOperation.some((op) => op.id === wanted) ? wanted : "";
+    logChoice.hidden = everyOperation.length === 0;
+    if (logChoice.value !== before) document.dispatchEvent(new CustomEvent("loglab:log-changed"));
+  }
+
+  async function showTally() {
+    const box = $("#op-tally");
+    const id = logChoice.value;
+    if (!id) {
+      box.hidden = true;
+      return;
+    }
+    let summary;
+    try {
+      summary = await LogLab.api("GET", `/operations/${id}/summary`);
+    } catch {
+      box.hidden = true;
+      return;
+    }
+    if (logChoice.value !== id) return; // changed while asking
+    box.replaceChildren();
+    const head = document.createElement("p");
+    const parts = [`${summary.name}: ${summary.qsos} QSO${summary.qsos === 1 ? "" : "s"}, ${summary.counted} counting`];
+    if (summary.outside) parts.push(`${summary.outside} outside its hours`);
+    if (summary.not_counted) parts.push(`${summary.not_counted} on a band or mode that doesn't count`);
+    head.textContent = `${parts.join(", ")}.`;
+    box.append(head);
+    if (summary.by_band_mode.length) box.append(tallyTable(summary.by_band_mode));
+    if (summary.by_operator.length) {
+      const by = document.createElement("p");
+      by.className = "hint";
+      by.textContent = `By operator: ${summary.by_operator.map((t) => `${callText(t.operator)} ${t.qsos}`).join(" · ")}`;
+      box.append(by);
+    }
+    box.hidden = false;
+  }
+
+  // Bands down the side, mode groups across, as the contest groups them.
+  function tallyTable(rows) {
+    const groups = ["CW", "Phone", "Digital"].filter((g) => rows.some((r) => r.mode_group === g));
+    const bands = [...new Set(rows.map((r) => r.band || "—"))];
+    const table = document.createElement("table");
+    table.className = "tally";
+    const cell = (tag, text) => { const c = document.createElement(tag); c.textContent = text; return c; };
+    const header = document.createElement("tr");
+    header.append(cell("th", "Band"), ...groups.map((g) => cell("th", g)), cell("th", "Total"));
+    table.append(header);
+    for (const band of bands) {
+      const tr = document.createElement("tr");
+      const mine = rows.filter((r) => (r.band || "—") === band);
+      tr.append(cell("td", band), ...groups.map((g) => cell("td", String(mine.find((r) => r.mode_group === g)?.qsos || ""))),
+        cell("td", String(mine.reduce((n, r) => n + r.qsos, 0))));
+      table.append(tr);
+    }
+    return table;
   }
 
   // -- Setting up an operation ----------------------------------------------
@@ -169,6 +270,11 @@
     setup.station_call.value = op ? op.station_call : (isAdmin() ? "" : LogLab.session()?.operator || "");
     setup.gota_call.value = op?.gota_call || "";
     $("#op-end").hidden = !op;
+    for (const end of ["starts", "ends"]) {
+      const at = op?.[`${end}_at`] || "";
+      setup[`${end}_day`].value = at.slice(0, 10);
+      setup[`${end}_time`].value = at.slice(11, 16).replace(":", "");
+    }
     renderSent(op ? op.sent : {});
     dialog.showModal();
   }
@@ -176,6 +282,7 @@
   function renderSent(values) {
     const chosen = byId(overlays, setup.overlay.value);
     $("#op-summary").textContent = chosen ? chosen.summary : "";
+    $("#op-period").textContent = chosen?.rules ? `When it runs: ${chosen.rules.period}` : "";
     $("#op-gota-field").hidden = !chosen?.gota;
     const box = $("#op-sent");
     box.replaceChildren();
@@ -201,6 +308,14 @@
     const chosen = byId(overlays, setup.overlay.value);
     const sent = {};
     for (const part of chosen?.exchange?.sent || []) sent[part.key] = setup[`sent.${part.key}`].value.trim().toUpperCase();
+    let starts_at, ends_at;
+    try {
+      starts_at = moment("starts", "start");
+      ends_at = moment("ends", "end");
+    } catch (e) {
+      error.textContent = e.message;
+      return;
+    }
     const body = {
       overlay: setup.overlay.value,
       name: setup.name.value.trim(),
@@ -208,16 +323,33 @@
       gota_call: chosen?.gota && setup.gota_call.value.trim() ? setup.gota_call.value.trim().toUpperCase() : null,
       sent,
       ended,
+      starts_at,
+      ends_at,
     };
     try {
       const saved = editing ? await LogLab.api("PUT", `/operations/${editing.id}`, body) : await LogLab.api("POST", "/operations", body);
       dialog.close();
-      operations = await LogLab.api("GET", "/operations");
+      [operations, everyOperation] = await Promise.all([
+        LogLab.api("GET", "/operations"),
+        LogLab.api("GET", "/operations?include_ended=true"),
+      ]);
       if (ended) useOperation(null, false);
       else useOperation(byId(operations, saved.id), LogLab.layout().operation?.gota);
     } catch (e) {
       error.textContent = e.message;
     }
+  }
+
+  // A start or end typed as a UTC date and HHMM time (Principle VIII), or null
+  // when both are left empty: no limit.
+  function moment(end, word) {
+    const day = setup[`${end}_day`].value;
+    const time = setup[`${end}_time`].value.trim().replace(":", "");
+    if (!day && !time) return null;
+    if (!day || !/^([01][0-9]|2[0-3])[0-5][0-9]$/.test(time)) {
+      throw new Error(`Give the ${word} as a date and a 24-hour UTC time, like 1800.`);
+    }
+    return `${day}T${time.slice(0, 2)}:${time.slice(2)}:00Z`;
   }
 
   // -- The dupe check --------------------------------------------------------
@@ -283,6 +415,9 @@
 
   document.addEventListener("loglab:layout-loaded", load);
   document.addEventListener("loglab:overlays-changed", load); // the overlay editor saved one
+  document.addEventListener("loglab:log-loaded", showTally);
+  logChoice.addEventListener("change", () => document.dispatchEvent(new CustomEvent("loglab:log-changed")));
+  $("#logging-as button").addEventListener("click", () => $("#menu-open").click());
   document.addEventListener("loglab:entry-reset", () => {
     timeTyped = false;
     clearNote();

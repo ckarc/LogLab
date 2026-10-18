@@ -113,7 +113,10 @@
         loading = loading || loadShapes();
         await loading;
       }
-      const result = await window.LogLab.api("GET", "/sections");
+      // In an operation, only its QSOs count; logging under your own call, the whole log.
+      const op = window.LogLab.layout().operation;
+      const result = await window.LogLab.api("GET", op ? `/sections?operation=${op.id}` : "/sections");
+      $("#map-scope").textContent = op ? "with a QSO in this operation" : "with a QSO in the log";
       sections = new Map(result.sections.map((s) => [s.code, s]));
       paint();
       showSummary(result);

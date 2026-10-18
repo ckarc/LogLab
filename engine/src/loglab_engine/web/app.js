@@ -1511,6 +1511,8 @@
     const call = $("#search").value.trim();
     if (call) params.set("call", call);
     if ($("#show-deleted").checked) params.set("include_deleted", "true");
+    // overlay.js offers to show only one operation's QSOs, like Field Day 2027.
+    if ($("#log-operation").value) params.set("operation", $("#log-operation").value);
     let qsos;
     try {
       qsos = await api("GET", `/qsos?${params}`);
