@@ -1,0 +1,409 @@
+# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+"""The Engine's HTTP API, version 1, and the web client it serves.
+
+Everything a client can do goes through these operations (Principle I); the
+web client served at ``/`` has no other way in. Every request body is parsed
+into a typed, size-limited model before anything else happens (Principle XII).
+Every request except signing in and the status check is made by a signed-in
+operator, who must hold the permission it needs (Principle XIII): ``view`` to
+read, ``log`` to change QSOs. All times are UTC (Principle VIII).
+
+Storing a QSO here does not make it *logged*: that needs a second independent
+copy (Principle XV), which LogLab does not make yet. Responses say so.
+"""
+
+from __future__ import annotations
+
+import uuid
+from collections.abc import Awaitable, Callable, Iterator
+from datetime import datetime
+from importlib.resources import files
+from typing import TYPE_CHECKING, Annotated, Final
+
+import psycopg
+from fastapi import APIRouter, Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+
+from loglab_engine import __version__
+from loglab_engine.adif import AdifModelError, Record
+from loglab_engine.adif import Field as AdifField
+from loglab_engine.store import (
+    Actor,
+    IdentityStore,
+    LogStore,
+    NotAuthorizedError,
+    NotSignedInError,
+    Permission,
+    QsoNotFoundError,
+    QsoVersion,
+    SignInError,
+    StaleVersionError,
+    StoreError,
+    connect,
+)
+
+if TYPE_CHECKING:
+    from psycopg.rows import TupleRow
+
+SOURCE: Final = "https://github.com/ckarc/loglab"
+NOT_LOGGED: Final = (
+    "Stored, not yet logged: a QSO counts as logged only once a second independent copy "
+    "exists (Principle XV), which LogLab does not make yet."
+)
+MAX_FIELDS: Final = 500
+MAX_VALUE: Final = 64 * 1024
+MAX_NAME: Final = 64
+MAX_NOTE: Final = 1000
+MAX_LIST: Final = 500
+# The web client loads nothing from anywhere else, so it works offline (Principle V).
+_CSP: Final = (
+    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
+    "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+)
+
+
+# -- Request and response models (the boundary, Principle XII) ---------------
+
+
+class _Strict(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+
+class SignIn(_Strict):
+    """Sign an operator in at a station."""
+
+    callsign: Annotated[str, StringConstraints(min_length=1, max_length=20)]
+    secret: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+    station: Annotated[str, StringConstraints(min_length=1, max_length=64)]
+
+
+class AdifFieldModel(_Strict):
+    """One ADIF field: its name as written, its data, and its optional type indicator."""
+
+    name: Annotated[str, StringConstraints(min_length=1, max_length=MAX_NAME)]
+    value: Annotated[str, StringConstraints(max_length=MAX_VALUE)]
+    type: Annotated[str, StringConstraints(min_length=1, max_length=1)] | None = None
+
+
+Note = Annotated[str, StringConstraints(max_length=MAX_NOTE)]
+
+
+class QsoCreate(_Strict):
+    """A new QSO: its fields, in order."""
+
+    fields: Annotated[list[AdifFieldModel], Field(min_length=1, max_length=MAX_FIELDS)]
+    note: Note | None = None
+
+
+class QsoEdit(_Strict):
+    """New fields for a QSO, and the version they were based on."""
+
+    base_version: Annotated[int, Field(ge=1)]
+    fields: Annotated[list[AdifFieldModel], Field(min_length=1, max_length=MAX_FIELDS)]
+    note: Note | None = None
+
+
+class QsoChange(_Strict):
+    """Why a QSO is being deleted or restored."""
+
+    note: Note | None = None
+
+
+class SessionOut(BaseModel):
+    """A signed-in session."""
+
+    token: str | None
+    operator: str
+    station: str
+    permissions: list[str]
+    expires_at: datetime | None
+
+
+class QsoOut(BaseModel):
+    """One version of a QSO, with the audit record of the change that made it."""
+
+    id: uuid.UUID
+    version: int
+    action: str
+    deleted: bool
+    fields: list[AdifFieldModel]
+    call: str | None
+    qso_start: datetime | None
+    band: str | None
+    mode: str | None
+    changed_at: datetime
+    operator: str
+    station: str
+    note: str | None
+    import_id: int | None
+    import_file: str | None
+
+
+class QsoWritten(BaseModel):
+    """The QSO as it stands after a change, and what storing it means."""
+
+    qso: QsoOut
+    logged: bool
+    message: str
+
+
+class StatusOut(BaseModel):
+    """What this Engine is, and where its source is (AGPL-3.0, Licensing)."""
+
+    name: str
+    version: str
+    source: str
+    license: str
+    api: str
+
+
+def _qso_out(version: QsoVersion) -> QsoOut:
+    return QsoOut(
+        id=version.qso_id,
+        version=version.version,
+        action=version.action.value,
+        deleted=version.deleted,
+        fields=[
+            AdifFieldModel(name=f.name, value=f.value, type=f.type_indicator)
+            for f in version.record.fields
+        ],
+        call=version.call,
+        qso_start=version.qso_start,
+        band=version.band,
+        mode=version.mode,
+        changed_at=version.changed_at,
+        operator=version.operator,
+        station=version.station,
+        note=version.note,
+        import_id=version.import_id,
+        import_file=version.import_file,
+    )
+
+
+def _written(version: QsoVersion) -> QsoWritten:
+    return QsoWritten(qso=_qso_out(version), logged=False, message=NOT_LOGGED)
+
+
+def _record(fields: list[AdifFieldModel]) -> Record:
+    try:
+        return Record(tuple(AdifField(f.name, f.value, f.type) for f in fields))
+    except AdifModelError as error:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+
+
+# -- Dependencies -------------------------------------------------------------
+
+
+def _connection(request: Request) -> Iterator[psycopg.Connection[TupleRow]]:
+    database: str = request.app.state.database
+    with connect(database) as conn:
+        yield conn
+
+
+Conn = Annotated[psycopg.Connection["TupleRow"], Depends(_connection)]
+
+
+def _actor(conn: Conn, authorization: Annotated[str | None, Header()] = None) -> Actor:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "sign in first (Principle XIII)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return IdentityStore(conn).authenticate(token.strip())
+
+
+Signed = Annotated[Actor, Depends(_actor)]
+
+
+def _require(conn: psycopg.Connection[TupleRow], who: Actor, permission: Permission) -> None:
+    IdentityStore(conn).require(who, permission)
+
+
+def _session_out(conn: psycopg.Connection[TupleRow], who: Actor) -> SessionOut:
+    identity = IdentityStore(conn)
+    return SessionOut(
+        token=None,
+        operator=who.operator,
+        station=who.station,
+        permissions=[p.value for p in Permission if identity.may(who, p)],
+        expires_at=None,
+    )
+
+
+class QsoQuery(_Strict):
+    """Which QSOs to list."""
+
+    model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
+
+    call: Annotated[str, StringConstraints(max_length=20)] | None = None
+    limit: Annotated[int, Field(ge=1, le=MAX_LIST)] = 50
+    include_deleted: bool = False
+    newest_first: bool = True
+
+
+# -- Operations ---------------------------------------------------------------
+
+api = APIRouter(prefix="/api/v1")
+
+
+@api.get("/status")
+def get_status() -> StatusOut:
+    """Name, version, and source location. No sign-in needed."""
+    return StatusOut(
+        name="LogLab Engine",
+        version=__version__,
+        source=SOURCE,
+        license="AGPL-3.0-only",
+        api="v1",
+    )
+
+
+@api.post("/sessions", status_code=status.HTTP_201_CREATED)
+def sign_in(body: SignIn, conn: Conn) -> SessionOut:
+    """Sign in at a station. Send the token as ``Authorization: Bearer`` from then on."""
+    session = IdentityStore(conn).sign_in(body.callsign, body.secret, body.station)
+    out = _session_out(conn, session.actor)
+    return out.model_copy(update={"token": session.token, "expires_at": session.expires_at})
+
+
+@api.get("/sessions/current")
+def whoami(who: Signed, conn: Conn) -> SessionOut:
+    """Who is signed in with this token, and what they may do."""
+    return _session_out(conn, who)
+
+
+@api.delete("/sessions/current", status_code=status.HTTP_204_NO_CONTENT)
+def sign_out(who: Signed, conn: Conn, authorization: Annotated[str, Header()]) -> None:
+    """End this session."""
+    del who  # authenticated above; an ended session cannot sign out again
+    IdentityStore(conn).sign_out(authorization.partition(" ")[2].strip())
+
+
+@api.get("/qsos")
+def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> list[QsoOut]:
+    """Current QSOs, newest first by default."""
+    _require(conn, who, Permission.VIEW)
+    found = LogStore(conn).find(
+        call=query.call or None,
+        limit=query.limit,
+        include_deleted=query.include_deleted,
+        newest_first=query.newest_first,
+    )
+    return [_qso_out(v) for v in found]
+
+
+@api.get("/qsos/{qso_id}")
+def get_qso(qso_id: uuid.UUID, who: Signed, conn: Conn) -> QsoOut:
+    """A QSO as it stands now (it may be deleted)."""
+    _require(conn, who, Permission.VIEW)
+    return _qso_out(LogStore(conn).current(qso_id))
+
+
+@api.get("/qsos/{qso_id}/history")
+def get_history(qso_id: uuid.UUID, who: Signed, conn: Conn) -> list[QsoOut]:
+    """Every version of a QSO, oldest first (Principle VII)."""
+    _require(conn, who, Permission.VIEW)
+    return [_qso_out(v) for v in LogStore(conn).history(qso_id)]
+
+
+@api.post("/qsos", status_code=status.HTTP_201_CREATED)
+def create_qso(body: QsoCreate, who: Signed, conn: Conn) -> QsoWritten:
+    """Enter a new QSO. It gets its unique ID now (Principle XV)."""
+    _require(conn, who, Permission.LOG)
+    return _written(LogStore(conn).create_qso(_record(body.fields), actor=who, note=body.note))
+
+
+@api.put("/qsos/{qso_id}")
+def edit_qso(qso_id: uuid.UUID, body: QsoEdit, who: Signed, conn: Conn) -> QsoWritten:
+    """Replace a QSO's fields as a new version; refused if it changed since ``base_version``."""
+    _require(conn, who, Permission.LOG)
+    version = LogStore(conn).edit_qso(
+        qso_id,
+        _record(body.fields),
+        actor=who,
+        base_version=body.base_version,
+        note=body.note,
+    )
+    return _written(version)
+
+
+@api.post("/qsos/{qso_id}/delete")
+def delete_qso(qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn) -> QsoWritten:
+    """Mark a QSO deleted. Its fields and history are kept; restore brings it back."""
+    _require(conn, who, Permission.LOG)
+    return _written(LogStore(conn).delete_qso(qso_id, actor=who, note=body.note))
+
+
+@api.post("/qsos/{qso_id}/restore")
+def restore_qso(qso_id: uuid.UUID, body: QsoChange, who: Signed, conn: Conn) -> QsoWritten:
+    """Recover a deleted QSO."""
+    _require(conn, who, Permission.LOG)
+    return _written(LogStore(conn).restore_qso(qso_id, actor=who, note=body.note))
+
+
+_STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
+    (SignInError, status.HTTP_401_UNAUTHORIZED),
+    (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
+    (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
+    (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
+    (StaleVersionError, status.HTTP_409_CONFLICT),
+)
+
+
+def _store_error(_request: Request, error: Exception) -> JSONResponse:
+    code = next(
+        (code for kind, code in _STATUS_FOR if isinstance(error, kind)),
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+    )
+    if isinstance(error, SignInError) and "too many" in str(error):
+        code = status.HTTP_429_TOO_MANY_REQUESTS
+    headers = {"WWW-Authenticate": "Bearer"} if code == status.HTTP_401_UNAUTHORIZED else {}
+    return JSONResponse({"detail": str(error)}, status_code=code, headers=headers)
+
+
+async def _security_headers(
+    request: Request,
+    call_next: Callable[[Request], Awaitable[Response]],
+) -> Response:
+    response = await call_next(request)
+    if not request.url.path.startswith("/api/docs"):
+        response.headers["Content-Security-Policy"] = _CSP
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
+# -- The application ----------------------------------------------------------
+
+
+def create_app(database: str) -> FastAPI:
+    """The Engine's API and web client, using the PostgreSQL database ``database``."""
+    app = FastAPI(
+        title="LogLab Engine",
+        version=__version__,
+        summary="The log, operators, and sign-in. Every client uses these operations.",
+        license_info={"name": "AGPL-3.0-only", "url": f"{SOURCE}/blob/main/LICENSE"},
+        docs_url="/api/docs",
+        redoc_url=None,
+        openapi_url="/api/v1/openapi.json",
+    )
+    app.state.database = database
+    app.include_router(api)
+    app.add_exception_handler(StoreError, _store_error)
+    app.middleware("http")(_security_headers)
+
+    web = files("loglab_engine") / "web"
+
+    @app.get("/", include_in_schema=False)
+    def index() -> FileResponse:
+        return FileResponse(str(web / "index.html"), media_type="text/html")
+
+    app.mount("/static", StaticFiles(directory=str(web)), name="static")
+    return app

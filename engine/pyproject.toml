@@ -10,7 +10,9 @@ requires-python = ">=3.12"
 license = "AGPL-3.0-only"
 authors = [{ name = "Brian Krenzin, K9KSU" }]
 dependencies = [
+    "fastapi>=0.115",
     "psycopg>=3.2",
+    "uvicorn>=0.32",
 ]
 
 [project.urls]
@@ -20,9 +22,11 @@ Homepage = "https://github.com/ckarc/loglab"
 loglab-adif = "loglab_engine.cli.adif:run"
 loglab-log = "loglab_engine.cli.log:run"
 loglab-operator = "loglab_engine.cli.operator:run"
+loglab-engine = "loglab_engine.cli.engine:run"
 
 [dependency-groups]
 dev = [
+    "httpx2>=2.13",
     "hypothesis>=6.140",
     "mypy>=1.18",
     "pytest>=8.4",
