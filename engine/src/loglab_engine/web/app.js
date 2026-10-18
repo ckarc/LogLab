@@ -36,6 +36,7 @@
     tables: {},
     panels: {},
     detail: null,
+    theme: "auto",
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -44,6 +45,11 @@
     "map.to-work": { title: "Sections to work", of: "the map", place: "bottom" },
   };
   const PLACES = ["top", "bottom", "left", "right"];
+  // Auto follows the computer's light or dark setting. The choice is saved
+  // with the operator's layout; this browser remembers the last one so the
+  // page opens in it before the Engine answers.
+  const THEMES = { auto: "Auto", light: "Light", dark: "Dark" };
+  const THEME_KEY = "loglab.theme";
   const SAVE_AFTER_MS = 400;
   // One box on a page of its own: /?module=map shows only the section map,
   // full width, for a second screen or a bookmark. The journal still shows
@@ -305,7 +311,32 @@
       const place = saved && saved.panels && saved.panels[id];
       if (PLACES.includes(place)) panels[id] = place;
     }
-    return { version: 1, modules, tables, panels, detail };
+    const theme = saved && saved.theme in THEMES ? saved.theme : "auto";
+    return { version: 1, modules, tables, panels, detail, theme };
+  }
+
+  function applyTheme(theme) {
+    if (theme === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = theme;
+    for (const b of document.querySelectorAll("[data-theme-choice]")) {
+      b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
+    }
+    try { localStorage.setItem(THEME_KEY, theme); } catch { /* remembered only for this page */ }
+  }
+
+  function rememberedTheme() {
+    try {
+      const theme = localStorage.getItem(THEME_KEY);
+      return theme in THEMES ? theme : "auto";
+    } catch {
+      return "auto";
+    }
+  }
+
+  function chooseTheme(theme) {
+    layout.theme = theme;
+    applyTheme(theme);
+    saveLayout();
   }
 
   const arranging = () => document.body.classList.contains("arranging");
@@ -427,8 +458,9 @@
       const saved = await api("GET", "/layout");
       layout = normalize(saved.layout || DEFAULT_LAYOUT);
     } catch {
-      layout = normalize(DEFAULT_LAYOUT); // shown as the default until the Engine answers
+      layout = { ...normalize(DEFAULT_LAYOUT), theme: rememberedTheme() }; // until the Engine answers
     }
+    applyTheme(layout.theme);
     applyLayout();
     for (const table of Object.values(TABLES)) table.refresh();
   }
@@ -439,8 +471,7 @@
     $("#arrange-bar").hidden = !on;
     const toggle = $("#arrange");
     toggle.setAttribute("aria-pressed", String(on));
-    toggle.textContent = on ? "🔓 Unlocked" : "🔒 Locked";
-    toggle.title = on ? "Lock the layout" : "Unlock to move boxes";
+    toggle.textContent = on ? "🔒 Lock the layout" : "🔓 Unlock to move boxes";
     applyLayout();
   }
 
@@ -1161,8 +1192,8 @@
   function showSignIn(message = "") {
     $("#app").hidden = true;
     $("#who").hidden = true;
-    $("#sign-out").hidden = true;
-    $("#arrange").hidden = true;
+    $("#menu-open").hidden = true;
+    if ($("#menu-dialog").open) $("#menu-dialog").close();
     arrange(false);
     clearTimeout(saveTimer);
     layout = normalize(DEFAULT_LAYOUT);
@@ -1179,10 +1210,11 @@
     $("#sign-in").hidden = true;
     $("#app").hidden = false;
     $("#who").hidden = false;
-    $("#sign-out").hidden = false;
+    $("#menu-open").hidden = false;
     $("#arrange").hidden = Boolean(SOLO); // a page of one box has nothing to arrange
     $("#all-boxes").hidden = !SOLO;
     $("#who").textContent = `${session.operator} at ${session.station}`;
+    $("#menu-who").textContent = `Signed in as ${session.operator} at ${session.station}.`;
     const mayLog = session.permissions.includes("log");
     for (const el of document.querySelectorAll("#entry button, #edit button[type=submit], #delete, #restore")) {
       el.disabled = !mayLog;
@@ -1761,6 +1793,7 @@
   // -- Start -------------------------------------------------------------
 
   async function start() {
+    applyTheme(rememberedTheme());
     logTable = makeTable({
       id: "log",
       table: $("#log"),
@@ -1790,12 +1823,34 @@
     // Other modules that change QSOs (lotw.js) ask for the log to be shown again.
     document.addEventListener("loglab:log-changed", () => { if (session && !$("#app").hidden) loadLog(); });
     $("#sign-in-form").addEventListener("submit", signIn);
-    $("#sign-out").addEventListener("click", signOut);
-    $("#arrange").addEventListener("click", () => arrange(!arranging()));
+    $("#sign-out").addEventListener("click", () => {
+      $("#menu-dialog").close();
+      signOut();
+    });
+    // The menu: one plain-text entry in the top bar opens everything else.
+    const menu = $("#menu-dialog");
+    $("#menu-open").addEventListener("click", () => menu.showModal());
+    $("#menu-close").addEventListener("click", () => menu.close());
+    menu.addEventListener("click", (event) => { if (event.target === menu) menu.close(); }); // the backdrop
+    for (const b of document.querySelectorAll("[data-theme-choice]")) {
+      b.addEventListener("click", () => chooseTheme(b.dataset.themeChoice));
+    }
+    // QRZ.com and LoTW keep their own dialogs; the menu just opens them.
+    for (const b of document.querySelectorAll("[data-menu-opens]")) {
+      b.addEventListener("click", () => {
+        menu.close();
+        $(`#${b.dataset.menuOpens}`).click();
+      });
+    }
+    $("#arrange").addEventListener("click", () => {
+      menu.close();
+      arrange(!arranging());
+    });
+    $("#arrange-done").addEventListener("click", () => arrange(false));
     $("#arrange-reset").addEventListener("click", () => {
       // Columns and a QSO's fields have their own resets.
       // Panels go back to their places with the boxes.
-      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables, detail: layout.detail };
+      layout = { ...normalize(DEFAULT_LAYOUT), tables: layout.tables, detail: layout.detail, theme: layout.theme };
       applyLayout();
       saveLayout();
     });
