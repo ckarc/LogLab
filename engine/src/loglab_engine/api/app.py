@@ -28,7 +28,7 @@ import binascii
 import uuid
 from collections import Counter
 from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
@@ -75,7 +75,9 @@ from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, ht
 from loglab_engine.callbook.service import SOURCE as CALLBOOK_SOURCE
 from loglab_engine.contests import EVERYDAY, Earlier, Overlay, Worked, overlays, sent_problems
 from loglab_engine.contests import check as contest_check
+from loglab_engine.contests.overlay import Band, ModeName, StatId
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
+from loglab_engine.contests.stats import Logged, operation_stats
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -88,6 +90,7 @@ from loglab_engine.lotw import (
 )
 from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
+from loglab_engine.onair import OnAir, Report
 from loglab_engine.reference import (
     SECTIONS,
     ZONE_FIELDS,
@@ -195,6 +198,18 @@ _CALL_PATTERN: Final = r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
 CallSign = Annotated[str, StringConstraints(max_length=20, pattern=_CALL_PATTERN)]
 
 
+class OnAirIn(_Strict):
+    """What a workstation is set to now: the band and mode in its New QSO box.
+
+    ``gota`` says it is the GOTA station, so it is on the air as the GOTA call.
+    """
+
+    band: Band | None = None
+    mode: ModeName | None = None
+    submode: ModeName | None = None
+    gota: bool = False
+
+
 class OperationIn(_Strict):
     """An operation as an administrator sets it up.
 
@@ -252,6 +267,98 @@ class OperationSummaryOut(BaseModel):
     by_operator: list[TallyOut]
 
 
+class HourOut(BaseModel):
+    """The QSOs made in one UTC hour."""
+
+    start: datetime
+    qsos: int
+
+
+class BandModeOut(BaseModel):
+    """Counting QSOs on one band in one mode group, and the points they earn."""
+
+    band: str
+    mode: str
+    qsos: int
+    points: int
+
+
+class OperatorStatsOut(BaseModel):
+    """One operator's QSOs in an operation, in all and in the last hour."""
+
+    operator: str
+    qsos: int
+    last_hour: int
+    points: int
+
+
+class OperationStatsOut(BaseModel):
+    """How the whole group is doing in an operation, for the Operation stats box.
+
+    ``show`` lists the stats the overlay asks the box to show, in order.
+    ``counted`` QSOs count in the contest and are not dupes. ``rate`` is the
+    QSOs per hour at the pace of the last ten minutes. ``score`` is the
+    overlay's QSO points (``null`` when it gives none), before power
+    multipliers and bonus points.
+    """
+
+    operation: uuid.UUID
+    name: str
+    overlay_name: str
+    show: list[StatId]
+    now: datetime
+    starts_at: datetime | None
+    ends_at: datetime | None
+    qsos: int
+    counted: int
+    outside: int
+    not_counted: int
+    dupes: int
+    last_hour: int
+    last_10: int
+    rate: int
+    hourly: list[HourOut]
+    best_hour: HourOut | None
+    by_band_mode: list[BandModeOut]
+    by_mode: dict[str, int]
+    operators: list[OperatorStatsOut]
+    sections_worked: int
+    sections_total: int
+    score: int | None
+    points: dict[str, int]
+
+
+class OnAirOut(BaseModel):
+    """One workstation on the air in an operation.
+
+    ``active`` means its operator logged a QSO in the operation in the last
+    ``active_minutes``; ``clash`` that another workstation is on the same band
+    in the same mode group as the same call (Field Day allows one transmitter
+    per band and mode). ``mode_group`` is ``null`` outside a contest.
+    """
+
+    operator: str
+    station: str
+    call: str
+    band: str | None
+    mode: str | None
+    mode_group: str | None
+    seen_at: datetime
+    last_qso: datetime | None
+    active: bool
+    clash: bool
+    you: bool
+
+
+class OnAirListOut(BaseModel):
+    """Who is on the air in an operation now."""
+
+    operation: uuid.UUID
+    name: str
+    active_minutes: int
+    stations: list[OnAirOut]
+
+
 class OperationOut(BaseModel):
     """An operation: its overlay, calls, and the exchange it sends."""
 
@@ -300,7 +407,17 @@ class QsoChange(_Strict):
 
 MAX_PATHS: Final = 500  # the most QSOs the world map draws
 ModuleId = Literal[
-    "entry", "profile", "journal", "log", "detail", "map", "world", "cqzones", "ituzones"
+    "entry",
+    "profile",
+    "journal",
+    "log",
+    "detail",
+    "map",
+    "world",
+    "cqzones",
+    "ituzones",
+    "stats",
+    "onair",
 ]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
@@ -1011,10 +1128,12 @@ def whoami(who: Signed, conn: Conn) -> SessionOut:
 
 
 @api.delete("/sessions/current", status_code=status.HTTP_204_NO_CONTENT)
-def sign_out(who: Signed, conn: Conn, authorization: Annotated[str, Header()]) -> None:
-    """End this session."""
-    del who  # authenticated above; an ended session cannot sign out again
+def sign_out(
+    who: Signed, conn: Conn, board: Board, authorization: Annotated[str, Header()]
+) -> None:
+    """End this session, and take it off the On air list."""
     IdentityStore(conn).sign_out(authorization.partition(" ")[2].strip())
+    board.leave(who.session_id)
 
 
 @api.get("/layout")
@@ -1354,6 +1473,166 @@ def summarize_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Ope
         ],
         by_operator=[TallyOut(operator=o, qsos=n) for o, n in by_operator.most_common()],
     )
+
+
+@api.get("/operations/{operation_id}/stats")
+def operation_stats_out(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationStatsOut:
+    """The whole group's stats in an operation: rate, hours, bands, operators, score.
+
+    Every operating position asks for the same numbers, so they all agree
+    (Principle II). Which stats a box shows is set by the overlay.
+    """
+    _require(conn, who, Permission.VIEW)
+    op = OperationStore(conn).get(operation_id)
+    found = _find(conn, op.overlay, include_retired=True)
+    logged = [
+        Logged(
+            fields={f.name.upper(): f.value for f in reversed(v.record.fields)},
+            qso_start=v.qso_start,
+            operator=v.operator,
+        )
+        for v in LogStore(conn).operation_qsos(op.id)
+    ]
+    stats = operation_stats(
+        found, logged, starts_at=op.starts_at, ends_at=op.ends_at, now=datetime.now(UTC)
+    )
+    return OperationStatsOut(
+        operation=op.id,
+        name=op.name,
+        overlay_name=found.name if found is not None else op.overlay,
+        show=list(found.shown_stats if found is not None else ("rate", "hourly", "operators")),
+        now=stats.now,
+        starts_at=op.starts_at,
+        ends_at=op.ends_at,
+        qsos=stats.qsos,
+        counted=stats.counted,
+        outside=stats.outside,
+        not_counted=stats.not_counted,
+        dupes=stats.dupes,
+        last_hour=stats.last_hour,
+        last_10=stats.last_10,
+        rate=stats.last_10 * 6,
+        hourly=[HourOut(start=h.start, qsos=h.qsos) for h in stats.hourly],
+        best_hour=(
+            HourOut(start=stats.best_hour.start, qsos=stats.best_hour.qsos)
+            if stats.best_hour is not None
+            else None
+        ),
+        by_band_mode=[
+            BandModeOut(band=b.band, mode=b.mode, qsos=b.qsos, points=b.points)
+            for b in stats.by_band_mode
+        ],
+        by_mode=dict(stats.by_mode),
+        operators=[
+            OperatorStatsOut(
+                operator=o.operator, qsos=o.qsos, last_hour=o.last_hour, points=o.points
+            )
+            for o in stats.operators
+        ],
+        sections_worked=stats.sections_worked,
+        sections_total=stats.sections_total,
+        score=stats.score,
+        points=dict(stats.points),
+    )
+
+
+ACTIVE: Final = timedelta(minutes=15)
+
+
+def _on_air(request: Request) -> OnAir:
+    board: OnAir = request.app.state.on_air
+    return board
+
+
+Board = Annotated[OnAir, Depends(_on_air)]
+
+
+def _on_air_out(conn: Conn, who: Actor, board: OnAir, op: Operation) -> OnAirListOut:
+    now = datetime.now(UTC)
+    found = _find(conn, op.overlay, include_retired=True)
+    last: dict[str, datetime] = {}
+    for v in LogStore(conn).operation_qsos(op.id):
+        name = (v.record.get("OPERATOR") or v.operator).strip().upper()
+        if v.qso_start is not None and (name not in last or v.qso_start > last[name]):
+            last[name] = v.qso_start
+    reports = board.current(op.id, now)
+
+    def group(r: Report) -> str | None:
+        if found is None or found.modes is None:
+            return None
+        return found.modes.group(r.mode, r.submode)
+
+    def slot(r: Report) -> tuple[str, str, str] | None:
+        g = group(r)
+        return (r.call, r.band, g) if r.band and g else None
+
+    slots = Counter(s for s in map(slot, reports) if s is not None)
+    return OnAirListOut(
+        operation=op.id,
+        name=op.name,
+        active_minutes=int(ACTIVE.total_seconds() // 60),
+        stations=[
+            OnAirOut(
+                operator=r.operator,
+                station=r.station,
+                call=r.call,
+                band=r.band,
+                mode=r.submode or r.mode,
+                mode_group=group(r),
+                seen_at=r.seen_at,
+                last_qso=last.get(r.operator),
+                active=r.operator in last and now - last[r.operator] <= ACTIVE,
+                clash=(s := slot(r)) is not None and slots[s] > 1,
+                you=r.session_id == who.session_id,
+            )
+            for r in reports
+        ],
+    )
+
+
+@api.get("/operations/{operation_id}/on-air")
+def list_on_air(operation_id: uuid.UUID, who: Signed, conn: Conn, board: Board) -> OnAirListOut:
+    """The workstations on the air in an operation now, with their band and mode."""
+    _require(conn, who, Permission.VIEW)
+    return _on_air_out(conn, who, board, OperationStore(conn).get(operation_id))
+
+
+@api.put("/operations/{operation_id}/on-air")
+def report_on_air(
+    operation_id: uuid.UUID, body: OnAirIn, who: Signed, conn: Conn, board: Board
+) -> OnAirListOut:
+    """Say what this workstation is set to now; the answer is who is on the air.
+
+    A browser sends this every so often while it is in the operation. Live
+    state only: nothing is written to the log.
+    """
+    _require(conn, who, Permission.LOG)
+    op = OperationStore(conn).get(operation_id)
+    if op.ended or op.over(datetime.now(UTC)):
+        board.leave(who.session_id)
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the operation {op.name} has ended")
+    call = op.gota_call if body.gota and op.gota_call else op.station_call
+    board.report(
+        Report(
+            session_id=who.session_id,
+            operation=op.id,
+            operator=who.operator,
+            station=who.station,
+            call=call,
+            band=body.band,
+            mode=body.mode,
+            submode=body.submode,
+            seen_at=datetime.now(UTC),
+        )
+    )
+    return _on_air_out(conn, who, board, op)
+
+
+@api.delete("/operations/{operation_id}/on-air", status_code=status.HTTP_204_NO_CONTENT)
+def leave_on_air(operation_id: uuid.UUID, who: Signed, board: Board) -> None:
+    """Take this workstation off the On air list, as when it leaves the operation."""
+    del operation_id  # a session is on the air in one operation at a time
+    board.leave(who.session_id)
 
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
@@ -2188,6 +2467,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
         database, license_downloads or HttpDownloads(f"LogLab/{__version__} ({SOURCE})")
     )
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
+    app.state.on_air = OnAir()
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

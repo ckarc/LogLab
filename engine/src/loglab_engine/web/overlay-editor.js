@@ -18,12 +18,22 @@
     "6m", "5m", "4m", "2m", "1.25m", "70cm", "33cm", "23cm", "13cm", "9cm", "6cm", "3cm", "1.25cm",
     "6mm", "4mm", "2.5mm", "2mm", "1mm", "submm",
   ];
-  const MODULE_NAMES = { entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections" };
+  const MODULE_NAMES = { entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections", stats: "Operation stats", onair: "On air" };
   const WIDTH_NAMES = { third: "⅓", half: "½", full: "full" };
   const ABOUT = ["builtin", "version", "retired", "saved_by", "saved_at"];
   const ID = /^[a-z][a-z0-9-]{0,31}$/;
   const KEY = /^[a-z][a-z0-9_]{0,31}$/;
   const COLUMN = /^[a-z_]+(:[A-Z][A-Z0-9_]*)?$/;
+  // What the Operation stats box can show, in the order it shows them.
+  const STATS = [
+    ["rate", "QSO count and rate: total, last hour, the pace of the last 10 minutes, best hour"],
+    ["hourly", "A bar for each hour of the operation"],
+    ["score", "Score: QSO points for each mode group (contests only)"],
+    ["band_mode", "QSOs by band and mode"],
+    ["operators", "Each operator's QSOs"],
+    ["dupes", "How many dupes (needs the dupe check)"],
+    ["sections", "ARRL and RAC sections worked"],
+  ];
 
   const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
   const plain = (o) => JSON.parse(JSON.stringify(o));
@@ -127,6 +137,22 @@
         <p class="hint">Tick the boxes New QSO asks for, and drag them into order. Tab moves through them in this order, and reaches the Store QSO button where you put it.</p>
         <ol id="ov-fields" class="ov-fields"></ol>
         <label class="inline"><input type="checkbox" name="live"> Stamp each QSO with the time it is stored, unless a time was typed</label>
+      </fieldset>
+
+      <fieldset>
+        <legend>Operation stats</legend>
+        <p class="hint">What the Operation stats box shows while operators log in an operation that uses this overlay.</p>
+        <div id="ov-stats" class="ov-stats"></div>
+        <div id="ov-points">
+          <h4>Points for each QSO</h4>
+          <div class="ov-rows">
+            <label>CW <input name="points_cw" type="number" min="0" max="100" step="1"></label>
+            <label>Digital <input name="points_digital" type="number" min="0" max="100" step="1"></label>
+            <label>Phone <input name="points_phone" type="number" min="0" max="100" step="1"></label>
+          </div>
+          <label class="inline"><input type="checkbox" name="satellite_points"> Satellite QSOs earn points too</label>
+          <p class="hint">Dupes earn nothing. The score leaves out power multipliers and bonus points.</p>
+        </div>
       </fieldset>
 
       <fieldset>
@@ -267,7 +293,62 @@
     fillContest();
     fillFields();
     form.live.checked = Boolean(draft.entry.live);
+    fillStats();
     showLayout();
+  }
+
+  // An overlay saved before stats could be chosen shows the usual ones.
+  function usualStats() {
+    const show = ["rate", "hourly", "band_mode", "operators"];
+    return { show: draft.dupes ? [...show, "dupes"] : show, points: null, satellite_points: true };
+  }
+
+  function fillStats() {
+    const stats = draft.stats || usualStats();
+    const box = $("#ov-stats", dialog);
+    box.replaceChildren();
+    for (const [id, text] of STATS) {
+      const label = document.createElement("label");
+      label.className = "inline";
+      const input = document.createElement("input");
+      input.type = "checkbox";
+      input.value = id;
+      input.checked = stats.show.includes(id);
+      label.append(input, ` ${text}`);
+      box.append(label);
+    }
+    const points = stats.points || { CW: 2, Digital: 2, Phone: 1 };
+    form.points_cw.value = points.CW ?? 0;
+    form.points_digital.value = points.Digital ?? 0;
+    form.points_phone.value = points.Phone ?? 0;
+    form.satellite_points.checked = stats.satellite_points !== false;
+    showStatChoices();
+  }
+
+  // The score needs a contest, and dupes a dupe check.
+  function showStatChoices() {
+    const contest = form.contest.checked;
+    const dupes = contest && form.dupes.checked;
+    for (const input of $("#ov-stats", dialog).querySelectorAll("input")) {
+      const allowed = input.value === "score" ? contest : input.value === "dupes" ? dupes : true;
+      input.disabled = !allowed;
+      if (!allowed) input.checked = false;
+    }
+    $("#ov-points", dialog).hidden = !$('#ov-stats input[value="score"]', dialog).checked;
+  }
+
+  function readStats(problems) {
+    const show = STATS.map(([id]) => id).filter((id) => $(`#ov-stats input[value="${id}"]`, dialog).checked);
+    const stats = { show, points: null, satellite_points: form.satellite_points.checked };
+    if (show.includes("score")) {
+      stats.points = {};
+      for (const [group, input] of [["CW", form.points_cw], ["Digital", form.points_digital], ["Phone", form.points_phone]]) {
+        const n = Number(input.value);
+        if (!Number.isInteger(n) || n < 0 || n > 100) problems.push(`${group} points must be a whole number from 0 to 100.`);
+        else stats.points[group] = n;
+      }
+    }
+    return stats;
   }
 
   function fillContest() {
@@ -515,6 +596,7 @@
       layout: draft.layout,
       gota: false,
     };
+    definition.stats = readStats(problems);
     if (!definition.name) problems.push("Give it a name.");
     else if (overlays.some((o) => o.id !== definition.id && !o.retired && o.name.toLowerCase() === definition.name.toLowerCase())) {
       problems.push(`Another overlay is already called ${definition.name}; give this one its own name.`);
@@ -611,8 +693,13 @@
       if (!form.live.checked) form.live.checked = true;
     }
     fillContest();
+    showStatChoices();
   });
-  form.dupes.addEventListener("change", () => { $("#ov-dupes", dialog).hidden = !form.dupes.checked; });
+  form.dupes.addEventListener("change", () => {
+    $("#ov-dupes", dialog).hidden = !form.dupes.checked;
+    showStatChoices();
+  });
+  $("#ov-stats", dialog).addEventListener("change", showStatChoices);
   form.addEventListener("submit", save);
   wireFieldDrag($("#ov-fields", dialog));
   $("#ov-retired", dialog).addEventListener("change", openList);

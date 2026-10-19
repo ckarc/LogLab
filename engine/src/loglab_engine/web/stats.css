@@ -1,0 +1,45 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The Operation stats and On air boxes: small labelled numbers, a bar per
+   hour, and compact tables, in the page's glass colours. */
+
+.stat-tiles { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+.stat-tile {
+  flex: 1 1 88px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  padding: 8px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--glass-line);
+  background: var(--field);
+}
+.stat-value { font-size: 22px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.stat-label { font-size: 12px; color: var(--muted); }
+
+.stat-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 20px; }
+.stat-panels h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
+.stat-panels > .stat-wide { grid-column: 1 / -1; }
+
+.stat-hours { display: flex; align-items: stretch; gap: 3px; height: 150px; }
+.stat-hour { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; }
+.stat-hour .count { font-size: 11px; font-weight: 600; height: 15px; font-variant-numeric: tabular-nums; }
+.stat-hour .track { flex: 1 1 auto; width: 100%; max-width: 64px; display: flex; align-items: flex-end; }
+.stat-hour .bar { width: 100%; border-radius: 4px 4px 2px 2px; background: var(--accent); opacity: 0.6; min-height: 1px; transition: height 0.4s ease; }
+.stat-hour.now .bar { opacity: 1; background: linear-gradient(180deg, var(--accent-2), var(--accent)); }
+.stat-hour .hour { font-size: 11px; color: var(--muted); height: 15px; margin-top: 3px; }
+
+.stat-table { width: auto; border-collapse: collapse; font-size: 14px; font-variant-numeric: tabular-nums; }
+.stat-table th, .stat-table td { padding: 3px 14px 3px 0; text-align: right; }
+.stat-table th:first-child, .stat-table td:first-child { text-align: left; }
+.stat-table th { font-size: 12px; color: var(--muted); font-weight: 600; }
+.stat-table tr.total td { border-top: 1px solid var(--glass-line); font-weight: 600; }
+
+.onair-list { font-size: 14px; }
+.onair-list td:first-child, .onair-list th:first-child { width: 14px; padding-right: 4px; }
+.onair-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--deleted); }
+.onair-dot.active { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
+.onair-list tr.clash td { background: var(--notice); }
+.onair-clash { color: var(--danger); font-size: 12px; font-weight: 600; white-space: nowrap; }
+.onair-list tr.you td { font-weight: 600; }
