@@ -273,6 +273,7 @@ LAYOUT = {
     "theme": "dark",
     "operation": None,
     "by_overlay": {},
+    "world_qsos": 120,
 }
 
 
@@ -295,7 +296,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
         "layout": {**changed, "tables": {}, "panels": {}, "detail": None, "theme": "auto"}
-        | {"operation": None, "by_overlay": {}}
+        | {"operation": None, "by_overlay": {}, "world_qsos": 50}
     }
 
 
@@ -310,6 +311,8 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 1, "modules": [{"id": "log", "width": "full", "side": "centre"}]}, "side"),
         ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
         ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
+        ({"version": 1, "modules": [{"id": "log"}], "world_qsos": 0}, "world_qsos"),
+        ({"version": 1, "modules": [{"id": "log"}], "world_qsos": 501}, "world_qsos"),
         (
             {"version": 1, "modules": [{"id": "log"}], "tables": {"radar": {"columns": ["call"]}}},
             "tables",

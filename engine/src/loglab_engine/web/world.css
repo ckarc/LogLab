@@ -1,0 +1,33 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The world map. Paths take the accent colour, older ones fainter; the
+   station is a ring where they all start. It shares the section map's tools
+   and frame (map.css). */
+
+#world-svg { display: block; width: 100%; height: auto; max-height: 75vh; touch-action: manipulation; user-select: none; }
+#world-svg.zoomed { cursor: grab; touch-action: none; }
+#world-svg.zoomed:active { cursor: grabbing; }
+#world-count { font-weight: 600; }
+.world-qsos { gap: 6px; font-size: 13px; white-space: nowrap; }
+.world-qsos input { width: 5em; padding: 4px 8px; }
+
+.world-countries use { fill: var(--glass-strong); stroke: var(--muted); stroke-width: 0.5; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.world-countries path { vector-effect: non-scaling-stroke; }
+
+.world-path { cursor: pointer; }
+.world-path path { fill: none; vector-effect: non-scaling-stroke; stroke-linecap: round; stroke-linejoin: round; }
+.world-path .hit { stroke: transparent; stroke-width: 12; }
+.world-path .line { stroke: var(--accent); stroke-width: 1.6; opacity: var(--age, 1); }
+.world-path:hover .line, .world-path:focus .line { stroke: var(--accent-2); stroke-width: 2.6; opacity: 1; }
+.world-path.picked .line { stroke: var(--text); stroke-width: 2.6; opacity: 1; }
+.world-path:focus { outline: none; }
+
+.world-end { fill: var(--accent); opacity: var(--age, 1); pointer-events: none; }
+.world-home { fill: var(--panel); stroke: var(--text); stroke-width: 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+
+#world-info { min-height: 1.5em; margin: 8px 0 0; }
+#world-note { margin: 6px 0 0; }
+
+/* On a page of its own, the map fills the window. */
+body.solo #world-svg { max-height: calc(100vh - 230px); }

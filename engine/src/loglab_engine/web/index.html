@@ -9,6 +9,7 @@
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
+  <link rel="stylesheet" href="/static/world.css">
   <link rel="stylesheet" href="/static/lotw.css">
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
@@ -17,6 +18,7 @@
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
+  <script src="/static/world.js" defer></script>
   <script src="/static/lotw.js" defer></script>
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
@@ -141,7 +143,7 @@
       </section>
 
       <section id="map" class="card module" data-module="map">
-        <h2>Field Day sections <span class="hint">ARRL and RAC sections <span id="map-scope">with a QSO in the log</span></span></h2>
+        <h2><span id="map-title">Field Day sections</span> <span class="hint">ARRL and RAC sections <span id="map-scope">with a QSO in the log</span></span></h2>
         <div class="map-tools">
           <span id="map-count" aria-live="polite"></span>
           <span class="spacer"></span>
@@ -171,6 +173,24 @@
             <ul id="map-missing"></ul>
           </div>
         </div>
+      </section>
+
+      <section id="world" class="card module" data-module="world">
+        <h2>World map <span class="hint">paths to your latest QSOs</span></h2>
+        <div class="map-tools">
+          <span id="world-count" aria-live="polite"></span>
+          <label class="inline world-qsos">Last <input id="world-qsos" type="number" min="1" max="500" step="1" inputmode="numeric" aria-label="How many of the latest QSOs to draw"> QSOs</label>
+          <span class="spacer"></span>
+          <button type="button" id="world-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="world-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="world-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="map-frame">
+          <svg id="world-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="World map of paths to the latest QSOs"></svg>
+        </div>
+        <p id="world-info" class="hint" aria-live="polite">QSOs with a grid square are drawn. Tap a path for its QSO; Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+        <p id="world-note" class="hint" hidden></p>
+        <p id="world-error" class="error" role="alert"></p>
       </section>
 
       <section id="detail" class="card module" data-module="detail" hidden>
