@@ -126,6 +126,24 @@ impl ToneMeter {
         sum
     }
 
+    /// Moves `tones`, measured for the symbol starting at `start`, on to the
+    /// symbol starting one sample later (a sliding DFT).
+    pub(super) fn slide(&self, tones: &mut [Complex32; 8], samples: &[Complex32], start: isize) {
+        let at = |i: isize| {
+            usize::try_from(i)
+                .ok()
+                .and_then(|m| samples.get(m))
+                .copied()
+                .unwrap_or_default()
+        };
+        let change = at(start + to_isize(SAMPLES_PER_SYMBOL)) - at(start);
+        for (t, tone) in tones.iter_mut().enumerate() {
+            // Advancing one sample turns tone t by one step of its own
+            // rotation, the conjugate of its first twiddle.
+            *tone = (*tone + change) * self.twiddles[t][1].conj();
+        }
+    }
+
     /// All eight tones of the symbol starting at `start`.
     pub(super) fn tones(&self, samples: &[Complex32], start: isize) -> [Complex32; 8] {
         std::array::from_fn(|t| self.tone(samples, start, t))
@@ -161,4 +179,29 @@ fn to_f32_index(n: usize) -> f32 {
 
 fn to_isize(n: usize) -> isize {
     isize::try_from(n).unwrap_or(isize::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Complex32, ToneMeter};
+
+    #[test]
+    fn sliding_matches_measuring_afresh() {
+        let samples: Vec<Complex32> = (0..200_u16)
+            .map(|i| {
+                let x = f32::from(i);
+                Complex32::new((x * 0.37).sin(), (x * 0.11).cos())
+            })
+            .collect();
+        let meter = ToneMeter::new();
+        // Starts before the slice, inside it, and running off its end.
+        let mut tones = meter.tones(&samples, -10);
+        for start in -10..190 {
+            let fresh = meter.tones(&samples, start + 1);
+            meter.slide(&mut tones, &samples, start);
+            for (a, b) in tones.iter().zip(&fresh) {
+                assert!((a - b).norm() < 1e-3, "start {start}: {a} vs {b}");
+            }
+        }
+    }
 }
