@@ -1,0 +1,21 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The station profile: who the call in New QSO is, and the QSOs already made with it. */
+
+.profile-who { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 14px; }
+.profile-call { font-size: 26px; font-weight: 700; letter-spacing: 0.02em; }
+.profile-name { font-size: 17px; font-weight: 500; }
+.profile-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 8px 18px;
+  margin: 12px 0 4px;
+}
+.profile-facts div { min-width: 0; }
+.profile-facts dt { font-size: 12px; font-weight: 600; color: var(--muted); }
+.profile-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; }
+#profile-source { margin: 6px 0 12px; }
+.profile-worked { font-weight: 600; }
+.profile-worked.first { color: var(--accent); }
+#profile-log tbody tr { cursor: pointer; }

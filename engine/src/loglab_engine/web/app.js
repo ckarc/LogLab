@@ -25,14 +25,18 @@
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
 
   const MODULES = {
-    entry: "New QSO", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections",
+    entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
+    map: "Field Day sections",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "log", "map"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map"]);
+  // Where a box added since the operator saved their layout first appears:
+  // the station profile goes beside New QSO, the box it follows.
+  const JOINS = { profile: { after: "entry", width: "full", side: "left" } };
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
-    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false })),
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false, ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
     tables: {},
     panels: {},
     detail: null,
@@ -57,7 +61,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "log", "map"];
+  const POPPABLE = ["entry", "profile", "log", "map"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -116,6 +120,7 @@
   }
 
   // lookup.js (the QRZ.com lookup) reaches the Engine through the same API.
+  // profile.js (the station profile) also shows callsigns and a QSO table.
   // overlay.js (operation overlays) also reads and changes the layout, reads
   // the New QSO form, and gives the page its overlay's default layout.
   let overlayDefault = null; // the operator's overlay's starting layout, if it has one
@@ -125,6 +130,14 @@
     layout: () => layout,
     useLayout,
     entryFields: () => entryFields($("#entry")),
+    callsign: (text) => callsign(text),
+    // A table of QSOs shaped like the Log: its columns chosen, ordered, and sorted (profile.js).
+    qsoTable: (options) => makeTable({
+      ...options,
+      column: logColumn,
+      suggested: [...Object.keys(LOG_COLUMNS), ...SUGGESTED_FIELDS.map((f) => `field:${f}`)],
+    }),
+    openQso: (id) => openDetail(id),
     setDefaultLayout: (saved) => { overlayDefault = saved; },
   });
 
@@ -295,7 +308,12 @@
       });
     }
     for (const id of Object.keys(MODULES)) {
-      if (!seen.has(id)) modules.push({ id, width: "full", side: "left", hidden: false });
+      if (seen.has(id)) continue;
+      const join = JOINS[id];
+      const added = { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: false };
+      const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
+      if (after >= 0) modules.splice(after + 1, 0, added);
+      else modules.push(added);
     }
     const tables = {};
     for (const id of Object.keys(TABLES)) {
