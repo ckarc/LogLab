@@ -1,0 +1,8 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The US and Canada call lists dialog (licenses.js). */
+.licenses-list { list-style: none; margin: 12px 0; padding: 0; }
+.licenses-list li { margin: 6px 0; }
+.licenses-credits { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--glass-line); }
+.licenses-credits .hint { font-size: 0.8em; margin: 4px 0; }

@@ -1,7 +1,12 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Looking a call up: the Engine's cache first, then QRZ.com with the operator's own login.
+"""Looking a call up: the Engine's own license lists, its cache, then QRZ.com.
+
+The US (FCC) and Canadian (ISED) license lists the Engine keeps answer with
+no internet at all (Principles V and VI). QRZ.com, with the operator's own
+login, supplements them: it fills in what they lack, such as the grid square,
+and answers for calls outside the US and Canada. It never replaces them.
 
 A lookup never blocks logging and never fails a request (Principle V): when
 QRZ.com is not set up, cannot be reached, or refuses the login, the answer says
@@ -15,7 +20,7 @@ from __future__ import annotations
 
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
@@ -29,6 +34,7 @@ from loglab_engine.callbook.qrz import (
     QrzUnreachableError,
 )
 from loglab_engine.store.callbook import CallbookStore
+from loglab_engine.store.licenses import COUNTRY, License, LicenseStore, Source
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -66,6 +72,9 @@ class LookupResult:
     cached: bool
     fetched_at: datetime | None
     message: str
+    # Where the answer came from: "fcc", "ised" and/or "qrz".
+    sources: tuple[str, ...] = ()
+    license: License | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,10 +141,21 @@ class Callbook:
     def __init__(self, conn: psycopg.Connection[TupleRow], link: Link) -> None:
         """Use ``conn``, an autocommit connection, and the Engine's ``link`` to QRZ.com."""
         self._store = CallbookStore(conn)
+        self._licenses = LicenseStore(conn)
         self._link = link
 
     def lookup(self, actor: Actor, call: str, *, refresh: bool = False) -> LookupResult:
-        """Look ``call`` (already validated, upper case) up for ``actor``."""
+        """Look ``call`` (already validated, upper case) up for ``actor``.
+
+        The license lists' answer comes first; QRZ.com fills in only what they lack.
+        """
+        online = self._online(actor, call, refresh=refresh)
+        held = self._licenses.find(call)
+        if held is None:
+            return replace(online, sources=("qrz",) if online.entry is not None else ())
+        return _with_license(held, online)
+
+    def _online(self, actor: Actor, call: str, *, refresh: bool) -> LookupResult:
         cached = self._store.cached(SOURCE, call)
         if cached is not None and not refresh:
             if not _due(cached):
@@ -325,6 +345,42 @@ class Callbook:
     def remove_login(self, actor: Actor) -> bool:
         """Remove the operator's QRZ.com login; ``False`` if there was none."""
         return self._store.remove_login(actor, SOURCE)
+
+
+_LIST_NAME: Final = {Source.FCC: "the FCC's license list", Source.ISED: "Canada's license list"}
+
+
+def _with_license(held: License, online: LookupResult) -> LookupResult:
+    """The license list's answer, with QRZ.com's filling only what the list leaves empty."""
+    extra = online.entry
+    entry = CallbookEntry(
+        call=held.call,
+        name=held.name or (extra.name if extra else None),
+        qth=held.city or (extra.qth if extra else None),
+        state=held.state or (extra.state if extra else None),
+        country=COUNTRY[held.source],
+        grid=extra.grid if extra else None,
+        image=extra.image if extra else None,
+        bio=extra.bio if extra else False,
+        bio_date=extra.bio_date if extra else None,
+    )
+    message = f"Filled in from {_LIST_NAME[held.source]}"
+    message += " and QRZ.com." if extra is not None else "."
+    # The FCC keeps a license active through its two-year renewal grace period.
+    if held.expires is not None and (not held.active or held.expires < datetime.now(UTC).date()):
+        message += f" The FCC lists this license as expired on {held.expires.isoformat()}."
+    if online.status is LookupStatus.LOGIN_FAILED:
+        message += f" {online.message}"
+    return LookupResult(
+        LookupStatus.FOUND,
+        held.call,
+        entry,
+        cached=extra is None or online.cached,
+        fetched_at=online.fetched_at if extra is not None else None,
+        message=message,
+        sources=(held.source.value, "qrz") if extra is not None else (held.source.value,),
+        license=held,
+    )
 
 
 def _due(cached: CachedEntry) -> bool:
