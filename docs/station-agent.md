@@ -23,20 +23,11 @@ This version only reads the radio. It never tunes it and never transmits
 
 ## Setting up a station
 
-1. An administrator makes the station's key, naming the station operators
-   sign in at:
+1. On the radio's computer, start the Agent, naming the station operators
+   sign in at and a file to keep its key in:
 
    ```sh
-   loglab-operator agent-key shack --write ~/.config/loglab/agent-key
-   ```
-
-   Making a new key ends the old one; `--end` ends it outright, and
-   `loglab-operator agent-keys` lists the stations with a working key.
-
-2. On the radio's computer, start the Agent with that key:
-
-   ```sh
-   loglab-agent run --engine http://127.0.0.1:8073 \
+   loglab-agent run --engine http://127.0.0.1:8073 --station shack \
        --key-file ~/.config/loglab/agent-key \
        --hamlib-model 3073 --device /dev/ttyUSB0 --baud 19200
    ```
@@ -45,6 +36,18 @@ This version only reads the radio. It never tunes it and never transmits
    or `--rigctld 127.0.0.1:4532` to use a `rigctld` already running there.
    `loglab-agent read RADIO` reads the radio once and prints it, without the
    Engine.
+
+2. The first time, the Agent has no key, so it asks to join and prints a
+   short code. An administrator signed in to the web client sees "1 Agent
+   asking to join" in the top bar (or Menu > Admin > Station Agents), checks
+   that the code matches, and clicks Approve. The Agent saves its key, readable
+   only by its account, and starts sending the radio. After that it starts
+   straight away.
+
+   Station Agents also lists the stations that have an Agent; Disconnect ends
+   one's key. An Agent whose key stops working asks to join again. From the
+   command line, `loglab-operator agent-key STATION --write FILE` makes a key
+   directly, `--end` ends it, and `loglab-operator agent-keys` lists them.
 
 3. Sign in to the web client at the same station name (`shack` above). New
    QSO follows the radio until you type in Freq, Band, or Mode yourself; the
@@ -55,5 +58,7 @@ This version only reads the radio. It never tunes it and never transmits
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
   (Principle XIII). Stopping the Agent stops it too.
 - The Engine forgets a station's radio 15 seconds after its Agent goes quiet.
+- A request to join grants nothing until an administrator approves it, and
+  expires after 10 minutes (the Agent then asks again with a new code).
 - A data mode on the radio (`DATA-USB`) leaves the QSO's mode alone, since
   only the operator knows whether it is FT8 or PSK31.

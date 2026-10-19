@@ -95,6 +95,7 @@ from loglab_engine.lotw import (
 from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
+from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
 from loglab_engine.reference import (
     SECTIONS,
     distance_km,
@@ -242,6 +243,16 @@ class AgentReportIn(_Strict):
     agent: Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=_PLAIN)]
     radio: RadioIn | None = None
     problem: Annotated[str, StringConstraints(max_length=300, pattern=_PLAIN)] | None = None
+
+
+StationName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+
+
+class PairingAskIn(_Strict):
+    """A Station Agent asking to join as a station."""
+
+    station: StationName
+    agent: Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=_PLAIN)]
 
 
 class OperationIn(_Strict):
@@ -429,6 +440,39 @@ class RigOut(BaseModel):
     radio: RadioOut | None
     problem: str | None
     heard_at: datetime | None
+
+
+class PairingAskOut(BaseModel):
+    """The Agent's request: the code it shows, and its private ticket for asking how it stands."""
+
+    id: uuid.UUID
+    code: str
+    ticket: str
+    expires_at: datetime
+
+
+class PairingStateOut(BaseModel):
+    """How an Agent's request stands; ``key`` comes once, when it is approved."""
+
+    state: Literal["waiting", "approved", "refused", "expired"]
+    key: str | None
+
+
+class PairingOut(BaseModel):
+    """A request an administrator can approve. ``replaces`` means the station already has a key."""
+
+    id: uuid.UUID
+    station: str
+    agent: str
+    code: str
+    asked_at: datetime
+    replaces: bool
+
+
+class AgentKeysOut(BaseModel):
+    """The stations whose Agents have a working key."""
+
+    stations: list[str]
 
 
 class OnAirListOut(BaseModel):
@@ -1786,6 +1830,102 @@ def report_rig(body: AgentReportIn, station: AgentStation, rigs: Rigs) -> None:
     )
 
 
+def _desk(request: Request) -> PairingDesk:
+    desk: PairingDesk = request.app.state.pairings
+    return desk
+
+
+Desk = Annotated[PairingDesk, Depends(_desk)]
+
+
+@api.post("/agent/pairings", status_code=status.HTTP_201_CREATED)
+def ask_to_pair(body: PairingAskIn, desk: Desk) -> PairingAskOut:
+    """A Station Agent with no key asks to join as a station. No sign-in needed.
+
+    The request grants nothing: an administrator must approve it, after
+    checking that the code the Agent shows matches (Principle XIII).
+    """
+    now = datetime.now(UTC)
+    try:
+        pairing, ticket = desk.ask(body.station, body.agent, now)
+    except PairingError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
+    return PairingAskOut(
+        id=pairing.id, code=pairing.code, ticket=ticket, expires_at=pairing.asked_at + LIFETIME
+    )
+
+
+@api.get("/agent/pairings/{pairing_id}")
+def pairing_state(
+    pairing_id: uuid.UUID, desk: Desk, authorization: Annotated[str | None, Header()] = None
+) -> PairingStateOut:
+    """How an Agent's request stands, asked with its ticket; the key comes once."""
+    scheme, _, ticket = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not ticket.strip():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "send the request's ticket")
+    state, key = desk.collect(pairing_id, ticket.strip(), datetime.now(UTC))
+    return PairingStateOut(state=state, key=key)
+
+
+def _pairing_out(pairing: Pairing, keyed: set[str]) -> PairingOut:
+    return PairingOut(
+        id=pairing.id,
+        station=pairing.station,
+        agent=pairing.agent,
+        code=pairing.code,
+        asked_at=pairing.asked_at,
+        replaces=pairing.station in keyed,
+    )
+
+
+@api.get("/agent/pairings")
+def list_pairings(who: Signed, conn: Conn, desk: Desk) -> list[PairingOut]:
+    """The Agents waiting to join, for an administrator to approve or refuse."""
+    _require(conn, who, Permission.ADMIN)
+    keyed = set(AgentKeyStore(conn).stations())
+    return [_pairing_out(p, keyed) for p in desk.waiting(datetime.now(UTC))]
+
+
+@api.post("/agent/pairings/{pairing_id}/approve", status_code=status.HTTP_204_NO_CONTENT)
+def approve_pairing(pairing_id: uuid.UUID, who: Signed, conn: Conn, desk: Desk) -> None:
+    """Let the Agent join: make its station's key, which the Agent then collects.
+
+    Any key the station had before stops working.
+    """
+    _require(conn, who, Permission.ADMIN)
+    now = datetime.now(UTC)
+    try:
+        pairing = desk.find(pairing_id, now)
+        key = AgentKeyStore(conn).make(who, pairing.station)
+        desk.decide(pairing_id, who.operator, key, now)
+    except PairingError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+
+
+@api.post("/agent/pairings/{pairing_id}/refuse", status_code=status.HTTP_204_NO_CONTENT)
+def refuse_pairing(pairing_id: uuid.UUID, who: Signed, conn: Conn, desk: Desk) -> None:
+    """Turn an Agent's request down; it gets no key."""
+    _require(conn, who, Permission.ADMIN)
+    try:
+        desk.decide(pairing_id, who.operator, None, datetime.now(UTC))
+    except PairingError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+
+
+@api.get("/agent/keys")
+def list_agent_keys(who: Signed, conn: Conn) -> AgentKeysOut:
+    """The stations whose Agents have a working key."""
+    _require(conn, who, Permission.ADMIN)
+    return AgentKeysOut(stations=list(AgentKeyStore(conn).stations()))
+
+
+@api.delete("/agent/keys/{station}", status_code=status.HTTP_204_NO_CONTENT)
+def end_agent_key(station: str, who: Signed, conn: Conn) -> None:
+    """End a station's key, so its Agent is refused until it joins again."""
+    _require(conn, who, Permission.ADMIN)
+    AgentKeyStore(conn).end(who, station)
+
+
 @api.get("/rig")
 def get_rig(who: Signed, conn: Conn, rigs: Rigs) -> RigOut:
     """The radio at the signed-in operator's station, as its Agent last reported it."""
@@ -2674,6 +2814,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
+    app.state.pairings = PairingDesk()
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/static/stats.css">
   <link rel="stylesheet" href="/static/licenses.css">
   <link rel="stylesheet" href="/static/radio.css">
+  <link rel="stylesheet" href="/static/agents.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
@@ -29,12 +30,14 @@
   <script src="/static/stats.js" defer></script>
   <script src="/static/onair.js" defer></script>
   <script src="/static/radio.js" defer></script>
+  <script src="/static/agents.js" defer></script>
   <script src="/static/licenses.js" defer></script>
 </head>
 <body>
   <header class="bar">
     <span class="brand">LogLab</span>
     <span id="who" class="who" hidden></span>
+    <button id="agents-waiting" class="agents-waiting" type="button" title="A Station Agent is asking to join; open Station Agents" hidden></button>
     <button id="menu-open" class="link menu-open" type="button" aria-haspopup="dialog" hidden>Menu</button>
   </header>
 
@@ -311,6 +314,7 @@
       <div class="menu-body">
         <div class="menu-items">
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
+          <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
         </div>
       </div>
     </details>
@@ -375,6 +379,21 @@
       <p class="error" role="alert"></p>
     </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
+  </dialog>
+
+  <dialog id="agents-dialog" class="card qrz-dialog agents-dialog" aria-labelledby="agents-title">
+    <h2 id="agents-title">Station Agents</h2>
+    <p class="hint">A Station Agent runs on the computer a radio is plugged into and sends LabLog what the radio is doing. A new Agent asks to join and shows a code. Approve it only if the code here matches the one the Agent shows.</p>
+    <h3>Asking to join</h3>
+    <ul id="agents-waiting-list" class="agents-list"></ul>
+    <p id="agents-none" class="hint">No Agent is asking to join.</p>
+    <h3>Joined</h3>
+    <ul id="agents-keyed" class="agents-list"></ul>
+    <p id="agents-no-keys" class="hint">No station has an Agent yet.</p>
+    <p class="error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="agents-close" class="secondary">Close</button>
+    </div>
   </dialog>
 
   <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">

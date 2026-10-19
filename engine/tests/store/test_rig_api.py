@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from loglab_engine.api import create_app
+from loglab_engine.pairing import LIFETIME, MAX_WAITING, PairingDesk
 from loglab_engine.rig import STALE, RigBoard, RigState, adif_mode, band_for
 from loglab_engine.store import IdentityStore, NotAuthorizedError, Permission
 from loglab_engine.store.agent import AgentKeyStore
@@ -258,3 +259,95 @@ def test_rig_modes_become_adif_modes() -> None:
     assert adif_mode("CW-R") == ("CW", None)
     assert adif_mode("DATA-USB") is None
     assert adif_mode(None) is None
+
+
+def _ask(client: TestClient, station: str = "fd-1") -> dict[str, Any]:
+    response = client.post(
+        "/api/v1/agent/pairings", json={"station": station, "agent": "loglab-agent 0.1.0"}
+    )
+    assert response.status_code == 201, response.text
+    out: dict[str, Any] = response.json()
+    return out
+
+
+def _state(client: TestClient, asked: dict[str, Any], ticket: str | None = None) -> dict[str, Any]:
+    headers = {"Authorization": f"Bearer {ticket or asked['ticket']}"}
+    out: dict[str, Any] = client.get(
+        f"/api/v1/agent/pairings/{asked['id']}", headers=headers
+    ).json()
+    return out
+
+
+def test_an_agent_joins_when_an_administrator_approves(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str]
+) -> None:
+    """The Agent shows a code, the administrator sees the same one, and the key comes once."""
+    asked = _ask(client)
+    assert len(asked["code"]) == 6
+    assert _state(client, asked) == {"state": "waiting", "key": None}
+    # Only an administrator sees the requests and decides them (Principle XIII).
+    assert client.get("/api/v1/agent/pairings", headers=w0xyz).status_code == 403
+    url = f"/api/v1/agent/pairings/{asked['id']}"
+    assert client.post(f"{url}/approve", headers=w0xyz).status_code == 403
+    waiting = client.get("/api/v1/agent/pairings", headers=k9ksu).json()
+    assert [(p["station"], p["code"], p["replaces"]) for p in waiting] == [
+        ("fd-1", asked["code"], False)
+    ]
+    assert client.post(f"{url}/approve", headers=k9ksu).status_code == 204
+    assert client.get("/api/v1/agent/pairings", headers=k9ksu).json() == []
+    # A wrong ticket learns nothing, and the key is not given away.
+    assert _state(client, asked, "not-the-ticket") == {"state": "expired", "key": None}
+    got = _state(client, asked)
+    assert got["state"] == "approved"
+    key = got["key"]
+    assert key.startswith("lls_")
+    assert _state(client, asked) == {"state": "expired", "key": None}  # handed over once
+    headers = {"Authorization": f"Bearer {key}"}
+    assert client.put("/api/v1/agent/rig", headers=headers, json=_report()).status_code == 204
+    assert client.get("/api/v1/rig", headers=k9ksu).json()["radio"]["model"] == "IC-7300"
+    assert client.get("/api/v1/agent/keys", headers=k9ksu).json() == {"stations": ["fd-1"]}
+    # Ending the key from the web client refuses the Agent.
+    assert client.delete("/api/v1/agent/keys/fd-1", headers=k9ksu).status_code == 204
+    assert client.put("/api/v1/agent/rig", headers=headers, json=_report()).status_code == 401
+
+
+def test_a_refused_or_repeated_request_gets_no_key(
+    client: TestClient, agent: dict[str, str], k9ksu: dict[str, str]
+) -> None:
+    """Refusing gives nothing; asking again replaces the old request; the old key keeps working."""
+    first = _ask(client)
+    second = _ask(client)
+    assert _state(client, first)["state"] == "expired"
+    waiting = client.get("/api/v1/agent/pairings", headers=k9ksu).json()
+    assert [(p["id"], p["replaces"]) for p in waiting] == [(second["id"], True)]
+    url = f"/api/v1/agent/pairings/{second['id']}"
+    assert client.post(f"{url}/refuse", headers=k9ksu).status_code == 204
+    assert client.post(f"{url}/approve", headers=k9ksu).status_code == 409
+    assert _state(client, second) == {"state": "refused", "key": None}
+    assert client.put("/api/v1/agent/rig", headers=agent, json=_report()).status_code == 204
+
+
+def test_a_request_is_checked_and_limited(client: TestClient) -> None:
+    """A bad station name is refused, and only so many requests may wait (Principle XII)."""
+    for bad in ["", "has space", "x" * 65, "-leading"]:
+        body = {"station": bad, "agent": "loglab-agent 0.1.0"}
+        assert client.post("/api/v1/agent/pairings", json=body).status_code == 422
+    for n in range(MAX_WAITING):
+        _ask(client, f"pos-{n}")
+    response = client.post(
+        "/api/v1/agent/pairings", json={"station": "one-more", "agent": "loglab-agent 0.1.0"}
+    )
+    assert response.status_code == 429
+
+
+def test_requests_expire() -> None:
+    """A request not decided within LIFETIME is gone."""
+    desk = PairingDesk()
+    now = datetime(2027, 6, 26, 18, 0, tzinfo=UTC)
+    pairing, ticket = desk.ask("fd-1", "loglab-agent 0.1.0", now)
+    assert desk.waiting(now + LIFETIME) == (pairing,)
+    assert desk.waiting(now + LIFETIME + timedelta(seconds=1)) == ()
+    assert desk.collect(pairing.id, ticket, now + LIFETIME + timedelta(seconds=1)) == (
+        "expired",
+        None,
+    )

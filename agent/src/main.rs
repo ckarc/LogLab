@@ -14,11 +14,13 @@
 
 mod engine;
 mod hamlib;
+mod pairing;
 mod pretend;
 mod rig;
 
 use std::fs;
 use std::net::SocketAddr;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -41,7 +43,7 @@ const RETRY: Duration = Duration::from_secs(3);
 
 const USAGE: &str = "\
 Usage:
-  loglab-agent run  --engine URL --key-file FILE RADIO
+  loglab-agent run  --engine URL --key-file FILE [--station NAME] RADIO
   loglab-agent read RADIO              read the radio once and print it
 
 RADIO is one of:
@@ -51,6 +53,10 @@ RADIO is one of:
                                        (3073 is the Icom IC-7300)
   --hamlib-model N --rigctld 127.0.0.1:PORT
                                        use a rigctld already running here
+
+With --station, an Agent whose key file is empty or missing asks to join as
+that station, shows a code, and waits for an administrator to approve it in
+LabLog (Menu > Station Agents); the key is then saved in the key file.
 
 The Agent only reads the radio. It never tunes it and never transmits.";
 
@@ -80,6 +86,7 @@ enum Command {
     Run {
         engine: String,
         key_file: String,
+        station: Option<String>,
         radio: RadioChoice,
     },
 }
@@ -88,6 +95,7 @@ enum Command {
 struct Options {
     engine: Option<String>,
     key_file: Option<String>,
+    station: Option<String>,
     pretend: bool,
     model: Option<u32>,
     device: Option<String>,
@@ -123,6 +131,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
         match flag.as_str() {
             "--engine" => options.engine = Some(value),
             "--key-file" => options.key_file = Some(value),
+            "--station" => options.station = Some(value),
             "--hamlib-model" => options.model = Some(number(flag, &value)?),
             "--device" => options.device = Some(value),
             "--baud" => options.baud = Some(number(flag, &value)?),
@@ -145,6 +154,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             key_file: options
                 .key_file
                 .ok_or("run needs --key-file, the file holding this station's key")?,
+            station: options.station,
             radio,
         }),
         other => Err(format!("unknown command {other:?}")),
@@ -233,10 +243,95 @@ enum Sent {
     Problem(String),
 }
 
-fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String> {
-    let key = fs::read_to_string(key_file)
-        .map_err(|error| format!("cannot read the station key from {key_file}: {error}"))?;
-    let uplink = Uplink::new(engine, key.trim())?;
+/// The Agent's link to the Engine, and how its last send went.
+struct Link {
+    uplink: Uplink,
+    answering: bool,
+    refused: bool,
+}
+
+impl Link {
+    /// Send a report, saying once when the Engine stops or starts answering.
+    fn deliver(&mut self, report: &Report<'_>) -> bool {
+        match self.uplink.send(report) {
+            Ok(()) => {
+                if !self.answering {
+                    println!("the Engine is answering again");
+                }
+                self.answering = true;
+                true
+            }
+            Err(error) => {
+                if self.answering || matches!(error, SendError::Refused(_)) {
+                    println!("{error}");
+                }
+                self.refused = matches!(error, SendError::Refused(_));
+                self.answering = false;
+                false
+            }
+        }
+    }
+
+    /// Say why the radio can't be read, unless that was just said.
+    fn send_problem(
+        &mut self,
+        agent: &str,
+        problem: &str,
+        sent: &Sent,
+        sent_at: &mut Instant,
+    ) -> Sent {
+        let already = *sent == Sent::Problem(problem.to_owned());
+        if already && sent_at.elapsed() < HEARTBEAT {
+            return Sent::Problem(problem.to_owned());
+        }
+        let report = Report {
+            agent,
+            radio: None,
+            problem: Some(problem),
+        };
+        if self.deliver(&report) {
+            *sent_at = Instant::now();
+            Sent::Problem(problem.to_owned())
+        } else {
+            Sent::Nothing
+        }
+    }
+}
+
+/// The station's key: the one in the key file, or a new one from joining.
+fn station_key(
+    engine: &str,
+    key_file: &str,
+    station: Option<&str>,
+    running: &AtomicBool,
+    fresh: bool,
+) -> Result<String, String> {
+    if !fresh && let Ok(text) = fs::read_to_string(key_file) {
+        let key = text.trim();
+        if !key.is_empty() {
+            return Ok(key.to_owned());
+        }
+    }
+    let Some(station) = station else {
+        return Err(format!(
+            "no station key in {key_file}; add --station NAME to ask to join as that station"
+        ));
+    };
+    let key = pairing::join(engine.trim_end_matches('/'), station, &banner(), running)
+        .map_err(|error| error.to_string())?;
+    pairing::save_key(Path::new(key_file), &key)?;
+    println!("joined as station {station}; the key is saved in {key_file}");
+    Ok(key)
+}
+
+fn run(
+    engine: &str,
+    key_file: &str,
+    station: Option<&str>,
+    choice: &RadioChoice,
+) -> Result<(), String> {
+    // Check the address before anything waits on it.
+    Uplink::new(engine, "check")?;
     let agent = banner();
     // Stopping the Agent (Ctrl-C, or the service manager) stops its Hamlib
     // too, so the radio's port is free for the next start.
@@ -244,13 +339,28 @@ fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String>
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("cannot watch for being stopped: {error}"))?;
+    let key = station_key(engine, key_file, station, &running, false)?;
+    let mut link = Link {
+        uplink: Uplink::new(engine, &key)?,
+        answering: true,
+        refused: false,
+    };
     println!("{agent}: sending this station's radio to {engine}");
     let mut radio: Option<Box<dyn Radio>> = None;
     let mut sent = Sent::Nothing;
     let mut sent_at = Instant::now();
     let mut retry_at = Instant::now();
-    let mut engine_ok = true;
     while running.load(Ordering::SeqCst) {
+        if link.refused && station.is_some() {
+            // The key was replaced or ended: ask to join again.
+            let key = station_key(engine, key_file, station, &running, true)?;
+            link = Link {
+                uplink: Uplink::new(engine, &key)?,
+                answering: true,
+                refused: false,
+            };
+            sent = Sent::Nothing;
+        }
         if radio.is_none() && Instant::now() >= retry_at {
             match open(choice) {
                 Ok(opened) => {
@@ -264,14 +374,7 @@ fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String>
                     if sent != Sent::Problem(problem.clone()) {
                         println!("radio: {problem}");
                     }
-                    sent = send_problem(
-                        &uplink,
-                        &agent,
-                        &problem,
-                        &sent,
-                        &mut sent_at,
-                        &mut engine_ok,
-                    );
+                    sent = link.send_problem(&agent, &problem, &sent, &mut sent_at);
                 }
             }
         }
@@ -288,7 +391,7 @@ fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String>
                             }),
                             problem: None,
                         };
-                        if deliver(&uplink, &report, &mut engine_ok) {
+                        if link.deliver(&report) {
                             sent = Sent::Reading(reading);
                             sent_at = Instant::now();
                         }
@@ -299,14 +402,7 @@ fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String>
                     println!("radio: {problem}");
                     radio = None;
                     retry_at = Instant::now() + RETRY;
-                    sent = send_problem(
-                        &uplink,
-                        &agent,
-                        &problem,
-                        &sent,
-                        &mut sent_at,
-                        &mut engine_ok,
-                    );
+                    sent = link.send_problem(&agent, &problem, &sent, &mut sent_at);
                 }
             }
         }
@@ -315,51 +411,6 @@ fn run(engine: &str, key_file: &str, choice: &RadioChoice) -> Result<(), String>
     drop(radio);
     println!("stopped");
     Ok(())
-}
-
-fn send_problem(
-    uplink: &Uplink,
-    agent: &str,
-    problem: &str,
-    sent: &Sent,
-    sent_at: &mut Instant,
-    engine_ok: &mut bool,
-) -> Sent {
-    let already = *sent == Sent::Problem(problem.to_owned());
-    if already && sent_at.elapsed() < HEARTBEAT {
-        return Sent::Problem(problem.to_owned());
-    }
-    let report = Report {
-        agent,
-        radio: None,
-        problem: Some(problem),
-    };
-    if deliver(uplink, &report, engine_ok) {
-        *sent_at = Instant::now();
-        Sent::Problem(problem.to_owned())
-    } else {
-        Sent::Nothing
-    }
-}
-
-/// Send a report, saying once when the Engine stops or starts answering.
-fn deliver(uplink: &Uplink, report: &Report<'_>, engine_ok: &mut bool) -> bool {
-    match uplink.send(report) {
-        Ok(()) => {
-            if !*engine_ok {
-                println!("the Engine is answering again");
-            }
-            *engine_ok = true;
-            true
-        }
-        Err(error) => {
-            if *engine_ok || matches!(error, SendError::Refused(_)) {
-                println!("{error}");
-            }
-            *engine_ok = false;
-            false
-        }
-    }
 }
 
 fn main() -> ExitCode {
@@ -373,8 +424,9 @@ fn main() -> ExitCode {
         Ok(Command::Run {
             engine,
             key_file,
+            station,
             radio,
-        }) => run(&engine, &key_file, &radio),
+        }) => run(&engine, &key_file, station.as_deref(), &radio),
         Err(error) => Err(format!("{error}\n\n{USAGE}")),
     };
     match outcome {
@@ -416,6 +468,7 @@ mod tests {
             Ok(Command::Run {
                 engine: "http://127.0.0.1:8073".to_owned(),
                 key_file: "key".to_owned(),
+                station: None,
                 radio: RadioChoice::Hamlib(HamlibChoice::Start(Launch {
                     program: "rigctld".to_owned(),
                     model: 3073,
