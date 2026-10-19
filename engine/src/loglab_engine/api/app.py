@@ -272,7 +272,7 @@ class Ft8DecodeIn(_Strict):
 
 
 class Ft8WaterfallIn(_Strict):
-    """Waterfall rows of one slot: a hex byte per 6.25 Hz column, 0 to 3,000 Hz."""
+    """Waterfall rows of one slot: a hex byte per 3.125 Hz column, 0 to 3,000 Hz."""
 
     slot: Ft8Slot
     first_row: Annotated[int, Field(ge=0, lt=ROWS_PER_SLOT)]
@@ -676,6 +676,7 @@ ModuleId = Literal[
     "ituzones",
     "stats",
     "onair",
+    "waterfall",
     "ft8",
 ]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
@@ -708,13 +709,13 @@ class ModuleLayout(_Strict):
     """One module of the workspace: its width, side, scale, and whether it is shown.
 
     A quarter sits on the left, middle-left, middle-right or right; a third
-    on the left, middle or right; a half on the left or right; a full-width
-    box ignores it. ``scale`` is how large the box draws what is inside it,
+    on the left, middle or right; a half or two thirds on the left or right;
+    a full-width box ignores it. ``scale`` is how large the box draws what is inside it,
     in percent of the normal size.
     """
 
     id: ModuleId
-    width: Literal["quarter", "third", "half", "full"] = "full"
+    width: Literal["quarter", "third", "half", "two-thirds", "full"] = "full"
     side: Literal["left", "middle-left", "middle", "middle-right", "right"] = "left"
     scale: Annotated[int, Field(ge=MIN_SCALE, le=MAX_SCALE)] = 100
     hidden: bool = False

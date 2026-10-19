@@ -27,23 +27,25 @@
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
-    ft8: "FT8",
+    waterfall: "FT8 waterfall", ft8: "FT8",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "waterfall", "ft8"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
-  const START_HIDDEN = new Set(["stats", "onair", "ft8"]);
+  const START_HIDDEN = new Set(["stats", "onair", "waterfall", "ft8"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows; the world
   // map and the zone maps take the section map's place, since an overlay
-  // offers only the maps its rules count.
+  // offers only the maps its rules count. The FT8 waterfall, once part of
+  // the FT8 box, goes just above it, shown if the FT8 box is.
   const JOINS = {
     profile: { after: "entry", width: "full", side: "left" },
     world: { after: "map", like: "map", width: "full", side: "left" },
     cqzones: { after: "world", like: "map", width: "full", side: "left" },
     ituzones: { after: "cqzones", like: "map", width: "full", side: "left" },
+    waterfall: { before: "ft8", like: "ft8", width: "full", side: "left", shownLike: true },
   };
   // Which maps an overlay calls for, from what its exchange asks for: a
   // section (Field Day, Winter Field Day) brings the section map, a CQ zone
@@ -92,7 +94,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "waterfall", "ft8"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -345,11 +347,14 @@
       if (seen.has(id)) continue;
       const join = JOINS[id];
       const like = join && join.like && modules.find((m) => m.id === join.like);
+      const hidden = like && join.shownLike ? like.hidden : START_HIDDEN.has(id);
       const added = like
-        ? { id, width: like.width, side: like.side, scale: 100, hidden: START_HIDDEN.has(id) }
-        : { id, width: join ? join.width : "full", side: join ? join.side : "left", scale: 100, hidden: START_HIDDEN.has(id) };
-      const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
-      if (after >= 0) modules.splice(after + 1, 0, added);
+        ? { id, width: like.width, side: like.side, scale: 100, hidden }
+        : { id, width: join ? join.width : "full", side: join ? join.side : "left", scale: 100, hidden };
+      const before = join && join.before ? modules.findIndex((m) => m.id === join.before) : -1;
+      const after = join && join.after ? modules.findIndex((m) => m.id === join.after) : -1;
+      if (before >= 0) modules.splice(before, 0, added);
+      else if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);
     }
     const tables = {};
@@ -498,23 +503,27 @@
   });
 
   // The page is twelve narrow tracks wide: a quarter takes three, a third
-  // four, a half six, a full-width box all twelve. Boxes are placed in the
+  // four, a half six, two thirds eight, a full-width box all twelve. Boxes are placed in the
   // operator's order, each as high as its own tracks allow, so a short box
   // on one side never leaves a gap beside a tall one on the other. The
   // grid's rows are one pixel high, and each box spans as many as it is
   // tall. Below THIRDS_FROM pixels wide, quarters and thirds show as
-  // halves, on the side they lean to; on a phone, every box is full width
-  // (app.css).
+  // halves, on the side they lean to, and two thirds as full width; on a
+  // phone, every box is full width (app.css).
   const GAP = 18;
   const TRACKS = 12;
   const THIRDS_FROM = 960;
-  const WIDTHS = ["quarter", "third", "half", "full"];
+  const WIDTHS = ["quarter", "third", "half", "two-thirds", "full"];
+  // What each width is called, in the order the width list offers them.
+  const WIDTH_NAMES = [["quarter", "¼", "One quarter"], ["third", "⅓", "One third"], ["half", "½", "Half"],
+    ["two-thirds", "⅔", "Two thirds"], ["full", "Full", "Full width"]];
   const SIDES = ["left", "middle-left", "middle", "middle-right", "right"];
   // The places across the page each width can sit, left to right.
   const SLOTS = {
     quarter: ["left", "middle-left", "middle-right", "right"],
     third: ["left", "middle", "right"],
     half: ["left", "right"],
+    "two-thirds": ["left", "right"],
   };
   // How large a box draws what is inside it, in percent (the Engine's limits).
   const MIN_SCALE = 50;
@@ -536,6 +545,7 @@
   // The width a box shows at, on a workspace `px` pixels wide.
   function shownWidth(width, px) {
     if ((width === "quarter" || width === "third") && px < THIRDS_FROM) return "half";
+    if (width === "two-thirds" && px < THIRDS_FROM) return "full";
     return width;
   }
 
@@ -543,6 +553,8 @@
   function tracksFor(width, side, px) {
     const w = shownWidth(width, px);
     if (w === "full") return [0, TRACKS];
+    // Two thirds start at the left edge or end at the right one.
+    if (w === "two-thirds") return sideFor(w, side) === "right" ? [TRACKS / 3, TRACKS] : [0, (TRACKS * 2) / 3];
     const slots = SLOTS[w];
     const span = TRACKS / slots.length;
     const at = Math.max(0, slots.indexOf(sideFor(w, side)));
@@ -581,9 +593,8 @@
       el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden || unoffered.has(m.id) || elsewhere.has(m.id));
       el.dataset.width = m.width;
       el.dataset.place = m.width === "full" ? "full" : m.side;
-      for (const b of el.querySelectorAll(".module-head [data-width]")) {
-        b.setAttribute("aria-pressed", String(b.dataset.width === m.width));
-      }
+      const widthList = el.querySelector(".module-head select.widths");
+      if (widthList) widthList.value = m.width;
       // The box keeps its width; what is inside it draws larger or smaller.
       el.style.setProperty("--box-scale", String(m.scale / 100));
       const slider = el.querySelector(".module-head .scale input");
@@ -688,6 +699,9 @@
       width = current;
       const slots = SLOTS[narrow];
       side = slots[Math.floor(across * slots.length)];
+    } else if (!single && narrow === "two-thirds") {
+      width = current;
+      side = across < 0.5 ? "left" : "right";
     } else if (!single && across < 0.5 - CENTRE_BAND / 2) {
       width = "half";
     } else if (!single && across > 0.5 + CENTRE_BAND / 2) {
@@ -713,6 +727,7 @@
     "third:left": "Left third", "third:middle": "Middle third", "third:right": "Right third",
     "quarter:left": "Left quarter", "quarter:middle-left": "Second quarter",
     "quarter:middle-right": "Third quarter", "quarter:right": "Right quarter",
+    "two-thirds:left": "Left two thirds", "two-thirds:right": "Right two thirds",
   };
 
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
@@ -790,14 +805,14 @@
 
   // From the keyboard: up and down move a box. Left and right step a
   // quarter or a third across the page, and any other box between left
-  // half, full width and right half (L, C and R jump there). Q, T, H and F
-  // make it a quarter, a third, a half, or full width. Minus and plus make
+  // half, full width and right half (L, C and R jump there). Q, T, H, W
+  // and F make it a quarter, a third, a half, two thirds, or full width. Minus and plus make
   // what is inside it smaller or larger, and 0 sets it back to 100%.
   function keyMove(event, id) {
     const at = layout.modules.findIndex((m) => m.id === id);
     const m = layout.modules[at];
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-    const sizeKeys = { q: "quarter", t: "third", h: "half", f: "full" };
+    const sizeKeys = { q: "quarter", t: "third", h: "half", w: "two-thirds", f: "full" };
     const scaleBy = { "-": -SCALE_STEP, "_": -SCALE_STEP, "+": SCALE_STEP, "=": SCALE_STEP }[key];
     if (scaleBy || key === "0") {
       event.preventDefault();
@@ -811,7 +826,7 @@
     else if (key === "ArrowDown") index = at + 1;
     else if (sizeKeys[key]) {
       width = sizeKeys[key];
-    } else if ((m.width === "third" || m.width === "quarter") && (key === "ArrowLeft" || key === "ArrowRight")) {
+    } else if (["quarter", "third", "two-thirds"].includes(m.width) && (key === "ArrowLeft" || key === "ArrowRight")) {
       const slots = SLOTS[m.width];
       const step = key === "ArrowLeft" ? -1 : 1;
       side = slots[Math.max(0, Math.min(slots.length - 1, slots.indexOf(side) + step))];
@@ -983,7 +998,7 @@
       handle.className = "handle";
       handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half. A quarter or a third goes where you drop it.";
       handle.setAttribute("aria-label",
-        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right to change side); Q, T, H and F make it a quarter, a third, a half, or full width; minus and plus make its contents smaller or larger`);
+        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right to change side); Q, T, H, W and F make it a quarter, a third, a half, two thirds, or full width; minus and plus make its contents smaller or larger`);
       const grip = document.createElement("span");
       grip.className = "grip";
       grip.setAttribute("aria-hidden", "true");
@@ -997,25 +1012,24 @@
       handle.addEventListener("pointerdown", (event) => startDrag(event, id));
       handle.addEventListener("keydown", (event) => keyMove(event, id));
       head.append(handle);
-      // How wide the box is: a quarter, a third, a half, or the full page.
-      const widths = document.createElement("span");
+      // How wide the box is, picked from a list: a quarter, a third, a
+      // half, two thirds, or the full page.
+      const widths = document.createElement("select");
       widths.className = "widths";
-      widths.setAttribute("role", "group");
+      widths.title = "How wide this box is";
       widths.setAttribute("aria-label", `${title} width`);
-      for (const [width, label, name] of [["quarter", "¼", "One quarter"], ["third", "⅓", "One third"], ["half", "½", "Half"], ["full", "Full", "Full width"]]) {
-        const size = document.createElement("button");
-        size.type = "button";
-        size.className = "small secondary";
-        size.dataset.width = width;
-        size.textContent = label;
-        size.title = name;
-        size.setAttribute("aria-label", `${name} width`);
-        size.addEventListener("click", () => {
-          const m = layout.modules.find((x) => x.id === id);
-          changeLayout(id, { width, side: sideFor(width, m.side) });
-        });
-        widths.append(size);
+      for (const [width, label, name] of WIDTH_NAMES) {
+        const option = document.createElement("option");
+        option.value = width;
+        option.textContent = label;
+        option.title = name;
+        widths.append(option);
       }
+      widths.addEventListener("change", () => {
+        const width = widths.value;
+        const m = layout.modules.find((x) => x.id === id);
+        changeLayout(id, { width, side: sideFor(width, m.side) });
+      });
       head.append(widths);
       // How large the box draws what is inside it, for each operator's eyes.
       const scale = document.createElement("label");

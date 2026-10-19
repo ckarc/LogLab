@@ -30,15 +30,15 @@ from datetime import UTC, datetime, timedelta
 from typing import Final, Literal
 
 # Rows of waterfall the Agent draws each second, and in one 15-second slot.
-ROWS_PER_SECOND: Final = 2
-ROWS_PER_SLOT: Final = 30
-# The waterfall's columns: one per 6.25 Hz from 0 to 3,000 Hz.
-COLUMNS: Final = 480
-COLUMN_HZ: Final = 6.25
+ROWS_PER_SECOND: Final = 4
+ROWS_PER_SLOT: Final = 60
+# The waterfall's columns: one per 3.125 Hz from 0 to 3,000 Hz.
+COLUMNS: Final = 960
+COLUMN_HZ: Final = 3.125
 SLOT_SECONDS: Final = 15
 # How much the Engine keeps for each station: two minutes of waterfall and
 # the decodes of the last ten minutes.
-KEEP_ROWS: Final = 240
+KEEP_ROWS: Final = 480
 KEEP_SLOTS: Final = 40
 # An Agent that sends nothing for this long has stopped listening.
 STALE: Final = timedelta(seconds=20)
