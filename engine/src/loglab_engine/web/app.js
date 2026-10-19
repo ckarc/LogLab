@@ -26,23 +26,36 @@
 
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
-    map: "Section map", world: "World map",
+    map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows; the world
-  // map takes the section map's place, since an overlay offers one or the other.
+  // map and the zone maps take the section map's place, since an overlay
+  // offers only the maps its rules count.
   const JOINS = {
     profile: { after: "entry", width: "full", side: "left" },
     world: { after: "map", like: "map", width: "full", side: "left" },
+    cqzones: { after: "world", like: "map", width: "full", side: "left" },
+    ituzones: { after: "cqzones", like: "map", width: "full", side: "left" },
   };
-  // Which map an overlay calls for: a contest whose exchange has a section
-  // (Field Day, Winter Field Day) gets the section map; everything else, and
-  // everyday logging, the world map. Until overlay.js says, it is everyday.
-  const MAPS_FOR = (overlay) => ((overlay?.exchange?.received || []).some((p) => p.sections) ? ["map"] : ["world"]);
-  const unoffered = new Set(["map"]);
+  // Which maps an overlay calls for, from what its exchange asks for: a
+  // section (Field Day, Winter Field Day) brings the section map, a CQ zone
+  // (CQ WW) the CQ zone map, an ITU zone (IARU HF) the ITU zone map. An
+  // overlay that asks for none of them, and everyday logging, gets the world
+  // map. Until overlay.js says, it is everyday.
+  const MAPS = ["map", "world", "cqzones", "ituzones"];
+  const MAPS_FOR = (overlay) => {
+    const received = overlay?.exchange?.received || [];
+    const maps = [];
+    if (received.some((p) => p.sections)) maps.push("map");
+    if (received.some((p) => p.field === "CQZ")) maps.push("cqzones");
+    if (received.some((p) => p.field === "ITUZ")) maps.push("ituzones");
+    return maps.length ? maps : ["world"];
+  };
+  const unoffered = new Set(["map", "cqzones", "ituzones"]);
   const WORLD_QSOS = 50; // how many of the latest QSOs the world map draws, until the operator chooses
   const MAX_WORLD_QSOS = 500;
   const DEFAULT_LAYOUT = Object.freeze({
@@ -61,6 +74,8 @@
   // sits in a `.panels` block next to its `.panel-main`.
   const PANELS = {
     "map.to-work": { title: "Sections to work", of: "the map", place: "bottom" },
+    "cqzones.to-work": { title: "Zones to work", of: "the map", place: "bottom" },
+    "ituzones.to-work": { title: "Zones to work", of: "the map", place: "bottom" },
   };
   const PLACES = ["top", "bottom", "left", "right"];
   // Auto follows the computer's light or dark setting. The choice is saved
@@ -73,7 +88,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "world"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -468,7 +483,7 @@
   // The operator's overlay chooses its map (overlay.js says which overlay is in use).
   document.addEventListener("loglab:overlay-shown", (event) => {
     const maps = MAPS_FOR(event.detail.overlay);
-    for (const id of ["map", "world"]) {
+    for (const id of MAPS) {
       if (maps.includes(id)) unoffered.delete(id);
       else unoffered.add(id);
     }
