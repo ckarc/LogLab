@@ -69,6 +69,8 @@ a permissive BSD-style license), which LogLab does not ship.
 | [HB9HIL/hamradio-zones-geojson](https://github.com/HB9HIL/hamradio-zones-geojson), commit `091b813` | The shapes of the CQ zone and ITU zone maps (`engine/src/loglab_engine/web/maps/cq-zones.json` and `itu-zones.json`, built by `engine/tools/build_zone_maps.py`; the license is kept in `engine/tools/hb9hil-zones/LICENSE`) | MIT |
 | [@ham2k/lib-arrl-data](https://github.com/ham2k/ham-js-libs) 1.2.0 | The ARRL and RAC section list, and which county is in which section (`engine/tools/ham2k/`, with its license) | MIT |
 
+| [ft8_lib](https://github.com/kgoba/ft8_lib) by Kārlis Goba, YL3JG, commit `9fec6ca` | The generator matrix of FT8's (174,91) LDPC code (`agent/src/ft8/ldpc_generator.rs`, converted from its bit-packed table; the license is kept in `agent/src/ft8/ft8_lib-LICENSE.txt`) | MIT |
+
 | [TrustedQSL](https://sourceforge.net/p/trustedqsl/tqsl/) configuration 11.34 (`src/config.xml`) | Which LoTW mode each ADIF mode is sent as, band and DXCC entity names, US states and counties and Canadian provinces with their zones (`engine/src/loglab_engine/lotw/tqsl-tables.json`, built by `engine/tools/build_lotw_tables.py`; the license is kept in `engine/tools/trustedqsl/LICENSE.txt`) | TrustedQSL license (BSD-style) |
 
 TrustedQSL is Copyright (C) 2001-2015 American Radio Relay League, Inc.,
@@ -104,6 +106,14 @@ The CQ and ITU zone shapes are MIT-licensed under the same terms as above;
 their notice ships in `engine/tools/hb9hil-zones/LICENSE` and in each map
 file's `source`: Copyright (c) 2024 HB9HIL.
 
+The FT8 LDPC generator matrix is one of FT8's published protocol constants,
+the same in every FT8 implementation (FT8 itself is by K1JT, K9AN and G4WJS).
+LogLab's copy was converted from ft8_lib's table; its MIT copyright and
+permission notice travel with it in `agent/src/ft8/ft8_lib-LICENSE.txt`.
+No ft8_lib code is copied. LogLab's FT8 message packing follows the
+published protocol and WSJT-X's published source (Principle XVI) and is
+checked tone for tone against WSJT-X's own output.
+
 ## Development and CI tooling (not shipped)
 
 These tools build, check, and test LogLab but are not distributed with it.
@@ -120,4 +130,5 @@ They are listed for transparency and are held to the same license policy.
 | PostgreSQL 16  | CI test database (service container) | PostgreSQL License |
 | Rust toolchain | Agent build, Clippy, rustfmt | MIT OR Apache-2.0         |
 | cargo-deny     | Agent license check         | MIT OR Apache-2.0          |
+| WSJT-X 3.0.2 (`jt9`, `ft8code`), with gfortran, FFTW3, Qt 5, Boost, Hamlib and PortAudio to build it | The reference FT8 decoder and encoder the FT8 bench compares against (`agent/tools/ft8-reference/`, built and run by hand); `ft8code`'s output is the expected tones in `agent/tests/data/ft8-wsjtx-tones.tsv` | GPL-3.0 (WSJT-X); GPL-2.0-or-later, LGPL and permissive (its build dependencies) |
 | Shapely, NumPy | Rebuilding the section map (`engine/tools/build_section_map.py`, run by hand) | BSD-3-Clause |
