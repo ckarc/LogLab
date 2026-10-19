@@ -77,6 +77,8 @@ def test_the_web_client_is_served_with_a_strict_policy(client: TestClient) -> No
     assert client.get("/static/lookup.css").status_code == 200
     assert client.get("/static/overlay.js").status_code == 200
     assert client.get("/static/overlay.css").status_code == 200
+    assert client.get("/static/profile.js").status_code == 200
+    assert client.get("/static/profile.css").status_code == 200
 
 
 @pytest.mark.parametrize(
@@ -256,8 +258,10 @@ LAYOUT = {
         {"id": "entry", "width": "half", "side": "right", "hidden": False},
         {"id": "journal", "width": "half", "side": "left", "hidden": True},
         {"id": "map", "width": "third", "side": "middle", "hidden": False},
+        {"id": "profile", "width": "third", "side": "right", "hidden": False},
     ],
     "tables": {
+        "profile": {"columns": ["date", "band", "mode"], "sort": "qso_start", "descending": True},
         "log": {
             "columns": ["call", "date", "field:FREQ", "band"],
             "sort": "field:FREQ",

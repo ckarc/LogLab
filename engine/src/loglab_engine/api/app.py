@@ -280,7 +280,7 @@ class QsoChange(_Strict):
     note: Note | None = None
 
 
-ModuleId = Literal["entry", "journal", "log", "detail", "map"]
+ModuleId = Literal["entry", "profile", "journal", "log", "detail", "map"]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
 ColumnId = Annotated[
@@ -295,7 +295,7 @@ SortKey = Annotated[
         pattern=rf"^(entered|qso_start|call|band|mode|operator|station|version|changed_at|{_FIELD_COLUMN})$",
     ),
 ]
-TableId = Literal["log"]
+TableId = Literal["log", "profile"]
 # A panel inside a module, which the operator places on one side of the
 # module's main content: the map's list of sections still to work.
 PanelId = Literal["map.to-work"]
