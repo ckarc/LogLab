@@ -708,13 +708,13 @@ class ModuleLayout(_Strict):
     """One module of the workspace: its width, side, scale, and whether it is shown.
 
     A quarter sits on the left, middle-left, middle-right or right; a third
-    on the left, middle or right; a half on the left or right; a full-width
-    box ignores it. ``scale`` is how large the box draws what is inside it,
+    on the left, middle or right; a half or two thirds on the left or right;
+    a full-width box ignores it. ``scale`` is how large the box draws what is inside it,
     in percent of the normal size.
     """
 
     id: ModuleId
-    width: Literal["quarter", "third", "half", "full"] = "full"
+    width: Literal["quarter", "third", "half", "two-thirds", "full"] = "full"
     side: Literal["left", "middle-left", "middle", "middle-right", "right"] = "left"
     scale: Annotated[int, Field(ge=MIN_SCALE, le=MAX_SCALE)] = 100
     hidden: bool = False
