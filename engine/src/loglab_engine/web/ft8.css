@@ -1,0 +1,41 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The FT8 box: a waterfall over the list of stations heard. The waterfall
+   keeps its own dark colours in both themes, like a radio's display. */
+
+.ft8-waterfall-wrap { margin-bottom: 10px; }
+.ft8-waterfall {
+  display: block;
+  width: 100%;
+  height: 160px;
+  border-radius: 10px;
+  border: 1px solid var(--glass-line);
+  background: #080c28;
+}
+.ft8-scale { position: relative; height: 16px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.ft8-scale span { position: absolute; top: 2px; transform: translateX(-50%); }
+
+#ft8 .table-wrap { max-height: 440px; overflow-y: auto; }
+.ft8-list { font-size: 14px; font-variant-numeric: tabular-nums; }
+.ft8-list td.num { text-align: right; }
+.ft8-list td.ft8-message { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; white-space: nowrap; }
+.ft8-list tbody tr { transition: background 0.12s; }
+.ft8-list tbody tr[tabindex] { cursor: pointer; }
+.ft8-list tbody tr:hover, .ft8-list tbody tr:focus-visible { background: var(--row-hover); outline: none; }
+.ft8-list tr.ft8-cq td.ft8-message { color: var(--ok); font-weight: 600; }
+.ft8-list tr.ft8-mine td { color: var(--danger); font-weight: 600; }
+.ft8-list tr.ft8-worked td { opacity: 0.55; }
+
+.ft8-kind {
+  display: inline-block;
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 999px;
+  border: 1px solid var(--glass-line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.ft8-kind.received { color: var(--ok); border-color: var(--ok); }
+.ft8-kind.pretend { color: var(--accent-2); border-color: var(--accent-2); }

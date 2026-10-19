@@ -43,6 +43,7 @@ _PENDING: Final = f"""
       AND {_BOOK_CALL} = %(book)s
       AND (u.qso_id IS NULL OR u.version < q.current_version)
       AND NOT (q.deleted AND u.logid IS NULL)
+      AND NOT workspace.is_practice(v.fields)
 """
 
 

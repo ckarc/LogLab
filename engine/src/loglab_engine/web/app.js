@@ -27,13 +27,14 @@
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
+    ft8: "FT8",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
-  const START_HIDDEN = new Set(["stats", "onair"]);
+  const START_HIDDEN = new Set(["stats", "onair", "ft8"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows; the world
   // map and the zone maps take the section map's place, since an overlay
@@ -91,7 +92,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -167,6 +168,8 @@
       column: logColumn,
       suggested: [...Object.keys(LOG_COLUMNS), ...SUGGESTED_FIELDS.map((f) => `field:${f}`)],
     }),
+    // A table of anything else, with columns of its own (ft8.js).
+    table: (options) => makeTable(options),
     openQso: (id) => openDetail(id),
     setDefaultLayout: (saved) => { overlayDefault = saved; },
   });
@@ -1126,7 +1129,7 @@
   // sorts it by (or null), and how to show a row in it. `suggested` lists
   // columns offered in the chooser; any ADIF field can be added by name.
   // `load()` fetches rows again, sorted as `state()` says.
-  function makeTable({ id, table, toolbar, column, suggested, defaults, load }) {
+  function makeTable({ id, table, toolbar, column, suggested, defaults, load, entered = ["newest entered first", "oldest entered first"] }) {
     const head = table.tHead.rows[0];
     const chooserButton = document.createElement("button");
     chooserButton.type = "button";
@@ -1168,7 +1171,7 @@
 
     function describeSort() {
       const now = state();
-      if (now.sort === "entered") return now.descending ? "newest entered first" : "oldest entered first";
+      if (now.sort === "entered") return now.descending ? entered[0] : entered[1];
       const shown = now.columns.map(column).find((c) => c.sort === now.sort);
       const name = shown ? shown.label : column(now.sort === "qso_start" ? "date" : now.sort).label;
       return `sorted by ${name}, ${now.descending ? "high to low" : "low to high"}`;
@@ -1580,6 +1583,11 @@
     add("CLASS", form.CLASS.value.toUpperCase());
     add("ARRL_SECT", form.ARRL_SECT.value.toUpperCase());
     add("COMMENT", form.COMMENT.value);
+    // Filled in from a pretend station (ft8.js): the Engine takes it only
+    // into a practice operation.
+    if (form.APP_LOGLAB_PRETEND && form.APP_LOGLAB_PRETEND.value === "Y") {
+      fields.push({ name: "APP_LOGLAB_PRETEND", value: "Y", type: null });
+    }
     return fields;
   }
 
