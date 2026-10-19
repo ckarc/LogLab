@@ -677,7 +677,7 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
         let llr = likelihoods(locked, &data, group, noise);
         let (decoded, _) = ldpc::decode_soft(&llr, options.ldpc_iterations);
         if let Some((bits, _)) = decoded {
-            record_stats(&data, &bits, noise, "bp", group, 0.0, 0.0);
+            record_stats(&data, &bits, noise, "bp", group, 0.0, 0.0, 0);
         }
         if let Some(found) = decoded
             .filter(|(bits, _)| validates(&data, bits, noise))
@@ -692,16 +692,29 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
     if !deep || options.osd_pairs == 0 {
         return None;
     }
-    fallbacks.iter().find_map(|(group, llr)| {
-        let (bits, distance, margin) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
-        record_stats(&data, &bits, noise, "osd", *group, distance, margin);
-        if distance > OSD_MAX_DISTANCE
-            || margin < exp_value("osdmargin", 0.0)
-            || !validates(&data, &bits, noise)
+    // Ordered statistics on every fallback; a codeword found from more
+    // than one likelihood set is the more believable for it.
+    let results: Vec<(usize, [bool; ldpc::N], f32, f32)> = fallbacks
+        .iter()
+        .filter_map(|(group, llr)| {
+            let (bits, distance, margin) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
+            Some((*group, bits, distance, margin))
+        })
+        .collect();
+    let need_agreement = exp_value("osdagree", 0.0) > 0.0;
+    results.iter().find_map(|(group, bits, distance, margin)| {
+        let agreeing = results.iter().filter(|r| r.1 == *bits).count();
+        record_stats(
+            &data, bits, noise, "osd", *group, *distance, *margin, agreeing,
+        );
+        if *distance > OSD_MAX_DISTANCE
+            || *margin < exp_value("osdmargin", 0.0)
+            || (need_agreement && agreeing < 2)
+            || !validates(&data, bits, noise)
         {
             return None;
         }
-        accept(&bits).filter(|(payload, _)| plausible(*payload))
+        accept(bits).filter(|(payload, _)| plausible(*payload))
     })
 }
 
@@ -728,6 +741,7 @@ fn record_stats(
     group: usize,
     distance: f32,
     margin: f32,
+    agreeing: usize,
 ) {
     use std::io::Write as _;
     static SINK: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
@@ -752,7 +766,7 @@ fn record_stats(
     let ok = u8::from(payload.value() != 0 && crc == encode::crc14(payload));
     let tones = encode::tones_for_codeword(bits);
     let line = format!(
-        "{source}\t{group}\t{distance:.1}\t{ok}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\t{margin:.2}\n",
+        "{source}\t{group}\t{distance:.1}\t{ok}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\t{margin:.2}\t{agreeing}\n",
         coherence(data, bits, noise),
         span_coherence(data, &tones, noise, 2),
         span_coherence(data, &tones, noise, 3),
