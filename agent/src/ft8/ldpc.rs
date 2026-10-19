@@ -149,7 +149,7 @@ fn generator_rows() -> &'static [Bits; 91] {
 /// Unlike belief propagation this always returns some codeword, so callers
 /// must check it (the CRC, and the disagreement) before trusting it.
 #[must_use]
-pub fn osd(llr: &[f32; N], pair_span: usize, triple_span: usize) -> Option<([bool; N], f32)> {
+pub fn osd(llr: &[f32; N], pair_span: usize, triple_span: usize) -> Option<([bool; N], f32, f32)> {
     let mut order: Vec<usize> = (0..N).collect();
     order.sort_by(|&a, &b| llr[b].abs().total_cmp(&llr[a].abs()));
 
@@ -208,10 +208,14 @@ pub fn osd(llr: &[f32; N], pair_span: usize, triple_span: usize) -> Option<([boo
         }
     }
     let mut best = (cost(&base), base);
+    let mut runner_up = f32::INFINITY;
     let mut consider = |word: Bits| {
         let c = cost(&word);
         if c < best.0 {
+            runner_up = best.0;
             best = (c, word);
+        } else if c < runner_up && word != best.1 {
+            runner_up = c;
         }
     };
     for row in &rows {
@@ -243,7 +247,11 @@ pub fn osd(llr: &[f32; N], pair_span: usize, triple_span: usize) -> Option<([boo
         }
     }
     let (distance, word) = best;
-    Some((std::array::from_fn(|i| get(&word, i)), distance))
+    Some((
+        std::array::from_fn(|i| get(&word, i)),
+        distance,
+        runner_up - distance,
+    ))
 }
 
 /// `phi(x) = ln((e^x + 1) / (e^x - 1))`, tabulated with linear
@@ -335,7 +343,7 @@ mod tests {
                 *l = 2.0 * received / 0.9;
             }
             if decode(&llr, 40).is_none() {
-                let (word, _) = super::osd(&llr, 40, 0).ok_or(MessageError::Empty)?;
+                let (word, _, _) = super::osd(&llr, 40, 0).ok_or(MessageError::Empty)?;
                 rescued += usize::from(word == sent);
             }
         }
@@ -363,7 +371,7 @@ mod tests {
             if decoded.is_some() {
                 continue;
             }
-            let rescued = |l: &[f32; N]| super::osd(l, 30, 0).is_some_and(|(w, _)| w == sent);
+            let rescued = |l: &[f32; N]| super::osd(l, 30, 0).is_some_and(|(w, _, _)| w == sent);
             raw += usize::from(rescued(&llr));
             refined += usize::from(rescued(&accumulated));
         }

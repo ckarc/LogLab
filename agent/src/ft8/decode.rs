@@ -677,7 +677,7 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
         let llr = likelihoods(locked, &data, group, noise);
         let (decoded, _) = ldpc::decode_soft(&llr, options.ldpc_iterations);
         if let Some((bits, _)) = decoded {
-            record_stats(&data, &bits, noise, "bp", group, 0.0);
+            record_stats(&data, &bits, noise, "bp", group, 0.0, 0.0);
         }
         if let Some(found) = decoded
             .filter(|(bits, _)| validates(&data, bits, noise))
@@ -685,7 +685,7 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
         {
             return Some(found);
         }
-        if OSD_GROUPS.contains(&group) {
+        if osd_groups().contains(&group) {
             fallbacks.push((group, llr));
         }
     }
@@ -693,9 +693,12 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
         return None;
     }
     fallbacks.iter().find_map(|(group, llr)| {
-        let (bits, distance) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
-        record_stats(&data, &bits, noise, "osd", *group, distance);
-        if distance > OSD_MAX_DISTANCE || !validates(&data, &bits, noise) {
+        let (bits, distance, margin) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
+        record_stats(&data, &bits, noise, "osd", *group, distance, margin);
+        if distance > OSD_MAX_DISTANCE
+            || margin < exp_value("osdmargin", 0.0)
+            || !validates(&data, &bits, noise)
+        {
             return None;
         }
         accept(&bits).filter(|(payload, _)| plausible(*payload))
@@ -724,6 +727,7 @@ fn record_stats(
     source: &str,
     group: usize,
     distance: f32,
+    margin: f32,
 ) {
     use std::io::Write as _;
     static SINK: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
@@ -748,7 +752,7 @@ fn record_stats(
     let ok = u8::from(payload.value() != 0 && crc == encode::crc14(payload));
     let tones = encode::tones_for_codeword(bits);
     let line = format!(
-        "{source}\t{group}\t{distance:.1}\t{ok}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\n",
+        "{source}\t{group}\t{distance:.1}\t{ok}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\t{margin:.2}\n",
         coherence(data, bits, noise),
         span_coherence(data, &tones, noise, 2),
         span_coherence(data, &tones, noise, 3),
@@ -835,6 +839,18 @@ const MAX_GROUP: usize = 4;
 /// The groups whose likelihoods ordered-statistics decoding is tried on:
 /// on the bench, every signal it rescues, it rescues from one of these.
 const OSD_GROUPS: [usize; 2] = [3, 4];
+
+/// [`OSD_GROUPS`], or the experiment switch `osdgroups=234` (digits).
+fn osd_groups() -> Vec<usize> {
+    let v = exp_value("osdgroups", 0.0);
+    if v <= 0.0 {
+        return OSD_GROUPS.to_vec();
+    }
+    format!("{v:.0}")
+        .bytes()
+        .map(|b| usize::from(b - b'0'))
+        .collect()
+}
 
 /// Largest disagreement an ordered-statistics decode may have and still be
 /// accepted, tuned on the bench; [`coherent`] is the stronger guard.

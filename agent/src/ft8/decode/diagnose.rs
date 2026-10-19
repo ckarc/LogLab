@@ -244,8 +244,8 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
         if let Some(i) = OSD_GROUPS.iter().position(|&g| g == group) {
             osd[i] = judge(
                 ldpc::osd(&llr, options.osd_pairs, options.osd_triples)
-                    .filter(|(_, d)| *d <= OSD_MAX_DISTANCE)
-                    .map(|(b, _)| b),
+                    .filter(|(_, d, _)| *d <= OSD_MAX_DISTANCE)
+                    .map(|(b, _, _)| b),
             );
         }
     }
