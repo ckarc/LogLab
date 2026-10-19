@@ -497,6 +497,12 @@ body.arranging .module-head {
 /* Pop out: a box in a window of its own. */
 h2 .popout { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--muted); }
 h2 .popout:hover { color: var(--accent); }
+/* The Menu's list of boxes to show. */
+.box-picker { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 4px 4px; }
+.box-picker label { color: var(--text); font-size: 14px; }
+.box-picker .hint { font-weight: 400; }
+/* Boxes open in windows of their own, each with a way to bring it back. */
+.elsewhere { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 4px 12px; }
 #all-boxes { text-decoration: none; }
 .widths { display: flex; gap: 4px; }
 .widths button { min-width: 34px; padding-left: 8px; padding-right: 8px; }

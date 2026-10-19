@@ -462,7 +462,7 @@
   // logged yet, QSO detail) take their place while the page is unlocked.
   function shown(m) {
     if (SOLO) return ALONE_WITH.has(m.id) && !moduleEl(m.id).hidden;
-    return !m.hidden && !unoffered.has(m.id) && (arranging() || !moduleEl(m.id).hidden);
+    return !m.hidden && !unoffered.has(m.id) && !elsewhere.has(m.id) && (arranging() || !moduleEl(m.id).hidden);
   }
 
   // The operator's overlay chooses its map (overlay.js says which overlay is in use).
@@ -526,7 +526,7 @@
     layout.modules.forEach((m, index) => {
       const el = moduleEl(m.id);
       el.style.order = String(index);
-      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden || unoffered.has(m.id));
+      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden || unoffered.has(m.id) || elsewhere.has(m.id));
       el.dataset.width = m.width;
       el.dataset.place = m.width === "full" ? "full" : m.side;
       for (const b of el.querySelectorAll(".module-head [data-width]")) {
@@ -537,6 +537,7 @@
     pack();
     const tray = $("#tray");
     tray.replaceChildren();
+    showBoxPicker();
     for (const m of layout.modules.filter((x) => x.hidden && !unoffered.has(x.id))) {
       const show = document.createElement("button");
       show.type = "button";
@@ -973,6 +974,117 @@
       win.moveTo(other.availLeft, other.availTop);
       win.resizeTo(other.availWidth, other.availHeight);
     }).catch(() => { /* not allowed: the operator drags it over */ });
+  }
+
+  // -- Which boxes show: a list in the Menu, beside Unlock ----------------
+
+  // Every box the operator may hide, ticked when shown. The journal and a
+  // QSO's detail come and go on their own, so they are not listed. A map the
+  // overlay does not use, or a box open in its own window, says so.
+  function buildBoxPicker() {
+    const open = document.createElement("button");
+    open.type = "button";
+    open.id = "boxes-open";
+    open.className = "link";
+    open.setAttribute("aria-expanded", "false");
+    open.setAttribute("aria-controls", "box-picker");
+    open.textContent = "Choose which boxes show";
+    const list = document.createElement("div");
+    list.id = "box-picker";
+    list.className = "box-picker";
+    list.hidden = true;
+    $("#arrange").after(open, list);
+    open.addEventListener("click", () => {
+      list.hidden = !list.hidden;
+      open.setAttribute("aria-expanded", String(!list.hidden));
+      if (!list.hidden) showBoxPicker();
+    });
+    if (SOLO) open.hidden = true;
+  }
+
+  function showBoxPicker() {
+    const list = $("#box-picker");
+    if (!list || list.hidden) return;
+    list.replaceChildren();
+    for (const m of layout.modules) {
+      if (!HIDEABLE.has(m.id)) continue;
+      const row = document.createElement("label");
+      row.className = "inline";
+      const tick = document.createElement("input");
+      tick.type = "checkbox";
+      tick.checked = !m.hidden;
+      tick.addEventListener("change", () => changeLayout(m.id, { hidden: !tick.checked }));
+      const why = unoffered.has(m.id) ? "not used for this kind of logging" : elsewhere.has(m.id) ? "open in its own window" : "";
+      row.append(tick, ` ${MODULES[m.id]}`);
+      if (why) {
+        const note = document.createElement("span");
+        note.className = "hint";
+        note.textContent = `(${why})`;
+        row.append(" ", note);
+      }
+      list.append(row);
+    }
+  }
+
+  // A box popped out into a window of its own is not shown here as well.
+  // The window says it is open every second, and that it has closed when it
+  // does; this page leaves the box out while it hears from it. Nothing is
+  // saved: closing the window, or losing it, brings the box back here.
+  const ELSEWHERE_MS = 3500;
+  const elsewhere = new Map(); // box id -> when its window last said it was open
+  const boxes = "BroadcastChannel" in window ? new BroadcastChannel("loglab-boxes") : null;
+
+  function hearWindows() {
+    if (!boxes) return;
+    if (SOLO) {
+      const say = () => boxes.postMessage({ open: SOLO });
+      say();
+      setInterval(say, 1000);
+      window.addEventListener("pagehide", () => boxes.postMessage({ closed: SOLO }));
+      boxes.addEventListener("message", (event) => { if (event.data.bringBack === SOLO) window.close(); });
+      return;
+    }
+    const update = () => {
+      const now = Date.now();
+      let changed = false;
+      for (const [id, heard] of elsewhere) {
+        if (now - heard > ELSEWHERE_MS) { elsewhere.delete(id); changed = true; }
+      }
+      return changed;
+    };
+    boxes.addEventListener("message", (event) => {
+      const { open, closed } = event.data || {};
+      const was = new Set(elsewhere.keys());
+      if (POPPABLE.includes(open)) elsewhere.set(open, Date.now());
+      if (POPPABLE.includes(closed)) elsewhere.delete(closed);
+      if (update() || was.size !== elsewhere.size || [...was].some((id) => !elsewhere.has(id))) showElsewhere();
+    });
+    setInterval(() => { if (update()) showElsewhere(); }, 1000);
+  }
+
+  // Say which boxes are in other windows, with a way to bring each back.
+  function showElsewhere() {
+    const line = $("#elsewhere");
+    line.replaceChildren();
+    for (const id of elsewhere.keys()) {
+      const item = document.createElement("span");
+      item.textContent = `${MODULES[id]} is open in its own window.`;
+      const back = document.createElement("button");
+      back.type = "button";
+      back.className = "link";
+      back.textContent = "Bring it back";
+      back.addEventListener("click", () => {
+        boxes.postMessage({ bringBack: id });
+        elsewhere.delete(id);
+        showElsewhere();
+      });
+      item.append(" ", back);
+      line.append(item);
+    }
+    line.hidden = elsewhere.size === 0;
+    applyLayout();
+    // A box coming back shows what changed while it was away.
+    document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
 
   function buildPopOuts() {
@@ -1949,6 +2061,8 @@
     } else {
       buildPopOuts();
     }
+    hearWindows();
+    buildBoxPicker();
     applyLayout();
     fillSelect($("#entry [name=BAND]"), BANDS);
     fillSelect($("#entry [name=MODE]"), MODES);
