@@ -16,6 +16,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -31,7 +32,6 @@ from loglab_engine.store.callbook import CallbookStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
 
     import psycopg
     from psycopg.rows import TupleRow
@@ -41,6 +41,9 @@ if TYPE_CHECKING:
 
 SOURCE: Final = "qrz"
 RETRY_AFTER_SECONDS: Final = 60.0
+# A kept answer older than this is fetched again when QRZ.com can be reached,
+# so a changed name, QTH, photo or biography shows up with no one asking.
+RECHECK_AFTER: Final = timedelta(days=30)
 
 
 class LookupStatus(StrEnum):
@@ -135,11 +138,24 @@ class Callbook:
         """Look ``call`` (already validated, upper case) up for ``actor``."""
         cached = self._store.cached(SOURCE, call)
         if cached is not None and not refresh:
-            return _from_cache(call, cached, "")
+            if not _due(cached):
+                return _from_cache(call, cached, "")
+            return self._renew(actor, call, cached)
         login = self._store.login(actor, SOURCE)
         if login is None:
             return self._fallback(LookupStatus.NOT_SET_UP, call, cached, _NOT_SET_UP)
         return self._fetch(actor, login, call, cached)
+
+    def _renew(self, actor: Actor, call: str, cached: CachedEntry) -> LookupResult:
+        """Fetch again an entry that is due (see :func:`_due`), with no one asking.
+
+        When that can't be done now, the kept entry is the answer, as before.
+        """
+        login = self._store.login(actor, SOURCE)
+        if login is None or self._link.down():
+            return _from_cache(call, cached, "")
+        fresh = self._fetch(actor, login, call, cached)
+        return fresh if not fresh.cached else _from_cache(call, cached, "")
 
     def _fetch(
         self, actor: Actor, login: CallbookLogin, call: str, cached: CachedEntry | None
@@ -194,21 +210,32 @@ class Callbook:
         """The biography ``call`` wrote on QRZ.com, as plain text: the kept copy first.
 
         It is fetched only for a call whose looked-up record says it has one,
-        and only with the operator's own QRZ.com login.
+        and only with the operator's own QRZ.com login. The record dates the
+        biography, so a changed one is fetched again with no one asking; until
+        it can be, the kept copy is shown.
         """
         cached = self._store.media(SOURCE, call, "bio")
-        if cached is not None and not refresh:
-            return _bio(call, cached, "")
         entry = self._store.cached(SOURCE, call)
         if entry is None or not entry.found or entry.entry.get("bio") != "yes":
+            if cached is not None and entry is None:
+                return _bio(call, cached, "")
             return BioResult(LookupStatus.NOT_FOUND, call, None, None, _NO_BIO)
+        dated = entry.entry.get("biodate")
+        date = dated if isinstance(dated, str) else None
+        if cached is not None and not refresh and cached.origin == date:
+            return _bio(call, cached, "")
         login = self._store.login(actor, SOURCE)
         if login is None:
             return _bio_fallback(LookupStatus.NOT_SET_UP, call, cached, _NOT_SET_UP)
-        return self._fetch_bio(actor, login, call, cached)
+        return self._fetch_bio(actor, login, call, cached, date)
 
     def _fetch_bio(
-        self, actor: Actor, login: CallbookLogin, call: str, cached: CachedMedia | None
+        self,
+        actor: Actor,
+        login: CallbookLogin,
+        call: str,
+        cached: CachedMedia | None,
+        date: str | None,
     ) -> BioResult:
         if self._link.down():
             return _bio_fallback(LookupStatus.UNREACHABLE, call, cached, _UNREACHABLE)
@@ -228,7 +255,7 @@ class Callbook:
             if text is None:
                 return BioResult(LookupStatus.NOT_FOUND, call, None, None, _NO_BIO)
             kept = self._store.remember_media(
-                SOURCE, call, "bio", content=text.encode(), content_type="text/plain", origin=None
+                SOURCE, call, "bio", content=text.encode(), content_type="text/plain", origin=date
             )
             return _bio(call, kept, "")
         status, message = failed
@@ -298,6 +325,15 @@ class Callbook:
     def remove_login(self, actor: Actor) -> bool:
         """Remove the operator's QRZ.com login; ``False`` if there was none."""
         return self._store.remove_login(actor, SOURCE)
+
+
+def _due(cached: CachedEntry) -> bool:
+    """Whether a kept answer should be fetched again: it is old, or predates photos.
+
+    A found entry kept before photos and biographies were noted has no ``bio``.
+    """
+    old = datetime.now(UTC) - cached.fetched_at > RECHECK_AFTER
+    return old or (cached.found and "bio" not in cached.entry)
 
 
 def _from_cache(

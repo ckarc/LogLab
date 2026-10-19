@@ -87,6 +87,7 @@ class CallbookEntry:
     grid: str | None = None
     image: str | None = None
     bio: bool = False
+    bio_date: str | None = None
 
     def to_json(self) -> dict[str, str]:
         """The entry as a JSON object, leaving out empty values."""
@@ -98,7 +99,9 @@ class CallbookEntry:
             "country": self.country,
             "grid": self.grid,
             "image": self.image,
-            "bio": "yes" if self.bio else None,
+            # Always written, so an entry kept before biographies were noted can be told apart.
+            "bio": "yes" if self.bio else "no",
+            "biodate": self.bio_date,
         }
         return {k: v for k, v in values.items() if v is not None}
 
@@ -189,6 +192,7 @@ def _entry(call: str | None, text: Callable[[str], str | None]) -> CallbookEntry
         grid=_clean_grid(text("grid")),
         image=_clean_image(text("image")),
         bio=_has_bio(text("bio")),
+        bio_date=clean_text(text("biodate"), 32),
     )
 
 

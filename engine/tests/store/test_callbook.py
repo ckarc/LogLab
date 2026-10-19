@@ -40,6 +40,7 @@ class FakeQrz:
         self.keys: set[str] = set()
         self.note: str | None = None  # a session <Message>, such as a subscription notice
         self.bio = "First licensed in 1914."
+        self.bio_date = "2023-10-26 17:02:11"
         self.photo = JPEG
 
     def __call__(self, url: str) -> bytes:
@@ -65,7 +66,7 @@ class FakeQrz:
             "<Callsign><call>W1AW</call><fname>Hiram Percy</fname><name>Maxim</name>"
             "<addr2>Newington</addr2><state>CT</state><country>United States</country>"
             "<grid>FN31pr</grid><bio>120</bio><image>https://cdn-xml.qrz.com/u/w1aw/w1aw.jpg</image>"
-            "</Callsign>"
+            f"<biodate>{self.bio_date}</biodate></Callsign>"
         )
         return f'<QRZDatabase xmlns="http://xmldata.qrz.com">{record}<Session>{key}</Session></QRZDatabase>'.encode()
 
@@ -440,3 +441,63 @@ def test_a_photo_that_is_not_a_safe_picture_is_never_served(
     _look(client, k9ksu, "W1AW")
     photo = client.get("/api/v1/lookup/photo", headers=k9ksu, params={"call": "W1AW"})
     assert photo.status_code == 404
+
+
+def test_an_entry_kept_before_photos_were_noted_is_fetched_again_once(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz, conn: psycopg.Connection[TupleRow]
+) -> None:
+    """No refresh is needed to see a photo for a call looked up before they were kept."""
+    CallbookStore(conn).remember(
+        "qrz", "W1AW", found=True, entry={"call": "W1AW", "name": "Hiram Percy Maxim"}
+    )
+    _set_up(client, k9ksu)
+    found = _look(client, k9ksu, "W1AW")
+    assert (found["photo"], found["bio"], found["cached"]) == (True, True, False)
+    asked = qrz.lookups()
+    assert _look(client, k9ksu, "W1AW")["cached"] is True
+    assert qrz.lookups() == asked
+
+
+def test_an_old_entry_is_still_the_answer_with_no_internet(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz, conn: psycopg.Connection[TupleRow]
+) -> None:
+    """Fetching it again is a bonus: offline, the kept entry shows with no warning (V)."""
+    CallbookStore(conn).remember(
+        "qrz", "W1AW", found=True, entry={"call": "W1AW", "name": "Hiram Percy Maxim"}
+    )
+    _set_up(client, k9ksu)
+    qrz.online = False
+    found = _look(client, k9ksu, "W1AW")
+    assert found["name"] == "Hiram Percy Maxim"
+    assert found["status"] == "found"
+    assert "before" not in found["message"]
+
+
+def test_a_biography_qrz_dates_anew_is_fetched_again_with_no_one_asking(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """When the record shows a newer biography, the next look fetches it."""
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    assert _bio(client, k9ksu, "W1AW")["text"] == "First licensed in 1914."
+    qrz.bio = "Now on FT8 too."
+    qrz.bio_date = "2026-10-19 01:00:00"
+    assert _bio(client, k9ksu, "W1AW")["text"] == "First licensed in 1914."  # record not seen yet
+    _look(client, k9ksu, "W1AW", refresh="true")
+    assert _bio(client, k9ksu, "W1AW")["text"] == "Now on FT8 too."
+
+
+def test_an_answer_kept_for_more_than_30_days_is_fetched_again(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz, conn: psycopg.Connection[TupleRow]
+) -> None:
+    """A station's changes show up on their own, a month at the latest (Principle VI)."""
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    with conn.transaction():
+        conn.execute("ALTER TABLE reference.callbook_entry DISABLE TRIGGER callbook_stamp")
+        conn.execute("UPDATE reference.callbook_entry SET fetched_at = now() - interval '31 days'")
+        conn.execute("ALTER TABLE reference.callbook_entry ENABLE TRIGGER callbook_stamp")
+    asked = qrz.lookups()
+    assert _look(client, k9ksu, "W1AW")["cached"] is False
+    assert qrz.lookups() == asked + 1
+    assert _look(client, k9ksu, "W1AW")["cached"] is True
