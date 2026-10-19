@@ -2083,7 +2083,7 @@
     buildPanelHeads();
     if (SOLO) {
       document.body.classList.add("solo");
-      document.title = `${MODULES[SOLO]} · LogLab`;
+      document.title = `${MODULES[SOLO]} · LabLog`;
     } else {
       buildPopOuts();
     }

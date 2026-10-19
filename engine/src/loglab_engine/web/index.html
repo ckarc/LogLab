@@ -5,7 +5,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>LogLab</title>
+  <title>LabLog</title>
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
@@ -39,7 +39,7 @@
 </head>
 <body>
   <header class="bar">
-    <span class="brand">LogLab</span>
+    <span class="brand">LabLog</span>
     <span id="who" class="who" hidden></span>
     <button id="agents-waiting" class="agents-waiting" type="button" title="A Station Agent is asking to join; open Station Agents" hidden></button>
     <button id="menu-open" class="link menu-open" type="button" aria-haspopup="dialog" hidden>Menu</button>
@@ -439,7 +439,7 @@
     <h2>QRZ.com</h2>
     <form id="qrz-book-form" method="dialog" autocomplete="off">
       <h3>Your QRZ logbook</h3>
-      <p class="hint">Each QSO you log from now on is copied to your QRZ logbook, and edits and deletes follow it. Use the API key from your logbook's settings on QRZ.com. With no internet, QSOs wait in LogLab and go out when QRZ.com can be reached; logging never waits on it.</p>
+      <p class="hint">Each QSO you log from now on is copied to your QRZ logbook, and edits and deletes follow it. Use the API key from your logbook's settings on QRZ.com. With no internet, QSOs wait in LabLog and go out when QRZ.com can be reached; logging never waits on it.</p>
       <p id="qrz-book-state" class="hint"></p>
       <label>Logbook API key <input name="api_key" required minlength="8" maxlength="64" spellcheck="false" placeholder="ABCD-1234-EF56-7890"></label>
       <label>Logbook callsign <input name="book_call" maxlength="20" autocapitalize="characters" spellcheck="false" placeholder="your own call, or a club call"></label>
@@ -451,7 +451,7 @@
     </form>
     <form id="qrz-form" method="dialog" autocomplete="off">
       <h3>Callsign lookup</h3>
-      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. US and Canadian calls fill in from LogLab's own copy of the FCC and Canadian lists even with no internet; QRZ.com adds the grid and other countries' calls. With no internet, logging works the same.</p>
+      <p class="hint">When you type a call, LabLog asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. US and Canadian calls fill in from LabLog's own copy of the FCC and Canadian lists even with no internet; QRZ.com adds the grid and other countries' calls. With no internet, logging works the same.</p>
       <p id="qrz-state" class="hint"></p>
       <label>QRZ.com username (your callsign) <input name="username" required maxlength="64" autocapitalize="characters" spellcheck="false"></label>
       <label>QRZ.com password <input name="password" type="password" required maxlength="128"></label>
@@ -481,7 +481,7 @@
 
   <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">
     <h2 id="licenses-title">US and Canada call lists</h2>
-    <p class="hint">LogLab keeps its own copy of the FCC's and Canada's amateur license lists, so US and Canadian calls fill in with no internet. Whenever it can reach them, it loads the FCC's weekly list and each day's changes, and Canada's list. Only the call, name, city, state or province and license class are kept.</p>
+    <p class="hint">LabLog keeps its own copy of the FCC's and Canada's amateur license lists, so US and Canadian calls fill in with no internet. Whenever it can reach them, it loads the FCC's weekly list and each day's changes, and Canada's list. Only the call, name, city, state or province and license class are kept.</p>
     <ul id="licenses-list" class="licenses-list"></ul>
     <p id="licenses-problem" class="hint"></p>
     <div class="actions">
@@ -497,7 +497,7 @@
       <h2>Logbook of the World</h2>
       <button type="button" id="lotw-close" class="secondary small">Close</button>
     </div>
-    <p class="hint">LogLab signs your QSOs with your own LoTW callsign certificate and sends them when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here until you send them.</p>
+    <p class="hint">LabLog signs your QSOs with your own LoTW callsign certificate and sends them when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here until you send them.</p>
     <p id="lotw-state" class="notice" aria-live="polite"></p>
 
     <section id="lotw-actions" class="lotw-part" hidden>
@@ -555,7 +555,7 @@
   </dialog>
 
   <footer class="foot">
-    <span id="version">LogLab</span> · AGPL-3.0 ·
+    <span id="version">LabLog</span> · AGPL-3.0 ·
     <a id="source" href="https://github.com/ckarc/loglab" rel="noopener">Source code</a> ·
     <a href="/api/docs">API</a>
   </footer>

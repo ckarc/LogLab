@@ -1,4 +1,4 @@
-<!-- SPDX-FileCopyrightText: 2026 LogLab contributors -->
+<!-- SPDX-FileCopyrightText: 2026 LabLog contributors -->
 <!-- SPDX-License-Identifier: AGPL-3.0-only -->
 
 # The Station Agent
@@ -26,7 +26,7 @@ This version only reads the radio. It never tunes it and never transmits
   transmits) and names it, such as "Slice A". SmartSDR's radio chooser shows
   the radio's IP address; giving the radio a fixed address on the network
   keeps the Agent's command line right.
-- **The pretend radio.** Built in, for trying LogLab with no radio. It visits
+- **The pretend radio.** Built in, for trying LabLog with no radio. It visits
   a few spots on the bands and "transmits" for a few seconds at each.
 
 ## Setting up a station

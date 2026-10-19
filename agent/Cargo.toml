@@ -4,7 +4,7 @@
 [package]
 name = "loglab-agent"
 version = "0.1.0"
-description = "LogLab Station Agent: owns the radios and shares them through one common rig model."
+description = "LabLog Station Agent: owns the radios and shares them through one common rig model."
 edition = "2024"
 rust-version = "1.97"
 license = "AGPL-3.0-only"

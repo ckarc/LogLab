@@ -292,7 +292,7 @@ def _agent_key(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-operator",
-        description="LogLab operator accounts and sign-in (Principle XIII).",
+        description="LabLog operator accounts and sign-in (Principle XIII).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

@@ -29,5 +29,5 @@ Half of the signals are found at about -21 dB, which matches FT8's published
 sensitivity. That confirms the bench's signal levels are right.
 
 WSJT-X missed two strong signals: `A7WS E7V RRR` (slot 10, 873 Hz, -10.2 dB)
-and `G9OSE RQ4ZH RRR` (slot 54, 1200 Hz, -14.0 dB). A LogLab decoder that
+and `G9OSE RQ4ZH RRR` (slot 54, 1200 Hz, -14.0 dB). A LabLog decoder that
 finds them as well is doing better than WSJT-X, not worse.

@@ -40,7 +40,7 @@ STATION_CALLSIGN: Final = "Q0LAB"
 EDGE_CASES: Final = 10
 
 _PREAMBLE: Final = (
-    "LogLab ghost QSOs - synthetic test data, not real contacts.\n"
+    "LabLog ghost QSOs - synthetic test data, not real contacts.\n"
     "Do not upload to LoTW, Club Log, eQSL, QRZ, or any other service.\n"
 )
 
@@ -197,7 +197,7 @@ def generate(count: int, seed: int = 1, start: datetime = DEFAULT_START) -> Adif
         _PREAMBLE,
         (
             Field("ADIF_VER", ADIF_VERSION),
-            Field("PROGRAMID", "LogLab"),
+            Field("PROGRAMID", "LabLog"),
             Field("PROGRAMVERSION", __version__),
             Field("CREATED_TIMESTAMP", start.strftime("%Y%m%d %H%M%S")),
             _USERDEF,

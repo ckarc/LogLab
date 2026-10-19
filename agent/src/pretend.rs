@@ -46,7 +46,7 @@ impl PretendRadio {
     pub fn new() -> Self {
         Self {
             identity: RadioIdentity {
-                maker: "LogLab".to_owned(),
+                maker: "LabLog".to_owned(),
                 model: "Pretend radio".to_owned(),
                 path: ControlPath::Pretend,
             },

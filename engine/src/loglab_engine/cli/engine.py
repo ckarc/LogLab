@@ -47,7 +47,7 @@ DEFAULT_PORT: Final = 8073
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-engine",
-        description="Run the LogLab Engine: its API and the web client.",
+        description="Run the LabLog Engine: its API and the web client.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
@@ -95,7 +95,7 @@ def _said(result: ImportResult) -> str:
 
 
 def _refresh(database: str, out: TextIO) -> None:
-    report = Refresher(database, HttpDownloads(f"LogLab/{__version__}")).run_once()
+    report = Refresher(database, HttpDownloads(f"LabLog/{__version__}")).run_once()
     for result in report.imported:
         out.write(_said(result) + "\n")
     for problem in report.problems:
@@ -170,7 +170,7 @@ def main(
             err.write(f"database error: {str(error).strip()}\n")
             return EXIT_REFUSED
         return EXIT_OK
-    out.write(f"LogLab Engine {__version__}: http://{args.host}:{args.port}/\n")
+    out.write(f"LabLog Engine {__version__}: http://{args.host}:{args.port}/\n")
     out.flush()
     app = create_app(database)
     app.state.logbook.start()  # sends QSOs to QRZ logbooks, when operators set that up
