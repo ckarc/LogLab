@@ -88,6 +88,8 @@ from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.reference import SECTIONS, tally_sections
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
+from loglab_engine.reference.licenses import FCC_CREDIT, ISED_CREDIT
+from loglab_engine.reference.refresh import Downloads, HttpDownloads, Refresher
 from loglab_engine.store import (
     Actor,
     ArchivedError,
@@ -106,6 +108,7 @@ from loglab_engine.store import (
     WorkspaceStore,
     connect,
 )
+from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
 from loglab_engine.store.operation import (
     Operation,
     OperationNotFoundError,
@@ -406,10 +409,12 @@ class LookupQuery(_Strict):
 
 
 class LookupOut(BaseModel):
-    """What the callbook says about a call, or why it could not say.
+    """What the license lists and the callbook say about a call, or why they could not say.
 
     ``status`` is ``found``, ``not_found``, ``not_set_up`` (no QRZ.com login),
     ``unreachable`` (no internet, or QRZ.com is down), or ``login_failed``.
+    ``sources`` names where the answer came from: ``fcc`` or ``ised`` (the
+    license lists the Engine keeps) and ``qrz``.
     """
 
     status: str
@@ -422,6 +427,9 @@ class LookupOut(BaseModel):
     cached: bool
     fetched_at: datetime | None
     message: str
+    sources: list[str]
+    license_class: str | None
+    license_expires: date | None
 
 
 class QrzLoginIn(_Strict):
@@ -429,6 +437,26 @@ class QrzLoginIn(_Strict):
 
     username: Annotated[str, StringConstraints(min_length=1, max_length=64, strip_whitespace=True)]
     password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class LicenseSourceOut(BaseModel):
+    """How current one of the license lists the Engine keeps is."""
+
+    source: str
+    country: str
+    calls: int
+    published: datetime | None
+    imported: datetime | None
+    changes_published: datetime | None
+    changes_imported: datetime | None
+    credit: str
+
+
+class LicensesOut(BaseModel):
+    """The US and Canadian license lists: how current each is, and the last refresh problem."""
+
+    sources: list[LicenseSourceOut]
+    problem: str | None
 
 
 class QrzLoginOut(BaseModel):
@@ -1525,6 +1553,9 @@ def _lookup_out(result: LookupResult) -> LookupOut:
         cached=result.cached,
         fetched_at=result.fetched_at,
         message=result.message,
+        sources=list(result.sources),
+        license_class=None if result.license is None else result.license.license_class,
+        license_expires=None if result.license is None else result.license.expires,
     )
 
 
@@ -1532,10 +1563,12 @@ def _lookup_out(result: LookupResult) -> LookupOut:
 def lookup(
     who: Signed, conn: Conn, books: Books, query: Annotated[LookupQuery, Query()]
 ) -> LookupOut:
-    """Who and where a call is: kept answers first, then QRZ.com with the operator's login.
+    """Who and where a call is: the US and Canadian license lists, then QRZ.com.
 
-    Always answers 200; ``status`` says whether anything was found. A call is
-    fetched from QRZ.com once and kept (Principle VI); ``refresh`` fetches it again.
+    Always answers 200; ``status`` says whether anything was found. The license
+    lists answer with no internet; QRZ.com, with the operator's login, fills in
+    what they lack (Principle VI). A call is fetched from QRZ.com once and
+    kept; ``refresh`` fetches it again.
     """
     _require(conn, who, Permission.VIEW)
     return _lookup_out(books.lookup(who, query.call.upper(), refresh=query.refresh))
@@ -1593,6 +1626,42 @@ def _login_message(result: LoginCheck) -> str:
 def delete_qrz_login(who: Signed, books: Books) -> None:
     """Remove the signed-in operator's QRZ.com login."""
     books.remove_login(who)
+
+
+_CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
+
+
+@api.get("/licenses")
+def get_licenses(request: Request, who: Signed, conn: Conn) -> LicensesOut:
+    """How current the US (FCC) and Canadian (ISED) license lists are (Principle VI)."""
+    _require(conn, who, Permission.VIEW)
+    refresher: Refresher = request.app.state.licenses
+    report = refresher.last_report()
+    problems = [] if report is None else report.problems
+    return LicensesOut(
+        sources=[
+            LicenseSourceOut(
+                source=state.source.value,
+                country=COUNTRY[state.source],
+                calls=state.calls,
+                published=state.full_published,
+                imported=state.full_imported,
+                changes_published=state.daily_published,
+                changes_imported=state.daily_imported,
+                credit=_CREDIT[state.source],
+            )
+            for state in LicenseStore(conn).states()
+        ],
+        problem=problems[0] if problems else None,
+    )
+
+
+@api.post("/licenses/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_licenses(request: Request, who: Signed, conn: Conn) -> None:
+    """Check for newer license lists now, in the background (admins only)."""
+    _require(conn, who, Permission.ADMIN)
+    refresher: Refresher = request.app.state.licenses
+    refresher.wake()
 
 
 def _lotw(request: Request, conn: Conn) -> Lotw:
@@ -1859,13 +1928,16 @@ def create_app(
     qrz_fetch: Callable[[str], bytes] = http_fetch,
     qrz_post: Callable[[str, bytes, str], bytes] = http_post,
     lotw_transport: Transport = https,
+    license_downloads: Downloads | None = None,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
     ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
-    and logbook services, and ``lotw_transport`` how it reaches LoTW; tests
+    and logbook services, ``lotw_transport`` how it reaches LoTW, and
+    ``license_downloads`` how it fetches the FCC and ISED license lists; tests
     give them stand-ins. The QRZ logbook sender runs in the background once
-    ``app.state.logbook.start()`` is called.
+    ``app.state.logbook.start()`` is called, and the license lists are kept
+    current once ``app.state.licenses.start()`` is.
     """
     app = FastAPI(
         title="LogLab Engine",
@@ -1879,6 +1951,9 @@ def create_app(
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch))
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
+    app.state.licenses = Refresher(
+        database, license_downloads or HttpDownloads(f"LogLab/{__version__} ({SOURCE})")
+    )
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
