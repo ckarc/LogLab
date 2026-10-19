@@ -192,8 +192,8 @@ class ModulePlace(_Strict):
     """A module in the overlay's default layout."""
 
     id: ModuleId
-    width: Literal["third", "half", "full"] = "full"
-    side: Literal["left", "middle", "right"] = "left"
+    width: Literal["quarter", "third", "half", "full"] = "full"
+    side: Literal["left", "middle-left", "middle", "middle-right", "right"] = "left"
     hidden: bool = False
 
 

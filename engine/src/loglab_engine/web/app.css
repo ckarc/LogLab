@@ -394,13 +394,18 @@ th[aria-sort] { color: var(--accent); }
    rows as it is tall, so each side stacks on its own with no gaps. */
 .workspace {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(12, minmax(0, 1fr));
   grid-auto-rows: 1px;
   column-gap: 18px;
   row-gap: 0;
   align-items: start;
 }
 .module { grid-column: 1 / -1; margin-bottom: 0; min-width: 0; }
+/* Each box's Size slider: the box keeps its width on the page, and what is
+   inside it (and the room around it) draws smaller or larger. The handle bar
+   stays its normal size so it is always easy to grab. */
+.module { padding: calc(20px * var(--box-scale, 1)); }
+.module > :not(.module-head) { zoom: var(--box-scale, 1); }
 .module.off { display: none !important; }
 .module.raised { position: relative; z-index: 30; }
 
@@ -470,10 +475,18 @@ dialog.card:modal { margin: 16px auto auto; max-height: calc(100vh - 32px); over
 body.arranging .module { outline: 2px dashed transparent; outline-offset: -2px; }
 body.arranging .module-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   margin: -8px -8px 14px;
 }
+.module-head .handle { flex: 1 1 160px; }
+.module-head .scale {
+  flex-direction: row; align-items: center; gap: 6px;
+  color: var(--muted); font-size: 12px; font-weight: 600;
+}
+.module-head .scale input { width: 96px; padding: 0; accent-color: var(--accent); background: none; border: 0; box-shadow: none; }
+.module-head .scale-reset { min-width: 54px; font-variant-numeric: tabular-nums; }
 .handle {
   flex: 1;
   display: flex;
@@ -495,7 +508,7 @@ body.arranging .module-head {
 .handle .grip { color: var(--accent); font-size: 18px; line-height: 1; }
 .handle .module-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 /* Pop out: a box in a window of its own. */
-h2 .popout { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--muted); }
+h2 .popout { margin-left: auto; padding: 2px 6px; font-size: 17px; font-weight: 500; line-height: 1; color: var(--muted); }
 h2 .popout:hover { color: var(--accent); }
 /* The Menu's list of boxes to show. */
 .box-picker { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 4px 4px; }

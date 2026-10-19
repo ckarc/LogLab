@@ -64,7 +64,7 @@
   const MAX_WORLD_QSOS = 500;
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
-    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: START_HIDDEN.has(id), ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", scale: 100, hidden: START_HIDDEN.has(id), ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
     tables: {},
     panels: {},
     detail: null,
@@ -337,6 +337,7 @@
         id: m.id,
         width: WIDTHS.includes(m.width) ? m.width : "full",
         side: sideFor(m.width, SIDES.includes(m.side) ? m.side : "left"),
+        scale: scaleOf(m.scale),
         hidden: HIDEABLE.has(m.id) && m.hidden === true,
       });
     }
@@ -345,8 +346,8 @@
       const join = JOINS[id];
       const like = join && join.like && modules.find((m) => m.id === join.like);
       const added = like
-        ? { id, width: like.width, side: like.side, hidden: START_HIDDEN.has(id) }
-        : { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: START_HIDDEN.has(id) };
+        ? { id, width: like.width, side: like.side, scale: 100, hidden: START_HIDDEN.has(id) }
+        : { id, width: join ? join.width : "full", side: join ? join.side : "left", scale: 100, hidden: START_HIDDEN.has(id) };
       const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
       if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);
@@ -496,36 +497,66 @@
     if (layout) applyLayout();
   });
 
-  // The page is six narrow tracks wide: a third takes two, a half three,
-  // a full-width box all six. Boxes are placed in the operator's order, each
-  // as high as its own tracks allow, so a short box on one side never leaves
-  // a gap beside a tall one on the other. The grid's rows are one pixel high,
-  // and each box spans as many as it is tall. Below THIRDS_FROM pixels wide,
-  // thirds show as halves; on a phone, every box is full width (app.css).
+  // The page is twelve narrow tracks wide: a quarter takes three, a third
+  // four, a half six, a full-width box all twelve. Boxes are placed in the
+  // operator's order, each as high as its own tracks allow, so a short box
+  // on one side never leaves a gap beside a tall one on the other. The
+  // grid's rows are one pixel high, and each box spans as many as it is
+  // tall. Below THIRDS_FROM pixels wide, quarters and thirds show as
+  // halves, on the side they lean to; on a phone, every box is full width
+  // (app.css).
   const GAP = 18;
+  const TRACKS = 12;
   const THIRDS_FROM = 960;
-  const WIDTHS = ["third", "half", "full"];
-  const SIDES = ["left", "middle", "right"];
+  const WIDTHS = ["quarter", "third", "half", "full"];
+  const SIDES = ["left", "middle-left", "middle", "middle-right", "right"];
+  // The places across the page each width can sit, left to right.
+  const SLOTS = {
+    quarter: ["left", "middle-left", "middle-right", "right"],
+    third: ["left", "middle", "right"],
+    half: ["left", "right"],
+  };
+  // How large a box draws what is inside it, in percent (the Engine's limits).
+  const MIN_SCALE = 50;
+  const MAX_SCALE = 200;
+  const SCALE_STEP = 5;
+  const scaleOf = (n) => (Number.isInteger(n) && n >= MIN_SCALE && n <= MAX_SCALE ? n : 100);
 
-  // Only a third has a middle; anything else there moves to the left.
-  const sideFor = (width, side) => (width !== "third" && side === "middle" ? "left" : side);
+  // A side the width has; one it lacks moves to the nearest it has.
+  function sideFor(width, side) {
+    if (width === "full") return side === "right" ? "right" : "left";
+    const slots = SLOTS[width];
+    if (slots.includes(side)) return side;
+    if (side === "middle") return width === "quarter" ? "middle-left" : "left";
+    if (side === "middle-left") return width === "third" ? "middle" : "left";
+    if (side === "middle-right") return width === "third" ? "middle" : "right";
+    return "left";
+  }
 
-  // The tracks [from, to) a box takes, as `wide` or not.
-  function tracksFor(width, side, wide) {
-    const w = width === "third" && !wide ? "half" : width;
-    if (w === "full") return [0, 6];
-    if (w === "half") return side === "right" ? [3, 6] : [0, 3];
-    return { left: [0, 2], middle: [2, 4], right: [4, 6] }[side] || [0, 2];
+  // The width a box shows at, on a workspace `px` pixels wide.
+  function shownWidth(width, px) {
+    if ((width === "quarter" || width === "third") && px < THIRDS_FROM) return "half";
+    return width;
+  }
+
+  // The tracks [from, to) a box takes on a workspace `px` pixels wide.
+  function tracksFor(width, side, px) {
+    const w = shownWidth(width, px);
+    if (w === "full") return [0, TRACKS];
+    const slots = SLOTS[w];
+    const span = TRACKS / slots.length;
+    const at = Math.max(0, slots.indexOf(sideFor(w, side)));
+    return [at * span, (at + 1) * span];
   }
 
   function pack() {
     const area = $("#workspace");
-    const wide = area.clientWidth >= THIRDS_FROM;
-    const heights = [0, 0, 0, 0, 0, 0];
+    const px = area.clientWidth;
+    const heights = new Array(TRACKS).fill(0);
     for (const m of layout.modules) {
       const el = moduleEl(m.id);
       if (!shown(m)) continue;
-      const [from, to] = SOLO ? [0, 6] : tracksFor(m.width, m.side, wide);
+      const [from, to] = SOLO ? [0, TRACKS] : tracksFor(m.width, m.side, px);
       el.style.gridColumn = `${from + 1} / ${to + 1}`;
       const top = Math.max(...heights.slice(from, to));
       const tall = Math.max(1, Math.ceil(el.offsetHeight));
@@ -553,6 +584,12 @@
       for (const b of el.querySelectorAll(".module-head [data-width]")) {
         b.setAttribute("aria-pressed", String(b.dataset.width === m.width));
       }
+      // The box keeps its width; what is inside it draws larger or smaller.
+      el.style.setProperty("--box-scale", String(m.scale / 100));
+      const slider = el.querySelector(".module-head .scale input");
+      if (slider && document.activeElement !== slider) slider.value = String(m.scale);
+      const shownScale = el.querySelector(".module-head .scale-reset");
+      if (shownScale) shownScale.textContent = `${m.scale}%`;
     });
     applyPanels();
     pack();
@@ -587,6 +624,13 @@
     layout.modules = layout.modules.map((m) => (m.id === id ? { ...m, ...change } : m));
     applyLayout();
     saveLayout();
+  }
+
+  // How large box `id` draws its contents, in percent, kept in the limits.
+  function setScale(id, percent) {
+    const scale = Math.max(MIN_SCALE, Math.min(MAX_SCALE, Math.round(percent / SCALE_STEP) * SCALE_STEP));
+    if (layout.modules.find((m) => m.id === id).scale === scale) return;
+    changeLayout(id, { scale });
   }
 
   // Put box `id` at `index` in the order, `width` wide, on `side`. True if
@@ -625,9 +669,10 @@
     applyLayout();
   }
 
-  // Where a box dropped at (x, y) goes. A third stays a third and goes to
-  // the left, middle or right third the pointer is over. Any other box goes
-  // full width near the centre line, or half width left or right of it.
+  // Where a box dropped at (x, y) goes. A quarter or a third keeps its
+  // width and goes to the quarter or third the pointer is over. Any other
+  // box goes full width near the centre line, or half width left or right
+  // of it.
   // Down the page: before the first box in those columns whose middle is
   // below the pointer, or else after the last one. Positions are measured
   // when the drag starts, so boxes moving aside never change the answer.
@@ -637,11 +682,12 @@
     let width = "full";
     let side = "left";
     const single = getComputedStyle($("#workspace")).gridTemplateColumns.split(" ").length < 2;
-    const wide = area.width >= THIRDS_FROM;
-    const across = (x - area.left) / area.width;
-    if (!single && current === "third" && wide) {
-      width = "third";
-      side = across < 1 / 3 ? "left" : across < 2 / 3 ? "middle" : "right";
+    const across = Math.max(0, Math.min(0.999, (x - area.left) / area.width));
+    const narrow = shownWidth(current, area.width);
+    if (!single && (narrow === "quarter" || narrow === "third")) {
+      width = current;
+      const slots = SLOTS[narrow];
+      side = slots[Math.floor(across * slots.length)];
     } else if (!single && across < 0.5 - CENTRE_BAND / 2) {
       width = "half";
     } else if (!single && across > 0.5 + CENTRE_BAND / 2) {
@@ -649,8 +695,8 @@
       side = "right";
     }
     // The columns it will take, in pixels from the page's left edge.
-    const [from, to] = single ? [0, 6] : tracksFor(width, side, wide);
-    const track = (area.width - 5 * GAP) / 6;
+    const [from, to] = single ? [0, TRACKS] : tracksFor(width, side, area.width);
+    const track = (area.width - (TRACKS - 1) * GAP) / TRACKS;
     const left = area.left + from * (track + GAP);
     const right = area.left + to * (track + GAP) - GAP;
     const below = others.filter((o) => o.left < right && o.right > left);
@@ -665,6 +711,8 @@
     full: "Full width",
     "half:left": "Left half", "half:right": "Right half",
     "third:left": "Left third", "third:middle": "Middle third", "third:right": "Right third",
+    "quarter:left": "Left quarter", "quarter:middle-left": "Second quarter",
+    "quarter:middle-right": "Third quarter", "quarter:right": "Right quarter",
   };
 
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
@@ -713,7 +761,8 @@
       const key = `${t.index}:${t.width}:${t.side}`;
       if (key === last) return;
       last = key;
-      ghostWhere.textContent = WHERE[t.width === "full" ? "full" : `${t.width}:${t.side}`];
+      const seen = shownWidth(t.width, area.width);
+      ghostWhere.textContent = WHERE[seen === "full" ? "full" : `${seen}:${sideFor(seen, t.side)}`];
       // `index` counts the boxes without this one, which is where `place`
       // puts it once it has been lifted out.
       place(id, t.index, t.width, t.side);
@@ -739,15 +788,22 @@
     handle.addEventListener("pointercancel", onCancel);
   }
 
-  // From the keyboard: up and down move a box. Left and right step a third
-  // between the three thirds, and any other box between left half, full
-  // width and right half (L, C and R jump there). T, H and F make it a
-  // third, a half, or full width.
+  // From the keyboard: up and down move a box. Left and right step a
+  // quarter or a third across the page, and any other box between left
+  // half, full width and right half (L, C and R jump there). Q, T, H and F
+  // make it a quarter, a third, a half, or full width. Minus and plus make
+  // what is inside it smaller or larger, and 0 sets it back to 100%.
   function keyMove(event, id) {
     const at = layout.modules.findIndex((m) => m.id === id);
     const m = layout.modules[at];
     const key = event.key.length === 1 ? event.key.toLowerCase() : event.key;
-    const sizeKeys = { t: "third", h: "half", f: "full" };
+    const sizeKeys = { q: "quarter", t: "third", h: "half", f: "full" };
+    const scaleBy = { "-": -SCALE_STEP, "_": -SCALE_STEP, "+": SCALE_STEP, "=": SCALE_STEP }[key];
+    if (scaleBy || key === "0") {
+      event.preventDefault();
+      setScale(id, key === "0" ? 100 : m.scale + scaleBy);
+      return;
+    }
     let width = m.width;
     let side = m.side;
     let index = at;
@@ -755,9 +811,10 @@
     else if (key === "ArrowDown") index = at + 1;
     else if (sizeKeys[key]) {
       width = sizeKeys[key];
-    } else if (m.width === "third" && (key === "ArrowLeft" || key === "ArrowRight")) {
+    } else if ((m.width === "third" || m.width === "quarter") && (key === "ArrowLeft" || key === "ArrowRight")) {
+      const slots = SLOTS[m.width];
       const step = key === "ArrowLeft" ? -1 : 1;
-      side = SIDES[Math.max(0, Math.min(2, SIDES.indexOf(side) + step))];
+      side = slots[Math.max(0, Math.min(slots.length - 1, slots.indexOf(side) + step))];
     } else if (key === "ArrowLeft" || key === "ArrowRight" || { l: 1, c: 1, r: 1 }[key]) {
       const spots = ["left", "centre", "right"];
       const spot = m.width === "full" ? "centre" : side === "right" ? "right" : "left";
@@ -924,9 +981,9 @@
       const handle = document.createElement("button");
       handle.type = "button";
       handle.className = "handle";
-      handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half. A third goes to the third you drop it on.";
+      handle.title = "Drag to move. Drop on the centre line for full width, left or right of it for half. A quarter or a third goes where you drop it.";
       handle.setAttribute("aria-label",
-        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right to change side); T, H and F make it a third, a half, or full width`);
+        `Move ${title}: drag it, or use the arrow keys (up and down to move, left and right to change side); Q, T, H and F make it a quarter, a third, a half, or full width; minus and plus make its contents smaller or larger`);
       const grip = document.createElement("span");
       grip.className = "grip";
       grip.setAttribute("aria-hidden", "true");
@@ -940,12 +997,12 @@
       handle.addEventListener("pointerdown", (event) => startDrag(event, id));
       handle.addEventListener("keydown", (event) => keyMove(event, id));
       head.append(handle);
-      // How wide the box is: a third, a half, or the full page.
+      // How wide the box is: a quarter, a third, a half, or the full page.
       const widths = document.createElement("span");
       widths.className = "widths";
       widths.setAttribute("role", "group");
       widths.setAttribute("aria-label", `${title} width`);
-      for (const [width, label, name] of [["third", "⅓", "One third"], ["half", "½", "Half"], ["full", "Full", "Full width"]]) {
+      for (const [width, label, name] of [["quarter", "¼", "One quarter"], ["third", "⅓", "One third"], ["half", "½", "Half"], ["full", "Full", "Full width"]]) {
         const size = document.createElement("button");
         size.type = "button";
         size.className = "small secondary";
@@ -960,6 +1017,30 @@
         widths.append(size);
       }
       head.append(widths);
+      // How large the box draws what is inside it, for each operator's eyes.
+      const scale = document.createElement("label");
+      scale.className = "scale";
+      scale.title = "Make what is inside this box smaller or larger";
+      const scaleName = document.createElement("span");
+      scaleName.textContent = "Size";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = String(MIN_SCALE);
+      slider.max = String(MAX_SCALE);
+      slider.step = String(SCALE_STEP);
+      slider.value = "100";
+      slider.setAttribute("aria-label", `${title} contents size, in percent`);
+      slider.addEventListener("input", () => setScale(id, Number(slider.value)));
+      // The size it is now; pressing it goes back to 100%.
+      const scaleReset = document.createElement("button");
+      scaleReset.type = "button";
+      scaleReset.className = "small secondary scale-reset";
+      scaleReset.textContent = "100%";
+      scaleReset.title = "Back to the normal size (100%)";
+      scaleReset.setAttribute("aria-label", `${title} contents back to 100%`);
+      scaleReset.addEventListener("click", () => setScale(id, 100));
+      scale.append(scaleName, slider);
+      head.append(scale, scaleReset);
       if (HIDEABLE.has(id)) {
         const hide = document.createElement("button");
         hide.type = "button";
@@ -1113,8 +1194,10 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "link popout";
-      button.textContent = "⧉ Pop out";
-      button.title = `Open ${MODULES[id]} in a window of its own, to put on another screen`;
+      // Just the icon; the tooltip and the label say what it does.
+      button.textContent = "⧉";
+      button.title = `Pop out: open ${MODULES[id]} in a window of its own, to put on another screen`;
+      button.setAttribute("aria-label", `Pop out ${MODULES[id]}`);
       button.addEventListener("click", () => popOut(id));
       $("h2", moduleEl(id)).append(button);
     }
