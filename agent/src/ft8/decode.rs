@@ -772,12 +772,56 @@ fn evenness(symbols: &[[Complex32; 8]], noise: f32) -> f32 {
     }
 }
 
-/// Whether a codeword is borne out by the signal: its tones must hold
-/// their phase from one symbol to the next, see [`differential_coherence`].
+/// Whether a codeword is borne out by the signal's phase, by either of two
+/// statistics. The [`differential_coherence`] asks the decoded tones to
+/// hold their phase step from one symbol to the next, which drift and slow
+/// fading leave alone; but it has no floor, so a frequency-selective path
+/// (an echo 20 ms behind puts a notch inside every FT8 signal's 50 Hz) that
+/// turns the phase differently for each tone can defeat it even on a strong
+/// signal. The [`run_coherence`] adds the decoded tones in phase over runs
+/// of four symbols as a power, which never falls below the tones' own power
+/// added incoherently, so a strong signal always passes it, though it
+/// refuses weak real decodes under phase noise, where the differential
+/// statistic holds. Noise passes neither (see the two thresholds).
 fn validates(data: &[[Complex32; 8]], bits: &[bool; ldpc::N], noise: f32) -> bool {
     let tones = encode::tones_for_codeword(bits);
     differential_coherence(data, &tones, noise) >= DIFFERENTIAL_COHERENCE_MIN
+        || run_coherence(data, &tones, noise) >= RUN_COHERENCE_MIN
 }
+
+/// The in-phase power of the decoded tones over every run of
+/// [`COHERENCE_SPAN`] consecutive data symbols, averaged over the runs, in
+/// units of the noise power. A real signal's tones add up (FT8's phase runs
+/// on unbroken from symbol to symbol); the tones noise happens to favour
+/// have random phases and do not.
+fn run_coherence(data: &[[Complex32; 8]], tones: &Tones, noise: f32) -> f32 {
+    let data_tones: Vec<usize> = data_symbols().map(|k| usize::from(tones[k])).collect();
+    let mut total = 0.0_f32;
+    let mut runs = 0.0_f32;
+    for (symbols, sent) in data.chunks(29).zip(data_tones.chunks(29)) {
+        for first in 0..=symbols.len().saturating_sub(COHERENCE_SPAN) {
+            let sum: Complex32 = (first..first + COHERENCE_SPAN)
+                .map(|k| symbols[k][sent[k]])
+                .sum();
+            total += sum.norm_sqr();
+            runs += 1.0;
+        }
+    }
+    if noise > 0.0 && runs > 0.0 {
+        total / (noise * runs)
+    } else {
+        0.0
+    }
+}
+
+/// Symbols added in phase by [`run_coherence`]: short enough to hold on a
+/// fading channel, long enough that noise cannot match it.
+const COHERENCE_SPAN: usize = 4;
+
+/// The least run coherence of a codeword that is believed: noise never
+/// reached 27 in 480,000 tries on the bench (about 13 typically); real
+/// decodes on a steady channel read 34 and up down to -23 dB.
+const RUN_COHERENCE_MIN: f32 = 30.0;
 
 /// The least differential coherence of a codeword that is believed. On
 /// the bench, noise never reached 1.53 in 480,000 tries, and above 1.2 its
@@ -1218,7 +1262,7 @@ mod tests {
     }
 
     #[test]
-    fn decodes_signals_that_drift_or_flutter() -> Result<(), MessageError> {
+    fn decodes_signals_that_drift_flutter_or_echo() -> Result<(), MessageError> {
         let signals = vec![
             Signal {
                 message: "CQ K9KSU EN52".to_owned(),
@@ -1237,7 +1281,13 @@ mod tests {
             index: 1,
             signals: signals.clone(),
         };
-        for channel in ["drift=0.3", "phasenoise=0.5", "spread=0.5", "spread=2"] {
+        for channel in [
+            "drift=0.3",
+            "phasenoise=0.5",
+            "spread=0.5",
+            "spread=2",
+            "echo=20,echodb=-3",
+        ] {
             let decodes = decode_slot(&audio_through(&slot, channel)?, &Options::default());
             for signal in &signals {
                 assert!(
