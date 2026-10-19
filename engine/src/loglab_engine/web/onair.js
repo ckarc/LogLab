@@ -7,7 +7,9 @@
 // changes, whether or not the box is shown, so the others can see it. The
 // Engine keeps the list and says who is active and who shares a band and
 // mode (Principles I and II). The band and mode are as the operator set
-// them, not read from a radio (Principle X).
+// them, unless the station's Agent reports its radio: then the Engine gives
+// the radio's band and mode, its frequency, and whether it is transmitting
+// (Principle X). This station's own radio is shown above the list (radio.js).
 "use strict";
 
 (() => {
@@ -57,7 +59,17 @@
           title: `Another station is on ${s.band} ${s.mode_group} as ${s.call}. Field Day allows one transmitter per band and mode.`,
         }));
       }
-      row.append(cell(dot), cell(who), cell(s.station), cell(LogLab.callsign(s.call)), cell(s.band || "—"), cell(mode), cell(ago(s.last_qso)));
+      const band = document.createDocumentFragment();
+      band.append(s.band || "—");
+      if (s.frequency_hz) {
+        band.append(Object.assign(document.createElement("span"), {
+          className: "hint onair-freq", textContent: ` ${(s.frequency_hz / 1e6).toFixed(3)}`, title: "From the station's radio",
+        }));
+      }
+      if (s.transmitting) {
+        mode.append(" ", Object.assign(document.createElement("span"), { className: "radio-tx on", textContent: "TX", title: "The radio says it is transmitting" }));
+      }
+      row.append(cell(dot), cell(who), cell(s.station), cell(LogLab.callsign(s.call)), cell(band), cell(mode), cell(ago(s.last_qso)));
       return row;
     });
     $("#onair-list tbody").replaceChildren(...rows);
@@ -110,6 +122,7 @@
 
   document.addEventListener("loglab:layout-loaded", report);
   document.addEventListener("loglab:log-loaded", report); // a QSO was stored, or the operation changed
+  document.addEventListener("loglab:radio-changed", report); // this station's radio moved (radio.js)
   for (const name of ["BAND", "MODE"]) $(`#entry [name=${name}]`).addEventListener("change", report);
   let wasOff = box.classList.contains("off");
   new MutationObserver(() => {
