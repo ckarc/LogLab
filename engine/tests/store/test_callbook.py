@@ -36,6 +36,7 @@ class FakeQrz:
         self.online = True
         self.asked: list[dict[str, str]] = []
         self.keys: set[str] = set()
+        self.note: str | None = None  # a session <Message>, such as a subscription notice
 
     def __call__(self, url: str) -> bytes:
         """Answer one request."""
@@ -48,7 +49,8 @@ class FakeQrz:
                 return self._session("<Error>Username/password incorrect</Error>")
             key = f"key{len(self.keys) + 1}"
             self.keys.add(key)
-            return self._session(f"<Key>{key}</Key>")
+            note = "" if self.note is None else f"<Message>{self.note}</Message>"
+            return self._session(f"<Key>{key}</Key>{note}")
         if query.get("s") not in self.keys:
             return self._session("<Error>Session Timeout</Error>")
         call = query["callsign"].upper()
@@ -203,6 +205,27 @@ def test_a_wrong_password_is_saved_but_reported(client: TestClient, k9ksu: dict[
     result = _look(client, k9ksu, "W1AW")
     assert result["status"] == "login_failed"
     assert "incorrect" in result["message"]
+
+
+def test_a_refused_login_says_why_in_qrz_words(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """Saving a login QRZ.com refuses shows QRZ.com's reason and what the username is."""
+    saved = _set_up(client, k9ksu, password="wrong")  # noqa: S106
+    assert saved["status"] == "login_failed"
+    assert "QRZ.com said: Username/password incorrect" in saved["message"]
+    assert "your callsign, not your email address" in saved["message"]
+
+
+def test_a_login_qrz_accepts_passes_on_its_notice(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """A notice QRZ.com gives with an accepted login, such as no subscription, is shown."""
+    qrz.note = "A subscription is required to access the complete record."
+    saved = _set_up(client, k9ksu)
+    assert saved["status"] is None
+    assert saved["message"] == (
+        "Saved. QRZ.com accepted your login. QRZ.com said:"
+        " A subscription is required to access the complete record."
+    )
 
 
 def test_an_expired_session_logs_in_again(

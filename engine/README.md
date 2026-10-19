@@ -153,7 +153,10 @@ own reference is at `/api/docs`.
 - **QRZ.com lookup** is optional. Each operator saves their own QRZ.com login
   from the **QRZ.com lookup** link on the New QSO form
   (`GET`/`PUT`/`DELETE /api/v1/callbook/qrz`; the password is never sent
-  back). Leaving the Call box then fills in Name, QTH, State, and Grid from
+  back). The username is the operator's callsign, not their email address.
+  Saving tries the login at once and shows what QRZ.com said, whether it
+  refused the login or accepted it with a notice (such as no XML
+  subscription). Leaving the Call box then fills in Name, QTH, State, and Grid from
   QRZ.com, never over anything already typed (`GET /api/v1/lookup?call=W1AW`).
   Every answer is kept in the `reference` schema, apart from the log, so a
   call is fetched once (Principle VI); `refresh=true` fetches it again. With
