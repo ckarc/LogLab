@@ -163,7 +163,7 @@ def test_the_agent_reports_and_its_station_sees_the_decodes(
     heard = client.get("/api/v1/ft8", headers=k9ksu).json()
     assert heard["listening"] is True
     assert (heard["source"], heard["dial_hz"], heard["band"]) == ("pretend", 14_074_000, "20m")
-    assert (heard["columns"], heard["column_hz"], heard["rows_per_second"]) == (480, 6.25, 2)
+    assert (heard["columns"], heard["column_hz"], heard["rows_per_second"]) == (960, 3.125, 4)
     assert [r["row"] for r in heard["rows"]] == [0, 1]
     (slot,) = heard["slots"]
     assert slot["starts_at"] == "2025-10-09T08:53:15Z"
@@ -203,7 +203,7 @@ def test_only_a_station_key_reports_ft8(client: TestClient, k9ksu: dict[str, str
     "bad",
     [
         _report(source="radio", decodes=DECODES),
-        _report(waterfall={"slot": SLOT, "first_row": 29, "rows": [ROW, ROW]}),
+        _report(waterfall={"slot": SLOT, "first_row": 59, "rows": [ROW, ROW]}),
         _report(waterfall={"slot": SLOT, "first_row": 0, "rows": ["zz" * COLUMNS]}),
         _report(waterfall={"slot": SLOT, "first_row": 0, "rows": ["18" * 10]}),
         _report(
@@ -346,3 +346,19 @@ def test_the_log_marks_who_was_already_worked(
     heard = client.get(f"/api/v1/ft8?operation={practice['id']}", headers=k9ksu).json()
     worked = {d["message"]: d["worked"] for s in heard["slots"] for d in s["decodes"]}
     assert worked == {"CQ K1ABC FN42": True, "W9XYZ K1ABC RR73": True, "K1ABC W9XYZ EN52": False}
+
+
+def test_the_waterfall_is_a_box_of_its_own(client: TestClient, k9ksu: dict[str, str]) -> None:
+    """The FT8 waterfall and the list of stations heard are saved as separate boxes."""
+    layout = {
+        "modules": [
+            {"id": "waterfall", "width": "half", "side": "left"},
+            {"id": "ft8", "width": "half", "side": "right", "hidden": True},
+        ]
+    }
+    assert client.put("/api/v1/layout", headers=k9ksu, json=layout).status_code == 200
+    saved = client.get("/api/v1/layout", headers=k9ksu).json()["layout"]
+    assert [(m["id"], m["width"], m.get("hidden")) for m in saved["modules"]] == [
+        ("waterfall", "half", False),
+        ("ft8", "half", True),
+    ]

@@ -81,10 +81,12 @@ This version only reads the radio. It never tunes it and never transmits
 `--pretend --ft8` parks the pretend radio on 14.074 MHz and gives it a pretend
 FT8 band to listen to: a few dozen made-up stations calling CQ and working
 each other, at different strengths, with static. The Agent draws the audio
-as a waterfall (two rows a second) and decodes each 15-second slot with
+as a waterfall (four rows a second, 3.125 Hz apart) and decodes each 15-second slot with
 LabLog's own decoder, sending both to the Engine (`PUT /api/v1/agent/ft8`).
-The web client's FT8 box (Menu > Appearance and layout > Choose which boxes
-show) shows them; clicking a station fills in New QSO.
+The web client shows them in two boxes, each shown, sized and moved on its
+own (Menu > Appearance and layout > Choose which boxes show): the FT8
+waterfall, and the FT8 box listing the stations heard. Clicking a station
+fills in New QSO.
 
 Every decode is labelled received (Principle XX) and, from this band,
 pretend. A QSO filled in from a pretend station carries `APP_LOGLAB_PRETEND=Y`,

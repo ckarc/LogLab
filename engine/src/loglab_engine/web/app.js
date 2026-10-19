@@ -27,23 +27,25 @@
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
-    ft8: "FT8",
+    waterfall: "FT8 waterfall", ft8: "FT8",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "waterfall", "ft8"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
-  const START_HIDDEN = new Set(["stats", "onair", "ft8"]);
+  const START_HIDDEN = new Set(["stats", "onair", "waterfall", "ft8"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows; the world
   // map and the zone maps take the section map's place, since an overlay
-  // offers only the maps its rules count.
+  // offers only the maps its rules count. The FT8 waterfall, once part of
+  // the FT8 box, goes just above it, shown if the FT8 box is.
   const JOINS = {
     profile: { after: "entry", width: "full", side: "left" },
     world: { after: "map", like: "map", width: "full", side: "left" },
     cqzones: { after: "world", like: "map", width: "full", side: "left" },
     ituzones: { after: "cqzones", like: "map", width: "full", side: "left" },
+    waterfall: { before: "ft8", like: "ft8", width: "full", side: "left", shownLike: true },
   };
   // Which maps an overlay calls for, from what its exchange asks for: a
   // section (Field Day, Winter Field Day) brings the section map, a CQ zone
@@ -92,7 +94,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "ft8"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair", "waterfall", "ft8"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -345,11 +347,14 @@
       if (seen.has(id)) continue;
       const join = JOINS[id];
       const like = join && join.like && modules.find((m) => m.id === join.like);
+      const hidden = like && join.shownLike ? like.hidden : START_HIDDEN.has(id);
       const added = like
-        ? { id, width: like.width, side: like.side, scale: 100, hidden: START_HIDDEN.has(id) }
-        : { id, width: join ? join.width : "full", side: join ? join.side : "left", scale: 100, hidden: START_HIDDEN.has(id) };
-      const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
-      if (after >= 0) modules.splice(after + 1, 0, added);
+        ? { id, width: like.width, side: like.side, scale: 100, hidden }
+        : { id, width: join ? join.width : "full", side: join ? join.side : "left", scale: 100, hidden };
+      const before = join && join.before ? modules.findIndex((m) => m.id === join.before) : -1;
+      const after = join && join.after ? modules.findIndex((m) => m.id === join.after) : -1;
+      if (before >= 0) modules.splice(before, 0, added);
+      else if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);
     }
     const tables = {};

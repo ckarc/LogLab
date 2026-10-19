@@ -1,27 +1,32 @@
 // SPDX-FileCopyrightText: 2026 LogLab contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The FT8 box: what this station's Agent hears on FT8, live. A waterfall
-// scrolls as the audio arrives, and every 15 seconds the stations decoded in
-// the slot just ended join the list. Click one and New QSO fills in with its
-// call, grid, the report to send, band, frequency and mode.
+// The FT8 waterfall and FT8 boxes: what this station's Agent hears on FT8,
+// live. Each is a box of its own, shown, sized and moved on its own. The
+// waterfall scrolls as the audio arrives, and every 15 seconds the stations
+// decoded in the slot just ended join the FT8 box's list. Click one and New
+// QSO fills in with its call, grid, the report to send, band, frequency and
+// mode. Pointing at a station marks it on the waterfall.
 //
 // Every decode is labelled with how it was obtained (Principle XX): today
 // each one is received, straight from the signal. Decodes from the Agent's
 // pretend FT8 band are made-up stations: they are marked pretend, and a QSO
 // filled in from one carries APP_LOGLAB_PRETEND, so the Engine only lets it
-// into a practice operation. This box only listens: nothing here transmits.
+// into a practice operation. These boxes only listen: nothing here transmits.
 "use strict";
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const LogLab = window.LogLab;
-  const box = $("#ft8");
+  const boxes = [$("#waterfall"), $("#ft8")];
   const form = $("#entry");
   const canvas = $("#ft8-waterfall");
+  const spectrum = $("#ft8-spectrum");
   const POLL_MS = 1000;
   const IDLE_MS = 3000;
-  const SHOWN_ROWS = 120; // one minute of waterfall
+  const SHOWN_SECONDS = 60; // one minute of waterfall
+  const SPECTRUM_SECONDS = 1; // the spectrum line is the average of this past second
+  const PALETTE_KEY = "loglab.ft8.palette";
   const SHOWN_SLOTS = 4; // one minute of decodes
   const COLUMNS = {
     time: { label: "UTC", sort: "qso_start", render: (d) => d.time },
@@ -95,79 +100,169 @@
 
   // -- Waterfall ----------------------------------------------------------
 
-  // Dark blue static, through cyan and yellow, to white for the strongest.
-  const PALETTE = (() => {
-    const stops = [[0, [8, 12, 40]], [70, [20, 50, 140]], [130, [0, 170, 210]], [190, [250, 220, 60]], [255, [255, 255, 255]]];
+  // Colour scales, from static to the strongest signal, each a smooth blend
+  // between a few colours. The operator picks one; this browser remembers it.
+  const PALETTES = {
+    ocean: { label: "Ocean", stops: [[0, [4, 8, 28]], [50, [10, 30, 100]], [105, [20, 90, 200]], [150, [0, 190, 220]], [200, [250, 225, 70]], [255, [255, 255, 255]]] },
+    rainbow: { label: "Rainbow", stops: [[0, [0, 0, 10]], [45, [10, 10, 120]], [95, [0, 110, 220]], [140, [0, 200, 120]], [185, [240, 230, 30]], [225, [255, 120, 0]], [255, [255, 20, 20]]] },
+    ember: { label: "Ember", stops: [[0, [6, 2, 10]], [60, [60, 10, 90]], [120, [170, 20, 70]], [180, [250, 110, 20]], [230, [255, 210, 60]], [255, [255, 255, 220]]] },
+    grey: { label: "Grey", stops: [[0, [6, 6, 8]], [255, [255, 255, 255]]] },
+  };
+  const blend = (stops) => {
     const out = new Uint8ClampedArray(256 * 3);
     for (let v = 0; v < 256; v++) {
       const hi = stops.findIndex(([at]) => at >= v);
       const [a, ca] = stops[Math.max(hi - 1, 0)];
       const [b, cb] = stops[hi];
+      // Eased, so one colour melts into the next with no visible band.
       const t = b === a ? 0 : (v - a) / (b - a);
-      for (let k = 0; k < 3; k++) out[v * 3 + k] = ca[k] + (cb[k] - ca[k]) * t;
+      const eased = t * t * (3 - 2 * t);
+      for (let k = 0; k < 3; k++) out[v * 3 + k] = ca[k] + (cb[k] - ca[k]) * eased;
     }
     return out;
+  };
+  const remembered = (() => {
+    try { return localStorage.getItem(PALETTE_KEY); } catch { return null; }
   })();
+  let paletteName = remembered in PALETTES ? remembered : "ocean";
+  let PALETTE = blend(PALETTES[paletteName].stops);
 
-  // The rows are painted one pixel each, then stretched to the canvas's
-  // real size, so the time labels and markers stay sharp.
+  const choosePalette = $("#ft8-palette");
+  choosePalette.replaceChildren(...Object.entries(PALETTES).map(([name, p]) => Object.assign(document.createElement("option"), { value: name, textContent: p.label })));
+  choosePalette.value = paletteName;
+  choosePalette.addEventListener("change", () => {
+    paletteName = choosePalette.value in PALETTES ? choosePalette.value : "ocean";
+    PALETTE = blend(PALETTES[paletteName].stops);
+    try { localStorage.setItem(PALETTE_KEY, paletteName); } catch { /* remembered for this visit only */ }
+    drawWaterfall();
+    drawSpectrum();
+  });
+
+  const columnsOf = () => state?.columns || 960;
+  const hzOf = () => columnsOf() * (state?.column_hz || 3.125);
+  const shownRows = () => SHOWN_SECONDS * (state?.rows_per_second || 4);
+  const levelsOf = (row) => {
+    const columns = columnsOf();
+    const out = new Uint8Array(columns);
+    for (let x = 0; x < columns; x++) out[x] = parseInt(row.levels.substr(x * 2, 2), 16) || 0;
+    return out;
+  };
+
+  // Each row is painted one pixel high, then stretched smoothly to the
+  // canvas's real size; the time labels and markers are drawn at full size
+  // over it, so they stay sharp.
   const painted = document.createElement("canvas");
+  let decoded = []; // the shown rows' levels, oldest first, kept to paint again
+
+  function fitted(target) {
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(Math.round(target.clientWidth * ratio), 1);
+    const height = Math.max(Math.round(target.clientHeight * ratio), 1);
+    if (target.width !== width) target.width = width;
+    if (target.height !== height) target.height = height;
+    return { ratio, width, height };
+  }
+
+  function drawMarker(ctx, width, height, ratio) {
+    if (marker === null) return;
+    const hz = hzOf();
+    // An FT8 signal is 50 Hz wide: shade it and edge it.
+    const left = (marker / hz) * width;
+    const right = ((marker + 50) / hz) * width;
+    ctx.fillStyle = "rgba(255,80,110,0.16)";
+    ctx.fillRect(left, 0, right - left, height);
+    ctx.fillStyle = "rgba(255,80,110,0.9)";
+    for (const x of [left, right]) ctx.fillRect(Math.round(x), 0, Math.max(1, ratio), height);
+  }
 
   function drawWaterfall() {
-    const columns = state?.columns || 480;
+    const columns = columnsOf();
+    const shown = rows.slice(-shownRows());
+    const height = shownRows();
     painted.width = columns;
-    painted.height = SHOWN_ROWS;
+    painted.height = height;
     const paint = painted.getContext("2d");
-    const image = paint.createImageData(columns, SHOWN_ROWS);
-    image.data.fill(255);
-    const shown = rows.slice(-SHOWN_ROWS);
-    // Newest at the top, scrolling down.
-    shown.forEach((row, n) => {
-      const y = shown.length - 1 - n;
+    const image = paint.createImageData(columns, height);
+    // Newest at the top, scrolling down; below the oldest row, static colour.
+    for (let y = 0; y < height; y++) {
+      const n = shown.length - 1 - y;
+      const levels = n >= 0 ? decoded[n] : null;
       for (let x = 0; x < columns; x++) {
-        const level = parseInt(row.levels.substr(x * 2, 2), 16) || 0;
+        const level = levels ? levels[x] : 0;
         const at = (y * columns + x) * 4;
         image.data[at] = PALETTE[level * 3];
         image.data[at + 1] = PALETTE[level * 3 + 1];
         image.data[at + 2] = PALETTE[level * 3 + 2];
-      }
-    });
-    for (let y = shown.length; y < SHOWN_ROWS; y++) {
-      for (let x = 0; x < columns; x++) {
-        const at = (y * columns + x) * 4;
-        image.data[at] = PALETTE[0]; image.data[at + 1] = PALETTE[1]; image.data[at + 2] = PALETTE[2];
+        image.data[at + 3] = 255;
       }
     }
     paint.putImageData(image, 0, 0);
-    const ratio = window.devicePixelRatio || 1;
-    const width = Math.max(Math.round(canvas.clientWidth * ratio), 1);
-    const height = Math.max(Math.round(canvas.clientHeight * ratio), 1);
-    if (canvas.width !== width) canvas.width = width;
-    if (canvas.height !== height) canvas.height = height;
+    const { ratio, width, height: tall } = fitted(canvas);
     const ctx = canvas.getContext("2d");
-    ctx.imageSmoothingEnabled = false;
-    ctx.drawImage(painted, 0, 0, width, height);
-    const rowHeight = height / SHOWN_ROWS;
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(painted, 0, 0, width, tall);
+    const rowHeight = tall / height;
     // A faint line and the UTC time where each slot begins.
     ctx.font = `${Math.round(11 * ratio)}px system-ui, sans-serif`;
     shown.forEach((row, n) => {
       if (row.row !== 0) return;
       const y = (shown.length - n) * rowHeight;
-      ctx.fillStyle = "rgba(255,255,255,0.35)";
+      ctx.fillStyle = "rgba(255,255,255,0.3)";
       ctx.fillRect(0, Math.round(y), width, Math.max(1, ratio));
       ctx.fillStyle = "rgba(255,255,255,0.85)";
       ctx.fillText(slotTime(row.slot), 6 * ratio, Math.max(y - 4 * ratio, 12 * ratio));
     });
-    if (marker !== null) {
-      const hzWidth = columns * (state?.column_hz || 6.25);
-      ctx.fillStyle = "rgba(255,80,110,0.9)";
-      for (const hz of [marker, marker + 50]) ctx.fillRect(Math.round((hz / hzWidth) * width), 0, Math.max(1, ratio), height);
+    drawMarker(ctx, width, tall, ratio);
+  }
+
+  // The spectrum line: how strong the audio is across the band this past
+  // second, averaged over its rows and a few neighbouring columns so it
+  // reads as a steady line, not a scribble.
+  function drawSpectrum() {
+    const { ratio, width, height } = fitted(spectrum);
+    const ctx = spectrum.getContext("2d");
+    ctx.clearRect(0, 0, width, height);
+    // Faint level lines.
+    ctx.fillStyle = "rgba(255,255,255,0.07)";
+    for (const f of [0.25, 0.5, 0.75]) ctx.fillRect(0, Math.round(height * f), width, Math.max(1, ratio));
+    const recent = decoded.slice(-SPECTRUM_SECONDS * (state?.rows_per_second || 4));
+    if (recent.length) {
+      const columns = columnsOf();
+      const average = new Float32Array(columns);
+      for (const levels of recent) for (let x = 0; x < columns; x++) average[x] += levels[x] / recent.length;
+      const SPREAD = 2;
+      const point = (x) => {
+        let sum = 0; let count = 0;
+        for (let k = Math.max(x - SPREAD, 0); k <= Math.min(x + SPREAD, columns - 1); k++) { sum += average[k]; count++; }
+        return height - 3 * ratio - (sum / count / 255) * (height - 6 * ratio);
+      };
+      const at = (x) => (x / (columns - 1)) * width;
+      const top = PALETTE.slice(230 * 3, 230 * 3 + 3);
+      const mid = PALETTE.slice(140 * 3, 140 * 3 + 3);
+      ctx.beginPath();
+      ctx.moveTo(0, height);
+      for (let x = 0; x < columns; x++) ctx.lineTo(at(x), point(x));
+      ctx.lineTo(width, height);
+      ctx.closePath();
+      const fill = ctx.createLinearGradient(0, 0, 0, height);
+      fill.addColorStop(0, `rgba(${mid[0]},${mid[1]},${mid[2]},0.55)`);
+      fill.addColorStop(1, `rgba(${mid[0]},${mid[1]},${mid[2]},0.04)`);
+      ctx.fillStyle = fill;
+      ctx.fill();
+      ctx.beginPath();
+      for (let x = 0; x < columns; x++) (x ? ctx.lineTo : ctx.moveTo).call(ctx, at(x), point(x));
+      ctx.strokeStyle = `rgb(${top[0]},${top[1]},${top[2]})`;
+      ctx.lineWidth = 1.25 * ratio;
+      ctx.lineJoin = "round";
+      ctx.stroke();
     }
+    drawMarker(ctx, width, height, ratio);
   }
 
   function drawScale() {
     const scale = $("#ft8-scale");
-    const width = (state?.columns || 480) * (state?.column_hz || 6.25);
+    const width = hzOf();
     scale.replaceChildren(...[500, 1000, 1500, 2000, 2500].map((hz) => {
       const tick = document.createElement("span");
       tick.style.left = `${(hz / width) * 100}%`;
@@ -219,8 +314,8 @@
         tr.addEventListener("click", () => fill(d));
         tr.addEventListener("keydown", (e) => { if (e.key === "Enter") fill(d); });
       }
-      tr.addEventListener("pointerenter", () => { marker = d.base_hz; drawWaterfall(); });
-      tr.addEventListener("pointerleave", () => { marker = null; drawWaterfall(); });
+      tr.addEventListener("pointerenter", () => { marker = d.base_hz; drawWaterfall(); drawSpectrum(); });
+      tr.addEventListener("pointerleave", () => { marker = null; drawWaterfall(); drawSpectrum(); });
     });
     const count = slots.length ? slots[slots.length - 1].decodes.length : 0;
     $("#ft8-count").textContent = `${count} heard in the last slot · ${table.describeSort()}`;
@@ -288,18 +383,22 @@
 
   // -- Listening ----------------------------------------------------------
 
+  // What both boxes show alike: whether anything is listening, and to what.
+  const each = (selector, set) => boxes.forEach((b) => b.querySelectorAll(selector).forEach(set));
+  const problem = (text) => each(".ft8-error", (p) => { p.textContent = text; });
+
   function show() {
     const listening = Boolean(state?.listening);
-    $("#ft8-none").hidden = listening;
-    $("#ft8-body").hidden = !listening;
-    $("#ft8-pretend").hidden = !(listening && state.source === "pretend");
-    $("#ft8-scope").textContent = listening && state.dial_hz
-      ? `${mhz(state.dial_hz)} MHz${state.band ? ` · ${state.band}` : ""}` : "";
+    const scope = listening && state.dial_hz ? `${mhz(state.dial_hz)} MHz${state.band ? ` · ${state.band}` : ""}` : "";
+    each(".ft8-none", (p) => { p.hidden = listening; });
+    each(".ft8-body", (div) => { div.hidden = !listening; });
+    each(".ft8-pretend", (span) => { span.hidden = !(listening && state.source === "pretend"); });
+    each(".ft8-scope", (span) => { span.textContent = scope; });
   }
 
   async function poll() {
     const session = LogLab.session();
-    if (!session?.token || !session.permissions?.includes("view") || box.offsetParent === null) return IDLE_MS;
+    if (!session?.token || !session.permissions?.includes("view") || boxes.every((b) => b.offsetParent === null)) return IDLE_MS;
     const operation = LogLab.layout()?.operation?.id || null;
     if (operation !== asking) seq = 0;
     const params = new URLSearchParams({ after: String(seq) });
@@ -307,9 +406,9 @@
     let answer;
     try {
       answer = await LogLab.api("GET", `/ft8?${params}`);
-      $("#ft8-error").textContent = "";
+      problem("");
     } catch (e) {
-      $("#ft8-error").textContent = e.message;
+      problem(e.message);
       return IDLE_MS;
     }
     const fresh = seq === 0;
@@ -317,19 +416,20 @@
     const before = state;
     state = answer;
     if (!answer.listening) {
-      rows = []; slots = []; seq = 0;
+      rows = []; decoded = []; slots = []; seq = 0;
       show();
       return IDLE_MS;
     }
     if (fresh || before?.dial_hz !== answer.dial_hz || answer.seq < seq) {
-      rows = []; slots = [];
+      rows = []; decoded = []; slots = [];
       drawScale();
     }
     seq = answer.seq;
-    rows = rows.concat(answer.rows).slice(-SHOWN_ROWS);
+    rows = rows.concat(answer.rows).slice(-shownRows());
+    decoded = decoded.concat(answer.rows.map(levelsOf)).slice(-rows.length);
     if (answer.slots.length) slots = slots.concat(answer.slots).slice(-SHOWN_SLOTS * 2);
     show();
-    if (answer.rows.length || fresh) drawWaterfall();
+    if (answer.rows.length || fresh) { drawWaterfall(); drawSpectrum(); }
     if (answer.slots.length || fresh) showList();
     return POLL_MS;
   }
@@ -342,7 +442,9 @@
   }
 
   new ResizeObserver(() => drawWaterfall()).observe(canvas);
+  new ResizeObserver(() => drawSpectrum()).observe(spectrum);
   drawScale();
   drawWaterfall();
+  drawSpectrum();
   keepListening();
 })();

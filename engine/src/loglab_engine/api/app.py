@@ -272,7 +272,7 @@ class Ft8DecodeIn(_Strict):
 
 
 class Ft8WaterfallIn(_Strict):
-    """Waterfall rows of one slot: a hex byte per 6.25 Hz column, 0 to 3,000 Hz."""
+    """Waterfall rows of one slot: a hex byte per 3.125 Hz column, 0 to 3,000 Hz."""
 
     slot: Ft8Slot
     first_row: Annotated[int, Field(ge=0, lt=ROWS_PER_SLOT)]
@@ -676,6 +676,7 @@ ModuleId = Literal[
     "ituzones",
     "stats",
     "onair",
+    "waterfall",
     "ft8",
 ]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
