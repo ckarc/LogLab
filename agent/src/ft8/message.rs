@@ -47,6 +47,12 @@ impl Payload {
         self.0
     }
 
+    /// A payload from its 77 bits, first bit sent first.
+    #[must_use]
+    pub fn from_bits(bits: &[bool; 77]) -> Self {
+        Self(bits.iter().fold(0, |v, &b| v << 1 | u128::from(b)))
+    }
+
     /// The payload as a string of `0` and `1`, first bit sent first.
     #[must_use]
     pub fn to_bit_string(self) -> String {
@@ -258,9 +264,147 @@ fn signal_report(word: &str) -> Option<u16> {
     u16::try_from(wrapped + 35).ok()
 }
 
+/// The text of a received payload, as WSJT-X shows it. `None` for message
+/// kinds this decoder does not read yet (anything but a standard message),
+/// and for values no encoder produces.
+#[must_use]
+pub fn unpack(payload: Payload) -> Option<String> {
+    let v = payload.value();
+    let i3 = v & 0b111;
+    if i3 != I3_STANDARD {
+        return None;
+    }
+    let field = |shift: u32, bits: u32| u32::try_from((v >> shift) & ((1 << bits) - 1)).ok();
+    let first = field(48, 29)?;
+    let second = field(19, 29)?;
+    let ir = field(18, 1)? == 1;
+    let g15 = u16::try_from(field(3, 15)?).ok()?;
+
+    let mut to = unpack_call(first >> 1)?;
+    let mut de = unpack_call(second >> 1)?;
+    if first & 1 == 1 {
+        to.push_str("/R");
+    }
+    if second & 1 == 1 {
+        de.push_str("/R");
+    }
+    if de == "CQ" || de.starts_with("CQ ") || de == "DE" || de == "QRZ" {
+        return None;
+    }
+    let extra = unpack_extra(ir, g15)?;
+    Some(
+        [to, de, extra]
+            .iter()
+            .filter(|w| !w.is_empty())
+            .cloned()
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
+}
+
+/// A 28-bit callsign field back to text.
+fn unpack_call(n28: u32) -> Option<String> {
+    match n28 {
+        0 => return Some("DE".to_owned()),
+        1 => return Some("QRZ".to_owned()),
+        2 => return Some("CQ".to_owned()),
+        3..=1002 => return Some(format!("CQ {:03}", n28 - 3)),
+        1003..NTOKENS => {
+            let mut m = n28 - 1003;
+            let mut letters = Vec::new();
+            while m > 0 {
+                letters.push(u8::try_from(m % 27).ok()?);
+                m /= 27;
+            }
+            if letters.is_empty() || letters.contains(&0) {
+                return None;
+            }
+            let word: String = letters
+                .iter()
+                .rev()
+                .map(|&l| char::from(b'A' + l - 1))
+                .collect();
+            return Some(format!("CQ {word}"));
+        }
+        _ => {}
+    }
+    if n28 < NTOKENS + MAX22 {
+        // A hashed callsign: the full call was sent earlier, in another
+        // message type this decoder does not read yet.
+        return Some("<...>".to_owned());
+    }
+    let mut n = n28 - NTOKENS - MAX22;
+    let tables = [
+        CALL_ALPHANUM_SPACE,
+        CALL_ALPHANUM,
+        CALL_NUMERIC,
+        CALL_LETTERS_SPACE,
+        CALL_LETTERS_SPACE,
+        CALL_LETTERS_SPACE,
+    ];
+    let mut chars = [b' '; 6];
+    for (c, table) in chars.iter_mut().zip(tables).rev() {
+        let radix = u32::try_from(table.len()).ok()?;
+        *c = *table.as_bytes().get(usize::try_from(n % radix).ok()?)?;
+        n /= radix;
+    }
+    if n != 0 {
+        return None;
+    }
+    let call = std::str::from_utf8(&chars).ok()?.trim();
+    if call.contains(' ') || call.is_empty() {
+        return None;
+    }
+    Some(call.to_owned())
+}
+
+/// The grid, report, or acknowledgement field back to text.
+fn unpack_extra(ir: bool, g15: u16) -> Option<String> {
+    if g15 <= MAXGRID4 {
+        let mut n = g15;
+        let d4 = n % 10;
+        n /= 10;
+        let d3 = n % 10;
+        n /= 10;
+        let b = n % 18;
+        let a = n / 18;
+        if a >= 18 {
+            return None;
+        }
+        let [a, b, d3, d4] = [a, b, d3, d4].map(|x| u8::try_from(x).unwrap_or(0));
+        let grid = format!(
+            "{}{}{}{}",
+            char::from(b'A' + a),
+            char::from(b'A' + b),
+            char::from(b'0' + d3),
+            char::from(b'0' + d4)
+        );
+        return Some(if ir { format!("R {grid}") } else { grid });
+    }
+    let special = match g15 - MAXGRID4 {
+        1 => Some(""),
+        2 => Some("RRR"),
+        3 => Some("RR73"),
+        4 => Some("73"),
+        _ => None,
+    };
+    if let Some(word) = special {
+        return Some(word.to_owned());
+    }
+    let mut report = i32::from(g15 - MAXGRID4) - 35;
+    if report > 49 {
+        report -= 101;
+    }
+    Some(if ir {
+        format!("R{report:+03}")
+    } else {
+        format!("{report:+03}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{MessageError, normalize, pack};
+    use super::{MessageError, Payload, normalize, pack, unpack};
 
     #[test]
     fn packs_a_cq_exactly_as_wsjtx_does() -> Result<(), MessageError> {
@@ -302,5 +446,40 @@ mod tests {
             );
         }
         assert!(matches!(pack("K9KSU"), Err(MessageError::Unsupported(_))));
+    }
+
+    #[test]
+    fn unpacking_returns_the_message() -> Result<(), MessageError> {
+        let mut rng = crate::ft8::bench::Rng::new(11);
+        let mut messages: Vec<String> = (0..2_000)
+            .map(|_| crate::ft8::bench::random_message(&mut rng))
+            .collect();
+        messages.extend(
+            [
+                "CQ DX K9KSU EN52",
+                "CQ POTA W1AW FN31",
+                "CQ 145 N0X AA00",
+                "QRZ K9KSU EN52",
+                "W1AW K9KSU",
+                "W1AW K9KSU R EN52",
+                "W1AW K9KSU -45",
+                "W1AW K9KSU R+49",
+                "K9KSU W1AW RR73",
+            ]
+            .map(str::to_owned),
+        );
+        for message in messages {
+            assert_eq!(unpack(pack(&message)?).as_deref(), Some(message.as_str()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn bits_round_trip() -> Result<(), MessageError> {
+        let payload = pack("CQ K9KSU EN52")?;
+        let bits: Vec<bool> = payload.to_bit_string().bytes().map(|b| b == b'1').collect();
+        let bits: [bool; 77] = bits.try_into().map_err(|_| MessageError::Empty)?;
+        assert_eq!(Payload::from_bits(&bits), payload);
+        Ok(())
     }
 }

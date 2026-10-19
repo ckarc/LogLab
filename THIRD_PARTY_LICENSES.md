@@ -20,12 +20,15 @@ The Station Agent's crates, compiled into its single executable:
 | memchr           | serde_json dependency                     | Unlicense OR MIT                 |
 | zmij             | serde_json dependency (number formatting) | MIT                              |
 | ctrlc            | Stopping Hamlib when the Agent is stopped | MIT OR Apache-2.0                |
+| rustfft          | FFTs for the FT8 decoder                  | MIT OR Apache-2.0                |
+| num-complex, num-traits, num-integer, primal-check, strength_reduce, transpose | rustfft dependencies | MIT OR Apache-2.0 |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
 | windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |
 | serde_derive, syn, proc-macro2, quote | Build time only (serde's derive) | MIT OR Apache-2.0  |
 | cfg_aliases      | Build time only (nix dependency)          | MIT                              |
 | unicode-ident    | Build time only (syn dependency)          | (MIT OR Apache-2.0) AND Unicode-3.0 |
+| autocfg          | Build time only (num-traits dependency)   | MIT OR Apache-2.0                |
 
 The Agent can also run Hamlib's `rigctld` (https://hamlib.github.io; the
 library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a
@@ -69,7 +72,7 @@ a permissive BSD-style license), which LogLab does not ship.
 | [HB9HIL/hamradio-zones-geojson](https://github.com/HB9HIL/hamradio-zones-geojson), commit `091b813` | The shapes of the CQ zone and ITU zone maps (`engine/src/loglab_engine/web/maps/cq-zones.json` and `itu-zones.json`, built by `engine/tools/build_zone_maps.py`; the license is kept in `engine/tools/hb9hil-zones/LICENSE`) | MIT |
 | [@ham2k/lib-arrl-data](https://github.com/ham2k/ham-js-libs) 1.2.0 | The ARRL and RAC section list, and which county is in which section (`engine/tools/ham2k/`, with its license) | MIT |
 
-| [ft8_lib](https://github.com/kgoba/ft8_lib) by Kārlis Goba, YL3JG, commit `9fec6ca` | The generator matrix of FT8's (174,91) LDPC code (`agent/src/ft8/ldpc_generator.rs`, converted from its bit-packed table; the license is kept in `agent/src/ft8/ft8_lib-LICENSE.txt`) | MIT |
+| [ft8_lib](https://github.com/kgoba/ft8_lib) by Kārlis Goba, YL3JG, commit `9fec6ca` | The generator matrix and parity checks of FT8's (174,91) LDPC code (`agent/src/ft8/ldpc_generator.rs` and `ldpc_checks.rs`, converted from its tables; the license is kept in `agent/src/ft8/ft8_lib-LICENSE.txt`) | MIT |
 
 | [TrustedQSL](https://sourceforge.net/p/trustedqsl/tqsl/) configuration 11.34 (`src/config.xml`) | Which LoTW mode each ADIF mode is sent as, band and DXCC entity names, US states and counties and Canadian provinces with their zones (`engine/src/loglab_engine/lotw/tqsl-tables.json`, built by `engine/tools/build_lotw_tables.py`; the license is kept in `engine/tools/trustedqsl/LICENSE.txt`) | TrustedQSL license (BSD-style) |
 
@@ -106,7 +109,7 @@ The CQ and ITU zone shapes are MIT-licensed under the same terms as above;
 their notice ships in `engine/tools/hb9hil-zones/LICENSE` and in each map
 file's `source`: Copyright (c) 2024 HB9HIL.
 
-The FT8 LDPC generator matrix is one of FT8's published protocol constants,
+The FT8 LDPC generator matrix and parity checks are published protocol constants,
 the same in every FT8 implementation (FT8 itself is by K1JT, K9AN and G4WJS).
 LogLab's copy was converted from ft8_lib's table; its MIT copyright and
 permission notice travel with it in `agent/src/ft8/ft8_lib-LICENSE.txt`.

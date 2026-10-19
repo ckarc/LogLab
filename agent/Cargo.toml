@@ -15,6 +15,7 @@ default-run = "loglab-agent"
 
 [dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
+rustfft = "6.4.1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }

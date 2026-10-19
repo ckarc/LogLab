@@ -19,6 +19,9 @@ folder is how that is measured.
   sends.
 - `baseline-wsjtx.md` is WSJT-X's score on the standard bench, seed 1. It is
   the bar a LogLab decoder must meet.
+- `run-loglab.sh` scores LogLab's own decoder on the same bench. It needs
+  nothing from WSJT-X.
+- `results-loglab.md` is LogLab's score next to WSJT-X's, band by band.
 
 The recordings are made by `ft8bench` (`../../src/bin/ft8bench.rs`) from a
 seed, so they are the same on every machine and nothing large is stored.
@@ -28,6 +31,7 @@ seed, so they are the same on every machine and nothing large is stored.
 ```sh
 tools/ft8-reference/build-wsjtx.sh      # once; needs the packages listed in it
 tools/ft8-reference/run-reference.sh 1  # seed 1, takes a few minutes
+tools/ft8-reference/run-loglab.sh 1     # LogLab's decoder, same seed
 ```
 
 ## The bar for a LogLab decoder
