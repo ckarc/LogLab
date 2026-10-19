@@ -181,12 +181,19 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
         write(&out.join(format!("{stem}.txt")), text.as_bytes())?;
     }
     Ok(format!(
-        "decoded {} recordings into {} in {:.1} s (slowest {:.2} s)\n",
+        "decoded {} recordings into {} in {:.1} s (slowest {:.2} s); {} wrong codewords were caught by the CRC alone, so about {:.4} false decodes were to be expected\n",
         wavs.len(),
         out.display(),
         started.elapsed().as_secs_f64(),
-        slowest.as_secs_f64()
+        slowest.as_secs_f64(),
+        decode::crc_misses(),
+        to_f64(decode::crc_misses()) / 16_383.0
     ))
+}
+
+#[allow(clippy::cast_precision_loss)] // a count
+fn to_f64(n: u64) -> f64 {
+    n as f64
 }
 
 fn read(path: &Path) -> Result<String, String> {

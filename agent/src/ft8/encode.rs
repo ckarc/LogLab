@@ -60,7 +60,12 @@ pub fn codeword(payload: Payload) -> [bool; 174] {
 /// The tones for a payload.
 #[must_use]
 pub fn tones_for_payload(payload: Payload) -> Tones {
-    let code = codeword(payload);
+    tones_for_codeword(&codeword(payload))
+}
+
+/// The tones for a codeword.
+#[must_use]
+pub fn tones_for_codeword(code: &[bool; 174]) -> Tones {
     let mut tones = [0_u8; SYMBOLS];
     let mut data = code.chunks_exact(3).map(|three| {
         let index = usize::from(three[0]) << 2 | usize::from(three[1]) << 1 | usize::from(three[2]);
