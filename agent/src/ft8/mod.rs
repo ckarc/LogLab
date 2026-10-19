@@ -17,6 +17,7 @@
 
 mod baseband;
 pub mod bench;
+pub mod channel;
 pub mod decode;
 pub mod encode;
 pub mod ldpc;

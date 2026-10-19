@@ -6,13 +6,22 @@
 //!
 //! ```text
 //! ft8bench generate DIR [--seed N] [--slots N] [--signals N]
-//!                       [--min-snr DB] [--max-snr DB]
-//!     Write slot-NNNN.wav recordings and truth.tsv into DIR.
+//!                       [--min-snr DB] [--max-snr DB] [--channel CHANNEL]
+//!     Write slot-NNNN.wav recordings and truth.tsv into DIR. CHANNEL is a
+//!     simulated HF channel every signal passes through: a preset (quiet,
+//!     moderate, disturbed, flutter) and/or name=value settings separated by
+//!     commas (spread, k, deepfade, fadelen, drift, bend, wobble, period,
+//!     phasenoise, echo, echodb, echoshift); see `ft8::channel`.
 //! ft8bench score TRUTH DECODES-DIR [--name NAME]
 //!     Score slot-NNNN.txt decoder output against the truth file.
 //! ft8bench decode DIR [--out OUT-DIR]
 //!     Decode every slot-NNNN.wav in DIR with LogLab's decoder, writing
 //!     slot-NNNN.txt decoder output (default OUT-DIR: DIR/loglab).
+//! ft8bench diagnose DIR [--decodes DECODES-DIR]
+//!     For every signal in DIR's truth file, how far LogLab's decoder gets
+//!     with it, step by step, as tab-separated lines (see
+//!     `ft8::decode::diagnose`); with DECODES-DIR, also whether the full
+//!     decoder found it there.
 //! ft8bench tones MESSAGE
 //!     Print the 79 tones of a message.
 //! ft8bench messages [--seed N] [--count N]
@@ -25,6 +34,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use loglab_agent::ft8::bench::{self, Rng, ScenarioSpec};
+use loglab_agent::ft8::channel::Channel;
 use loglab_agent::ft8::{decode, encode};
 
 fn main() -> ExitCode {
@@ -50,6 +60,7 @@ fn run(args: &[String]) -> Result<String, String> {
     match (command.as_str(), positional.as_slice()) {
         ("generate", [dir]) => generate(Path::new(dir), &options),
         ("decode", [dir]) => decode(Path::new(dir), &options),
+        ("diagnose", [dir]) => diagnose(Path::new(dir), &options),
         ("score", [truth, decodes]) => score(Path::new(truth), Path::new(decodes), &options),
         ("tones", [message]) => encode::tones(message)
             .map(|t| format!("{}\n", encode::tones_to_string(&t)))
@@ -100,12 +111,16 @@ fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
         signals_per_slot: number(options, "signals", standard.signals_per_slot)?,
         min_snr_db: number(options, "min-snr", standard.min_snr_db)?,
         max_snr_db: number(options, "max-snr", standard.max_snr_db)?,
+        channel: options
+            .get("channel")
+            .map_or(Ok(Channel::CLEAR), |c| Channel::parse(c))?,
         ..standard
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let slots = bench::generate(&spec);
     for slot in &slots {
-        let audio = bench::render(slot, spec.seed).map_err(|e| e.to_string())?;
+        let audio =
+            bench::render_through(slot, spec.seed, &spec.channel).map_err(|e| e.to_string())?;
         let path = dir.join(format!("{}.wav", slot.file_stem()));
         write(&path, &bench::wav_bytes(&audio))?;
     }
@@ -114,10 +129,11 @@ fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
         bench::truth_tsv(&spec, &slots).as_bytes(),
     )?;
     Ok(format!(
-        "wrote {} slots with {} signals each to {}\n",
+        "wrote {} slots with {} signals each to {} (channel: {})\n",
         spec.slots,
         spec.signals_per_slot,
-        dir.display()
+        dir.display(),
+        spec.channel
     ))
 }
 
@@ -189,6 +205,82 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
         decode::crc_misses(),
         to_f64(decode::crc_misses()) / 16_383.0
     ))
+}
+
+fn diagnose(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, String> {
+    use loglab_agent::ft8::decode::diagnose::{self, Truth};
+    let truth_path = dir.join("truth.tsv");
+    let truth = bench::parse_truth(&read(&truth_path)?)
+        .map_err(|line| format!("{}: line {line} is not a truth line", truth_path.display()))?;
+    let decoded = |slot: usize| -> Option<Vec<String>> {
+        let decodes = PathBuf::from(options.get("decodes")?);
+        let text = std::fs::read_to_string(decodes.join(format!("slot-{slot:04}.txt"))).ok()?;
+        Some(text.lines().filter_map(bench::parse_decode_line).collect())
+    };
+    let threads = std::thread::available_parallelism().map_or(1, usize::from);
+    let chunk = truth.len().div_ceil(threads).max(1);
+    let lines: Vec<Result<String, String>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = truth
+            .chunks(chunk)
+            .map(|part| {
+                scope.spawn(move || {
+                    part.iter()
+                        .map(|slot| {
+                            let path = dir.join(format!("{}.wav", slot.file_stem()));
+                            let bytes = std::fs::read(&path)
+                                .map_err(|e| format!("{}: {e}", path.display()))?;
+                            let audio = bench::wav_samples(&bytes)
+                                .ok_or_else(|| format!("{}: not a bench WAV", path.display()))?;
+                            let truths: Vec<Truth> = slot
+                                .signals
+                                .iter()
+                                .filter_map(|s| Truth::new(&s.message, s.base_hz, s.dt_s))
+                                .collect();
+                            let found = decoded(slot.index);
+                            let single = decode::Options {
+                                threads: 1,
+                                ..decode::Options::default()
+                            };
+                            let mut out = String::new();
+                            for (signal, d) in slot
+                                .signals
+                                .iter()
+                                .zip(diagnose::diagnose(&audio, &truths, &single))
+                            {
+                                let mark = match &found {
+                                    Some(f) if f.contains(&signal.message) => "found",
+                                    Some(_) => "missed",
+                                    None => "-",
+                                };
+                                out += &format!(
+                                    "{}\t{}\t{}\t{}\t{}\t{mark}\t{}\n",
+                                    slot.index,
+                                    signal.snr_db,
+                                    signal.base_hz,
+                                    signal.dt_s,
+                                    signal.message,
+                                    d.to_tsv()
+                                );
+                            }
+                            Ok(out)
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_default())
+            .collect()
+    });
+    let mut out = format!(
+        "slot\tsnr\tbase_hz\tdt\tmessage\tdecoder\t{}\n",
+        diagnose::tsv_header()
+    );
+    for line in lines {
+        out += &line?;
+    }
+    Ok(out)
 }
 
 #[allow(clippy::cast_precision_loss)] // a count
