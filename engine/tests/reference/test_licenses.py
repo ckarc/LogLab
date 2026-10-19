@@ -115,6 +115,7 @@ def test_unreadable_records_are_skipped_and_counted(tmp_path: Path) -> None:
     assert kept == ["W1AW", "K1XYZ"]
     assert tally.skipped == 5
     assert len(tally.examples) == 3
+    assert "HD|2|only|three" in tally.examples[2]
 
 
 def test_operator_classes_are_named(tmp_path: Path) -> None:

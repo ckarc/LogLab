@@ -202,10 +202,12 @@ def _fcc_records(
         tally.read += 1
         fields = record.split("|")
         if len(fields) < width:
-            tally.skip(f"a {kind} record has {len(fields)} fields, fewer than {width}")
+            tally.skip(
+                f"a {kind} record has {len(fields)} fields, fewer than {width}: {record[:60]}"
+            )
             return None
         if _USI.match(fields[1]) is None:
-            tally.skip(f"a {kind} record has no valid identifier")
+            tally.skip(f"a {kind} record has no valid identifier: {record[:60]}")
             return None
         return fields
 
@@ -237,7 +239,7 @@ def fcc_headers(archive: zipfile.ZipFile, today: date, tally: Tally) -> Iterator
     for fields in _fcc_records(archive, "HD.dat", "HD", 10, tally):
         call = _call(fields[4])
         if call is None:
-            tally.skip("an HD record has no valid call")
+            tally.skip(f"HD record {fields[1]} has no valid call ({fields[4][:20]!r})")
             continue
         status = fields[5].strip().upper()
         expires = _fcc_date(fields[8])
@@ -314,11 +316,13 @@ def ised_licenses(archive: zipfile.ZipFile, tally: Tally) -> Iterator[CanadianLi
         first = False
         tally.read += 1
         if len(fields) < _ISED_FIELDS:
-            tally.skip(f"an ISED line has {len(fields)} fields, fewer than {_ISED_FIELDS}")
+            tally.skip(
+                f"an ISED line has {len(fields)} fields, fewer than {_ISED_FIELDS}: {line[:60]}"
+            )
             continue
         call = _call(fields[0])
         if call is None:
-            tally.skip("an ISED line has no valid call")
+            tally.skip(f"an ISED line has no valid call ({fields[0][:20]!r})")
             continue
         given, surname = clean_text(fields[1]), clean_text(fields[2])
         if given or surname:

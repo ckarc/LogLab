@@ -89,7 +89,8 @@ def _said(result: ImportResult) -> str:
     what = "changes to" if result.kind is Kind.DAILY else "licenses in"
     line = f"loaded {result.records} {what} the {COUNTRY[result.source]} list"
     if result.skipped:
-        line += f" ({result.skipped} unreadable records skipped)"
+        line += f" ({result.skipped} unreadable records skipped"
+        line += "".join(f"; {e}" for e in result.examples) + ")"
     return line
 
 

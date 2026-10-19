@@ -78,6 +78,7 @@ class ImportResult:
     kind: Kind
     records: int
     skipped: int
+    examples: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,7 +218,7 @@ class LicenseStore:
                 for statement in _DAILY_FCC:
                     self._conn.execute(statement)
             self._record(Source.FCC, kind, path.name, published, records)
-        return ImportResult(Source.FCC, kind, records, tally.skipped)
+        return ImportResult(Source.FCC, kind, records, tally.skipped, tuple(tally.examples))
 
     def import_ised(self, path: Path, *, published: datetime | None = None) -> ImportResult:
         """Load ISED's ``amateur_delim.zip``, replacing every Canadian call.
@@ -250,7 +251,7 @@ class LicenseStore:
                 """
             ).rowcount
             self._record(Source.ISED, Kind.FULL, path.name, published, records)
-        return ImportResult(Source.ISED, Kind.FULL, records, tally.skipped)
+        return ImportResult(Source.ISED, Kind.FULL, records, tally.skipped, tuple(tally.examples))
 
     def _count(self, query: LiteralString) -> int:
         row = self._conn.execute(query).fetchone()

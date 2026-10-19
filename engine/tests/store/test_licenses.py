@@ -263,6 +263,20 @@ def test_an_expired_license_says_so(
     assert "expired on 2025-05-01" in found["message"]
 
 
+def test_a_license_in_its_grace_period_says_it_has_expired(
+    client: TestClient, k9ksu: dict[str, str], licenses: LicenseStore, tmp_path: Path
+) -> None:
+    """The FCC lists such a license as active until the grace period ends."""
+    licenses.import_fcc(
+        fcc_zip(tmp_path / "grace.zip", [hd("8", "K1GRC", "A", "05/01/2025")]),
+        Kind.FULL,
+        today=TODAY,
+    )
+    found = _look(client, k9ksu, "K1GRC")
+    assert found["status"] == "found"
+    assert "expired on 2025-05-01" in found["message"]
+
+
 def test_a_canadian_call_fills_in_from_canadas_list(
     client: TestClient, k9ksu: dict[str, str], licenses: LicenseStore, tmp_path: Path
 ) -> None:

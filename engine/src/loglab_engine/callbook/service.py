@@ -21,6 +21,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, replace
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -37,7 +38,6 @@ from loglab_engine.store.licenses import COUNTRY, License, LicenseStore, Source
 
 if TYPE_CHECKING:
     from collections.abc import Callable
-    from datetime import datetime
 
     import psycopg
     from psycopg.rows import TupleRow
@@ -253,7 +253,8 @@ def _with_license(held: License, online: LookupResult) -> LookupResult:
     )
     message = f"Filled in from {_LIST_NAME[held.source]}"
     message += " and QRZ.com." if extra is not None else "."
-    if not held.active and held.expires is not None:
+    # The FCC keeps a license active through its two-year renewal grace period.
+    if held.expires is not None and (not held.active or held.expires < datetime.now(UTC).date()):
         message += f" The FCC lists this license as expired on {held.expires.isoformat()}."
     if online.status is LookupStatus.LOGIN_FAILED:
         message += f" {online.message}"
