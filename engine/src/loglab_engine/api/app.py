@@ -72,6 +72,7 @@ from loglab_engine.callbook import (
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
+from loglab_engine.callbook.service import SOURCE as CALLBOOK_SOURCE
 from loglab_engine.contests import EVERYDAY, Earlier, Overlay, Worked, overlays, sent_problems
 from loglab_engine.contests import check as contest_check
 from loglab_engine.contests.overlay import Band, ModeName, StatId
@@ -90,8 +91,17 @@ from loglab_engine.lotw import (
 from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
-from loglab_engine.reference import SECTIONS, tally_sections
+from loglab_engine.reference import (
+    SECTIONS,
+    distance_km,
+    grid_place,
+    record_place,
+    tally_sections,
+)
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
+from loglab_engine.reference import Place as MapPlace
+from loglab_engine.reference.licenses import FCC_CREDIT, ISED_CREDIT
+from loglab_engine.reference.refresh import Downloads, HttpDownloads, Refresher
 from loglab_engine.store import (
     Actor,
     ArchivedError,
@@ -110,6 +120,9 @@ from loglab_engine.store import (
     WorkspaceStore,
     connect,
 )
+from loglab_engine.store.callbook import CallbookStore
+from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
+from loglab_engine.store.lotw import LotwAccountStore
 from loglab_engine.store.operation import (
     Operation,
     OperationNotFoundError,
@@ -388,7 +401,8 @@ class QsoChange(_Strict):
     note: Note | None = None
 
 
-ModuleId = Literal["entry", "profile", "journal", "log", "detail", "map", "stats", "onair"]
+MAX_PATHS: Final = 500  # the most QSOs the world map draws
+ModuleId = Literal["entry", "profile", "journal", "log", "detail", "map", "world", "stats", "onair"]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
 ColumnId = Annotated[
@@ -479,6 +493,7 @@ class Layout(_Strict):
     ``operation`` is the operation the operator logs in, or ``None`` for
     everyday logging under their own call. ``by_overlay`` keeps how they
     arranged the page in each other overlay, to bring back when they return.
+    ``world_qsos`` is how many of the latest QSOs the world map draws.
     """
 
     version: Literal[1] = 1
@@ -491,6 +506,7 @@ class Layout(_Strict):
     by_overlay: Annotated[dict[OverlayId, OverlayArrangement], Field(max_length=8)] = Field(
         default_factory=dict
     )
+    world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
@@ -514,10 +530,12 @@ class LookupQuery(_Strict):
 
 
 class LookupOut(BaseModel):
-    """What the callbook says about a call, or why it could not say.
+    """What the license lists and the callbook say about a call, or why they could not say.
 
     ``status`` is ``found``, ``not_found``, ``not_set_up`` (no QRZ.com login),
     ``unreachable`` (no internet, or QRZ.com is down), or ``login_failed``.
+    ``sources`` names where the answer came from: ``fcc`` or ``ised`` (the
+    license lists the Engine keeps) and ``qrz``.
     """
 
     status: str
@@ -532,6 +550,9 @@ class LookupOut(BaseModel):
     cached: bool
     fetched_at: datetime | None
     message: str
+    sources: list[str]
+    license_class: str | None
+    license_expires: date | None
 
 
 class BioOut(BaseModel):
@@ -553,6 +574,26 @@ class QrzLoginIn(_Strict):
 
     username: Annotated[str, StringConstraints(min_length=1, max_length=64, strip_whitespace=True)]
     password: Annotated[str, StringConstraints(min_length=1, max_length=128)]
+
+
+class LicenseSourceOut(BaseModel):
+    """How current one of the license lists the Engine keeps is."""
+
+    source: str
+    country: str
+    calls: int
+    published: datetime | None
+    imported: datetime | None
+    changes_published: datetime | None
+    changes_imported: datetime | None
+    credit: str
+
+
+class LicensesOut(BaseModel):
+    """The US and Canadian license lists: how current each is, and the last refresh problem."""
+
+    sources: list[LicenseSourceOut]
+    problem: str | None
 
 
 class QrzLoginOut(BaseModel):
@@ -666,6 +707,44 @@ class SectionsOut(BaseModel):
     unrecognized: list[ValueCount]
     without_section: int
     source: str
+
+
+class PlaceOut(BaseModel):
+    """A point on the Earth, in degrees: latitude north, longitude east."""
+
+    lat: float
+    lon: float
+
+
+class PathOut(BaseModel):
+    """One QSO drawn on the world map: from the station to the other station."""
+
+    id: uuid.UUID
+    call: str | None
+    qso_start: datetime | None
+    band: str | None
+    mode: str | None
+    station: PlaceOut
+    other: PlaceOut
+    km: int
+
+
+class PathsOut(BaseModel):
+    """The latest QSOs that can be drawn on the world map.
+
+    ``home`` is where the station is: the latest of these QSOs' own location
+    (``MY_GRIDSQUARE``, or ``MY_LAT`` and ``MY_LON``), or else the grid of
+    the station location saved for LoTW, or else the grid the callbook gave
+    for the operator's own call when it was last looked up. ``without_place``
+    counts the QSOs among the latest that have no location for the other
+    station (no ``GRIDSQUARE``, or ``LAT`` and ``LON``); ``without_home``
+    those with none for the station.
+    """
+
+    home: PlaceOut | None
+    paths: list[PathOut]
+    without_place: int
+    without_home: int
 
 
 class ContestCheckIn(_Strict):
@@ -1087,6 +1166,68 @@ def list_sections(
         unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
         without_section=tally.without_section,
         source=SECTIONS_SOURCE,
+    )
+
+
+def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
+    """Where the operator's station is, when a QSO does not say."""
+    account = LotwAccountStore(conn).get(who)
+    grid = (account.location or {}).get("grid") if account is not None else None
+    if not isinstance(grid, str):
+        cached = CallbookStore(conn).cached(CALLBOOK_SOURCE, who.operator)
+        grid = cached.entry.get("grid") if cached is not None and cached.found else None
+    return grid_place(grid) if isinstance(grid, str) else None
+
+
+@api.get("/paths")
+def list_paths(
+    who: Signed,
+    conn: Conn,
+    limit: Annotated[int, Query(ge=1, le=MAX_PATHS)] = 50,
+    operation: Annotated[uuid.UUID | None, Query()] = None,
+) -> PathsOut:
+    """The latest ``limit`` QSOs by QSO time, each from the station to the other station.
+
+    This is what the world map draws. Places come from the QSOs' own fields;
+    nothing is looked up (Principle V). Deleted QSOs are left out; with
+    ``operation``, only the QSOs logged in that operation count.
+    """
+    _require(conn, who, Permission.VIEW)
+    latest = LogStore(conn).find(
+        QsoFilter(operation=operation), limit=limit, newest_first=True, sort="qso_start"
+    )
+    fallback = _station_home(conn, who)
+    paths: list[PathOut] = []
+    home: MapPlace | None = None
+    without_place = without_home = 0
+    for v in latest:
+        other = record_place(v.record)
+        station = record_place(v.record, mine=True) or fallback
+        if other is None:
+            without_place += 1
+            continue
+        if station is None:
+            without_home += 1
+            continue
+        home = home or station
+        paths.append(
+            PathOut(
+                id=v.qso_id,
+                call=v.call,
+                qso_start=v.qso_start,
+                band=v.band,
+                mode=v.mode,
+                station=PlaceOut(lat=station.lat, lon=station.lon),
+                other=PlaceOut(lat=other.lat, lon=other.lon),
+                km=round(distance_km(station, other)),
+            )
+        )
+    home = home or fallback
+    return PathsOut(
+        home=None if home is None else PlaceOut(lat=home.lat, lon=home.lon),
+        paths=paths,
+        without_place=without_place,
+        without_home=without_home,
     )
 
 
@@ -1813,6 +1954,9 @@ def _lookup_out(result: LookupResult) -> LookupOut:
         cached=result.cached,
         fetched_at=result.fetched_at,
         message=result.message,
+        sources=list(result.sources),
+        license_class=None if result.license is None else result.license.license_class,
+        license_expires=None if result.license is None else result.license.expires,
     )
 
 
@@ -1820,10 +1964,12 @@ def _lookup_out(result: LookupResult) -> LookupOut:
 def lookup(
     who: Signed, conn: Conn, books: Books, query: Annotated[LookupQuery, Query()]
 ) -> LookupOut:
-    """Who and where a call is: kept answers first, then QRZ.com with the operator's login.
+    """Who and where a call is: the US and Canadian license lists, then QRZ.com.
 
-    Always answers 200; ``status`` says whether anything was found. A call is
-    fetched from QRZ.com once and kept (Principle VI); ``refresh`` fetches it again.
+    Always answers 200; ``status`` says whether anything was found. The license
+    lists answer with no internet; QRZ.com, with the operator's login, fills in
+    what they lack (Principle VI). A call is fetched from QRZ.com once and
+    kept; ``refresh`` fetches it again.
     """
     _require(conn, who, Permission.VIEW)
     return _lookup_out(books.lookup(who, query.call.upper(), refresh=query.refresh))
@@ -1926,6 +2072,42 @@ def _login_message(result: LoginCheck) -> str:
 def delete_qrz_login(who: Signed, books: Books) -> None:
     """Remove the signed-in operator's QRZ.com login."""
     books.remove_login(who)
+
+
+_CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
+
+
+@api.get("/licenses")
+def get_licenses(request: Request, who: Signed, conn: Conn) -> LicensesOut:
+    """How current the US (FCC) and Canadian (ISED) license lists are (Principle VI)."""
+    _require(conn, who, Permission.VIEW)
+    refresher: Refresher = request.app.state.licenses
+    report = refresher.last_report()
+    problems = [] if report is None else report.problems
+    return LicensesOut(
+        sources=[
+            LicenseSourceOut(
+                source=state.source.value,
+                country=COUNTRY[state.source],
+                calls=state.calls,
+                published=state.full_published,
+                imported=state.full_imported,
+                changes_published=state.daily_published,
+                changes_imported=state.daily_imported,
+                credit=_CREDIT[state.source],
+            )
+            for state in LicenseStore(conn).states()
+        ],
+        problem=problems[0] if problems else None,
+    )
+
+
+@api.post("/licenses/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_licenses(request: Request, who: Signed, conn: Conn) -> None:
+    """Check for newer license lists now, in the background (admins only)."""
+    _require(conn, who, Permission.ADMIN)
+    refresher: Refresher = request.app.state.licenses
+    refresher.wake()
 
 
 def _lotw(request: Request, conn: Conn) -> Lotw:
@@ -2187,20 +2369,24 @@ async def _security_headers(
 # -- The application ----------------------------------------------------------
 
 
-def create_app(
+def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     database: str,
+    *,
     qrz_fetch: Callable[[str], bytes] = http_fetch,
     qrz_post: Callable[[str, bytes, str], bytes] = http_post,
     qrz_fetch_large: Callable[[str, int], bytes] = http_fetch_large,
     lotw_transport: Transport = https,
+    license_downloads: Downloads | None = None,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
     ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
-    and logbook services, ``qrz_fetch_large`` its biographies and photos, and
-    ``lotw_transport`` how it reaches LoTW; tests give them stand-ins. The QRZ
+    and logbook services, ``qrz_fetch_large`` its biographies and photos,
+    ``lotw_transport`` how it reaches LoTW, and ``license_downloads`` how it
+    fetches the FCC and ISED license lists; tests give them stand-ins. The QRZ
     logbook sender runs in the background once ``app.state.logbook.start()``
-    is called.
+    is called, and the license lists are kept current once
+    ``app.state.licenses.start()`` is.
     """
     app = FastAPI(
         title="LogLab Engine",
@@ -2214,6 +2400,9 @@ def create_app(
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch, qrz_fetch_large))
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
+    app.state.licenses = Refresher(
+        database, license_downloads or HttpDownloads(f"LogLab/{__version__} ({SOURCE})")
+    )
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
     app.state.on_air = OnAir()
     app.include_router(api)

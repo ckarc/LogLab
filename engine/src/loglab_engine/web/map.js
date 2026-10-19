@@ -22,6 +22,9 @@
   let view = null; // the part of it shown now
   let sections = new Map(); // code -> { name, qsos, ... } as the Engine last said
   let loading = null;
+  // What the operator's overlay also accepts as a section, like DX (Field
+  // Day) or MX and DX (Winter Field Day): not on the map, but still to work.
+  let also = [];
 
   const el = (name, attrs = {}) => {
     const node = document.createElementNS(SVG, name);
@@ -90,9 +93,15 @@
   }
 
   function showSummary(result) {
-    const total = result.sections.length;
-    $("#map-count").textContent = `${result.worked} of ${total} sections worked`;
-    const missing = result.sections.filter((s) => s.qsos === 0);
+    const others = also.map((code) => ({
+      code,
+      name: code === "DX" ? "Outside the ARRL and RAC sections" : code === "MX" ? "Mexico" : code,
+      qsos: (result.unrecognized.find((u) => u.value === code) || { qsos: 0 }).qsos,
+    }));
+    const total = result.sections.length + others.length;
+    const worked = result.worked + others.filter((o) => o.qsos > 0).length;
+    $("#map-count").textContent = `${worked} of ${total} sections worked`;
+    const missing = [...result.sections, ...others].filter((s) => s.qsos === 0);
     const list = $("#map-missing");
     list.replaceChildren();
     for (const s of missing) {
@@ -107,7 +116,7 @@
   }
 
   async function refresh() {
-    if (!window.LogLab || $("#app").hidden) return;
+    if (!window.LogLab || $("#app").hidden || box.classList.contains("off")) return;
     try {
       if (!shapes) {
         loading = loading || loadShapes();
@@ -228,5 +237,13 @@
 
   // The log page says when the log has been loaded or changed; the map follows.
   document.addEventListener("loglab:log-loaded", refresh);
+  // The overlay names the map and says what else counts as a section.
+  document.addEventListener("loglab:overlay-shown", (event) => {
+    const overlay = event.detail.overlay;
+    const part = (overlay?.exchange?.received || []).find((p) => p.sections);
+    also = part ? [...part.also] : [];
+    $("#map-title").textContent = part ? `${overlay.name} sections` : "Sections";
+    refresh();
+  });
   box.addEventListener("loglab:refresh", refresh);
 })();

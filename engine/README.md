@@ -117,8 +117,13 @@ own reference is at `/api/docs`.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
 - The top bar holds only LogLab, who is signed in, and **Menu**. Menu opens
-  a box with everything else: light or dark, unlocking the layout, QRZ.com,
-  LoTW, and Sign out. New settings go there too, so the bar never fills up.
+  a box with a few headings: **Operation**, **Appearance and layout**,
+  **Connections** (QRZ.com, LoTW, the US and Canada call lists) and
+  **Admin** (shown only to admins), with who is signed in and **Sign out**
+  at the bottom. A heading opens to show its settings, one at a time; the
+  one used last opens again next time, and a heading shows what is set under
+  it (the operation, Auto/Light/Dark). New settings go under the heading
+  they belong to, so the bar never fills up.
 - Each box on the page is a module. The layout is locked normally; **Menu →
   Unlock to move boxes** unlocks it, and every box shows a handle bar
   (**Lock** in the bar above the boxes locks it again). Drag a box
@@ -150,6 +155,33 @@ own reference is at `/api/docs`.
   QSO by QSO: **Fields** is the one place that sets them. A field left empty
   is not saved. The choice is saved with the layout, per operator
   (`detail.fields`).
+- **US and Canada call lists** fill in US and Canadian calls with no
+  internet at all (Principles V and VI). The Engine keeps its own copy of the
+  FCC's amateur license list (public domain) and ISED Canada's (Open
+  Government Licence - Canada) in `reference.license`: only the call, name,
+  city, state or province, license class, and for US calls the expiry date.
+  No street address, email, or phone is kept, nor cancelled licenses or ones
+  expired past the two-year renewal grace. While `serve` runs it checks every
+  six hours, by HEAD request, whether the FCC's weekly `l_amat.zip`, its
+  daily change files `l_am_<day>.zip`, or ISED's `amateur_delim.zip` are
+  newer than what is loaded, and loads only those (`--no-license-refresh`
+  turns this off). Each load happens in one transaction, so lookups see the
+  old list until the new one is complete, and a file that is mostly
+  unreadable is refused (Principles XII and XIV). For a station that is never
+  online, download the files elsewhere and load them by hand:
+
+  ```sh
+  uv run loglab-engine licenses import --fcc l_amat.zip --canada amateur_delim.zip
+  uv run loglab-engine licenses import --fcc-daily l_am_mon.zip   # oldest first
+  uv run loglab-engine licenses status
+  uv run loglab-engine licenses refresh   # download whatever is newer, now
+  ```
+
+  A lookup answers from these lists first; QRZ.com, when set up, only fills
+  in what they lack, such as the grid square, and answers for other
+  countries' calls. Menu → **US and Canada call lists** shows how current
+  each list is, with its credit (`GET /api/v1/licenses`); an admin can ask
+  for a check now (`POST /api/v1/licenses/refresh`).
 - **QRZ.com lookup** is optional. Each operator saves their own QRZ.com login
   from the **QRZ.com lookup** link on the New QSO form
   (`GET`/`PUT`/`DELETE /api/v1/callbook/qrz`; the password is never sent

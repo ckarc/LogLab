@@ -26,17 +26,28 @@
 
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
-    map: "Field Day sections", stats: "Operation stats", onair: "On air",
+    map: "Section map", world: "World map", stats: "Operation stats", onair: "On air",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "stats", "onair"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "stats", "onair"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
   const START_HIDDEN = new Set(["stats", "onair"]);
   // Where a box added since the operator saved their layout first appears:
-  // the station profile goes beside New QSO, the box it follows.
-  const JOINS = { profile: { after: "entry", width: "full", side: "left" } };
+  // the station profile goes beside New QSO, the box it follows; the world
+  // map takes the section map's place, since an overlay offers one or the other.
+  const JOINS = {
+    profile: { after: "entry", width: "full", side: "left" },
+    world: { after: "map", like: "map", width: "full", side: "left" },
+  };
+  // Which map an overlay calls for: a contest whose exchange has a section
+  // (Field Day, Winter Field Day) gets the section map; everything else, and
+  // everyday logging, the world map. Until overlay.js says, it is everyday.
+  const MAPS_FOR = (overlay) => ((overlay?.exchange?.received || []).some((p) => p.sections) ? ["map"] : ["world"]);
+  const unoffered = new Set(["map"]);
+  const WORLD_QSOS = 50; // how many of the latest QSOs the world map draws, until the operator chooses
+  const MAX_WORLD_QSOS = 500;
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
     modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: START_HIDDEN.has(id), ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
@@ -46,6 +57,7 @@
     theme: "auto",
     operation: null,
     by_overlay: {},
+    world_qsos: WORLD_QSOS,
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -64,7 +76,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "stats", "onair"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "stats", "onair"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -313,7 +325,10 @@
     for (const id of Object.keys(MODULES)) {
       if (seen.has(id)) continue;
       const join = JOINS[id];
-      const added = { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: START_HIDDEN.has(id) };
+      const like = join && join.like && modules.find((m) => m.id === join.like);
+      const added = like
+        ? { id, width: like.width, side: like.side, hidden: START_HIDDEN.has(id) }
+        : { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: START_HIDDEN.has(id) };
       const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
       if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);
@@ -361,7 +376,9 @@
       const inner = normalize({ modules: kept.modules, tables: kept.tables });
       by_overlay[id] = { modules: inner.modules, tables: inner.tables };
     }
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay };
+    const count = saved && Number(saved.world_qsos);
+    const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos };
   }
 
   function applyTheme(theme) {
@@ -371,6 +388,52 @@
       b.setAttribute("aria-pressed", String(b.dataset.themeChoice === theme));
     }
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* remembered only for this page */ }
+  }
+
+  // The Menu's headings: one opens at a time, the one used last opens again
+  // next time, and each heading shows what is set under it. A heading with
+  // nothing to show hides itself; one holding an error opens so it is seen.
+  const MENU_KEY = "loglab.menu";
+  const THEME_NAMES = { auto: "Auto", light: "Light", dark: "Dark" };
+
+  function tidyMenu(menu) {
+    const sections = [...menu.querySelectorAll(".menu-section")];
+    let saved = null;
+    try { saved = localStorage.getItem(MENU_KEY); } catch { /* none remembered */ }
+    for (const section of sections) {
+      section.open = section.dataset.menuSection === saved;
+      section.addEventListener("toggle", () => {
+        if (!section.open) return;
+        for (const other of sections) if (other !== section) other.open = false;
+        try { localStorage.setItem(MENU_KEY, section.dataset.menuSection); } catch { /* not remembered */ }
+      });
+    }
+    const refresh = () => {
+      for (const section of sections) {
+        const entries = [...section.querySelectorAll(".menu-body > *:not(.error)")];
+        const empty = entries.length > 0 && entries.every((e) => e.hidden || isEmptyItems(e));
+        if (section.hidden !== empty) section.hidden = empty;
+        if ([...section.querySelectorAll(".error")].some((e) => e.textContent.trim())) section.open = true;
+      }
+      const theme = document.documentElement.dataset.theme || "auto";
+      setText($("#menu-now-appearance"), THEME_NAMES[theme] || "");
+      const choice = $("#op-choice");
+      const picked = choice.selectedOptions[0];
+      setText($("#menu-now-operation"), !picked || !choice.value ? "Everyday" : picked.textContent.replace(/ \(.*$/, ""));
+    };
+    new MutationObserver(refresh).observe(menu, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
+    new MutationObserver(refresh).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    $("#op-choice").addEventListener("change", refresh);
+    refresh();
+  }
+
+  // Writing only a change keeps the Menu's watcher from waking itself.
+  function setText(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+  }
+
+  function isEmptyItems(element) {
+    return element.classList.contains("menu-items") && [...element.children].every((c) => c.hidden);
   }
 
   function rememberedTheme() {
@@ -402,8 +465,18 @@
   // logged yet, QSO detail) take their place while the page is unlocked.
   function shown(m) {
     if (SOLO) return ALONE_WITH.has(m.id) && !moduleEl(m.id).hidden;
-    return !m.hidden && (arranging() || !moduleEl(m.id).hidden);
+    return !m.hidden && !unoffered.has(m.id) && (arranging() || !moduleEl(m.id).hidden);
   }
+
+  // The operator's overlay chooses its map (overlay.js says which overlay is in use).
+  document.addEventListener("loglab:overlay-shown", (event) => {
+    const maps = MAPS_FOR(event.detail.overlay);
+    for (const id of ["map", "world"]) {
+      if (maps.includes(id)) unoffered.delete(id);
+      else unoffered.add(id);
+    }
+    if (layout) applyLayout();
+  });
 
   // The page is six narrow tracks wide: a third takes two, a half three,
   // a full-width box all six. Boxes are placed in the operator's order, each
@@ -456,7 +529,7 @@
     layout.modules.forEach((m, index) => {
       const el = moduleEl(m.id);
       el.style.order = String(index);
-      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden);
+      el.classList.toggle("off", SOLO ? !ALONE_WITH.has(m.id) : m.hidden || unoffered.has(m.id));
       el.dataset.width = m.width;
       el.dataset.place = m.width === "full" ? "full" : m.side;
       for (const b of el.querySelectorAll(".module-head [data-width]")) {
@@ -467,7 +540,7 @@
     pack();
     const tray = $("#tray");
     tray.replaceChildren();
-    for (const m of layout.modules.filter((x) => x.hidden)) {
+    for (const m of layout.modules.filter((x) => x.hidden && !unoffered.has(x.id))) {
       const show = document.createElement("button");
       show.type = "button";
       show.className = "small secondary";
@@ -1896,6 +1969,7 @@
     $("#menu-open").addEventListener("click", () => menu.showModal());
     $("#menu-close").addEventListener("click", () => menu.close());
     menu.addEventListener("click", (event) => { if (event.target === menu) menu.close(); }); // the backdrop
+    tidyMenu(menu);
     for (const b of document.querySelectorAll("[data-theme-choice]")) {
       b.addEventListener("click", () => chooseTheme(b.dataset.themeChoice));
     }
@@ -1916,7 +1990,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos };
       applyLayout();
       saveLayout();
     });

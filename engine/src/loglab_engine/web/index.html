@@ -9,21 +9,25 @@
   <link rel="stylesheet" href="/static/app.css">
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
+  <link rel="stylesheet" href="/static/world.css">
   <link rel="stylesheet" href="/static/lotw.css">
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
   <link rel="stylesheet" href="/static/profile.css">
   <link rel="stylesheet" href="/static/stats.css">
+  <link rel="stylesheet" href="/static/licenses.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
+  <script src="/static/world.js" defer></script>
   <script src="/static/lotw.js" defer></script>
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
   <script src="/static/profile.js" defer></script>
   <script src="/static/stats.js" defer></script>
   <script src="/static/onair.js" defer></script>
+  <script src="/static/licenses.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -144,7 +148,7 @@
       </section>
 
       <section id="map" class="card module" data-module="map">
-        <h2>Field Day sections <span class="hint">ARRL and RAC sections <span id="map-scope">with a QSO in the log</span></span></h2>
+        <h2><span id="map-title">Field Day sections</span> <span class="hint">ARRL and RAC sections <span id="map-scope">with a QSO in the log</span></span></h2>
         <div class="map-tools">
           <span id="map-count" aria-live="polite"></span>
           <span class="spacer"></span>
@@ -174,6 +178,24 @@
             <ul id="map-missing"></ul>
           </div>
         </div>
+      </section>
+
+      <section id="world" class="card module" data-module="world">
+        <h2>World map <span class="hint">paths to your latest QSOs</span></h2>
+        <div class="map-tools">
+          <span id="world-count" aria-live="polite"></span>
+          <label class="inline world-qsos">Last <input id="world-qsos" type="number" min="1" max="500" step="1" inputmode="numeric" aria-label="How many of the latest QSOs to draw"> QSOs</label>
+          <span class="spacer"></span>
+          <button type="button" id="world-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="world-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="world-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="map-frame">
+          <svg id="world-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="World map of paths to the latest QSOs"></svg>
+        </div>
+        <p id="world-info" class="hint" aria-live="polite">QSOs with a grid square are drawn. Tap a path for its QSO; Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+        <p id="world-note" class="hint" hidden></p>
+        <p id="world-error" class="error" role="alert"></p>
       </section>
 
       <section id="stats" class="card module" data-module="stats">
@@ -229,45 +251,68 @@
 
   <datalist id="adif-field-list"></datalist>
 
+  <!-- The Menu is a short list of headings; each opens to show its settings,
+       one at a time. To add an entry, put it in the .menu-items of the heading
+       it belongs under. A heading whose entries are all hidden (Admin, for an
+       operator who isn't one) hides itself. -->
   <dialog id="menu-dialog" class="card menu-dialog" aria-labelledby="menu-title">
     <div class="menu-head">
       <h2 id="menu-title">Menu</h2>
       <button type="button" id="menu-close" class="secondary small">Close</button>
     </div>
-    <p id="menu-who" class="hint"></p>
 
-    <h3>Appearance</h3>
-    <div class="segmented" role="group" aria-label="Appearance">
-      <button type="button" class="secondary small" data-theme-choice="auto" aria-pressed="true">Auto</button>
-      <button type="button" class="secondary small" data-theme-choice="light" aria-pressed="false">☀ Light</button>
-      <button type="button" class="secondary small" data-theme-choice="dark" aria-pressed="false">☾ Dark</button>
-    </div>
-    <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
+    <details class="menu-section" data-menu-section="operation">
+      <summary><span>Operation</span><span class="menu-now" id="menu-now-operation"></span></summary>
+      <div class="menu-body">
+        <p id="op-current" class="hint"></p>
+        <label class="op-choice">Log as <select id="op-choice"></select></label>
+        <label class="inline" id="op-gota-row" hidden><input type="checkbox" id="op-gota"> This is the GOTA station <span id="op-gota-call" class="hint"></span></label>
+        <div class="menu-items">
+          <button type="button" id="op-new" class="link">Set up an operation</button>
+          <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
+        </div>
+        <p id="op-error" class="error" role="alert"></p>
+      </div>
+    </details>
 
-    <h3>Operation</h3>
-    <p id="op-current" class="hint"></p>
-    <label class="op-choice">Log as <select id="op-choice"></select></label>
-    <label class="inline" id="op-gota-row" hidden><input type="checkbox" id="op-gota"> This is the GOTA station <span id="op-gota-call" class="hint"></span></label>
-    <div class="menu-items">
-      <button type="button" id="op-new" class="link">Set up an operation</button>
-      <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
-      <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
-    </div>
-    <p id="op-error" class="error" role="alert"></p>
+    <details class="menu-section" data-menu-section="appearance">
+      <summary><span>Appearance and layout</span><span class="menu-now" id="menu-now-appearance"></span></summary>
+      <div class="menu-body">
+        <div class="segmented" role="group" aria-label="Appearance">
+          <button type="button" class="secondary small" data-theme-choice="auto" aria-pressed="true">Auto</button>
+          <button type="button" class="secondary small" data-theme-choice="light" aria-pressed="false">☀ Light</button>
+          <button type="button" class="secondary small" data-theme-choice="dark" aria-pressed="false">☾ Dark</button>
+        </div>
+        <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
+        <div class="menu-items">
+          <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
+          <a id="all-boxes" class="link" href="/" hidden>Show all boxes</a>
+        </div>
+      </div>
+    </details>
 
-    <h3>Layout</h3>
-    <div class="menu-items">
-      <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
-      <a id="all-boxes" class="link" href="/" hidden>Show all boxes</a>
-    </div>
+    <details class="menu-section" data-menu-section="connections">
+      <summary><span>Connections</span></summary>
+      <div class="menu-body">
+        <div class="menu-items">
+          <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
+          <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
+          <button type="button" class="link" id="licenses-open">US and Canada call lists</button>
+        </div>
+      </div>
+    </details>
 
-    <h3>Services</h3>
-    <div class="menu-items">
-      <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
-      <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
-    </div>
+    <details class="menu-section" data-menu-section="admin">
+      <summary><span>Admin</span></summary>
+      <div class="menu-body">
+        <div class="menu-items">
+          <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
+        </div>
+      </div>
+    </details>
 
     <div class="menu-foot">
+      <p id="menu-who" class="hint"></p>
       <button type="button" id="sign-out" class="secondary small">Sign out</button>
     </div>
   </dialog>
@@ -315,7 +360,7 @@
     </form>
     <form id="qrz-form" method="dialog" autocomplete="off">
       <h3>Callsign lookup</h3>
-      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. With no internet, nothing is filled in and logging works the same.</p>
+      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. US and Canadian calls fill in from LogLab's own copy of the FCC and Canadian lists even with no internet; QRZ.com adds the grid and other countries' calls. With no internet, logging works the same.</p>
       <p id="qrz-state" class="hint"></p>
       <label>QRZ.com username (your callsign) <input name="username" required maxlength="64" autocapitalize="characters" spellcheck="false"></label>
       <label>QRZ.com password <input name="password" type="password" required maxlength="128"></label>
@@ -326,6 +371,19 @@
       <p class="error" role="alert"></p>
     </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
+  </dialog>
+
+  <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">
+    <h2 id="licenses-title">US and Canada call lists</h2>
+    <p class="hint">LogLab keeps its own copy of the FCC's and Canada's amateur license lists, so US and Canadian calls fill in with no internet. Whenever it can reach them, it loads the FCC's weekly list and each day's changes, and Canada's list. Only the call, name, city, state or province and license class are kept.</p>
+    <ul id="licenses-list" class="licenses-list"></ul>
+    <p id="licenses-problem" class="hint"></p>
+    <div class="actions">
+      <button type="button" id="licenses-check" class="secondary">Check for newer lists now</button>
+      <button type="button" id="licenses-close" class="secondary">Close</button>
+    </div>
+    <p class="error" role="alert"></p>
+    <div id="licenses-credits" class="licenses-credits"></div>
   </dialog>
 
   <dialog id="lotw-dialog" class="card qrz-dialog lotw-dialog">
