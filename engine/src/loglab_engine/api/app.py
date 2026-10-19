@@ -222,9 +222,9 @@ _PLAIN: Final = r"^[^\x00-\x1f\x7f]*$"
 
 
 class RadioPathIn(_Strict):
-    """How the Agent reaches the radio: through Hamlib (with its model number), or pretend."""
+    """How the Agent reaches the radio: Hamlib (with its model number), a FlexRadio, or pretend."""
 
-    kind: Literal["hamlib", "pretend"]
+    kind: Literal["hamlib", "flex", "pretend"]
     model: Annotated[int, Field(ge=1, le=99_999)] | None = None
 
 
@@ -1825,6 +1825,8 @@ AgentStation = Annotated[str, Depends(_agent_station)]
 def _radio_path(path: RadioPathIn) -> str:
     if path.kind == "pretend":
         return "pretend"
+    if path.kind == "flex":
+        return "FlexRadio API"
     return f"Hamlib model {path.model}" if path.model is not None else "Hamlib"
 
 

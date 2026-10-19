@@ -8,11 +8,12 @@
 //! model, and it is the only code that can key a transmitter. See
 //! `CONSTITUTION.md` at the repository root.
 //!
-//! This version reads one radio, through Hamlib or the built-in pretend
-//! radio, and streams its live state to the Engine. It never tunes the radio
+//! This version reads one radio, through Hamlib, a FlexRadio's own API or
+//! the built-in pretend radio, and streams its live state to the Engine. It never tunes the radio
 //! and never keys it.
 
 mod engine;
+mod flex;
 mod hamlib;
 mod pairing;
 mod pretend;
@@ -28,6 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use engine::{RadioReport, Report, SendError, Uplink};
+use flex::FlexRadio;
 use hamlib::{HamlibRadio, Launch, Source};
 use pretend::PretendRadio;
 use rig::{Radio, Reading};
@@ -53,6 +55,9 @@ RADIO is one of:
                                        (3073 is the Icom IC-7300)
   --hamlib-model N --rigctld 127.0.0.1:PORT
                                        use a rigctld already running here
+  --flex ADDRESS                       a FlexRadio on the network, by its IP
+                                       address or name (port 4992 unless
+                                       given, as in 192.168.1.20:4992)
 
 With --station, an Agent whose key file is empty or missing asks to join as
 that station, shows a code, and waits for an administrator to approve it in
@@ -70,6 +75,7 @@ fn banner() -> String {
 enum RadioChoice {
     Pretend,
     Hamlib(HamlibChoice),
+    Flex(String),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -102,6 +108,7 @@ struct Options {
     baud: Option<u32>,
     program: Option<String>,
     rigctld: Option<SocketAddr>,
+    flex: Option<String>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -136,6 +143,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--device" => options.device = Some(value),
             "--baud" => options.baud = Some(number(flag, &value)?),
             "--rigctld-program" => options.program = Some(value),
+            "--flex" => options.flex = Some(value),
             "--rigctld" => {
                 options.rigctld = Some(value.parse().map_err(|_| {
                     format!("--rigctld needs an address like 127.0.0.1:4532, not {value:?}")
@@ -162,15 +170,20 @@ fn parse(args: &[String]) -> Result<Command, String> {
 }
 
 fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
+    let hamlib = options.model.is_some() || options.device.is_some() || options.rigctld.is_some();
+    let chosen = [options.pretend, hamlib, options.flex.is_some()];
+    if chosen.iter().filter(|c| **c).count() > 1 {
+        return Err("choose one radio: --pretend, a Hamlib radio, or --flex".to_owned());
+    }
     if options.pretend {
-        if options.model.is_some() || options.device.is_some() || options.rigctld.is_some() {
-            return Err("choose either --pretend or a Hamlib radio, not both".to_owned());
-        }
         return Ok(RadioChoice::Pretend);
+    }
+    if let Some(address) = options.flex.take() {
+        return Ok(RadioChoice::Flex(address));
     }
     let model = options
         .model
-        .ok_or("choose a radio: --pretend, or --hamlib-model with --device or --rigctld")?;
+        .ok_or("choose a radio: --pretend, --flex, or --hamlib-model with --device or --rigctld")?;
     match (options.device.take(), options.rigctld) {
         (Some(device), None) => Ok(RadioChoice::Hamlib(HamlibChoice::Start(Launch {
             program: options
@@ -192,6 +205,7 @@ fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
+        RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
             Box::new(HamlibRadio::open(&Source::Started(launch.clone()))?)
         }
@@ -488,6 +502,14 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_flexradio() {
+        assert_eq!(
+            parse(&args("read --flex 192.168.1.20")),
+            Ok(Command::Read(RadioChoice::Flex("192.168.1.20".to_owned())))
+        );
+    }
+
+    #[test]
     fn refuses_unclear_radios() {
         for bad in [
             "read",
@@ -499,6 +521,9 @@ mod tests {
             "run --pretend --engine http://x",
             "transmit --pretend",
             "read --pretend --frequency 7",
+            "read --flex",
+            "read --flex 10.0.0.2 --pretend",
+            "read --flex 10.0.0.2 --hamlib-model 3073 --device x",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad} should be refused");
         }
