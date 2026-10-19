@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
   <link rel="stylesheet" href="/static/world.css">
+  <link rel="stylesheet" href="/static/zones.css">
   <link rel="stylesheet" href="/static/lotw.css">
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
@@ -23,6 +24,7 @@
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
   <script src="/static/world.js" defer></script>
+  <script src="/static/zones.js" defer></script>
   <script src="/static/lotw.js" defer></script>
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
@@ -202,6 +204,60 @@
         <p id="world-info" class="hint" aria-live="polite">QSOs with a grid square are drawn. Tap a path for its QSO; Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
         <p id="world-note" class="hint" hidden></p>
         <p id="world-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="cqzones" class="card module" data-module="cqzones">
+        <h2>CQ zones <span class="hint"><span id="cqzones-scope">with a QSO in the log</span></span></h2>
+        <div class="map-tools">
+          <span id="cqzones-count" class="zone-count" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" id="cqzones-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="cqzones-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="cqzones-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="panels" data-panels="cqzones">
+          <div class="panels-row">
+            <div class="panel-main">
+              <div class="map-frame">
+                <svg id="cqzones-svg" class="zone-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of CQ zones"></svg>
+              </div>
+              <p id="cqzones-info" class="hint zone-info" aria-live="polite">Tap a zone for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+              <p id="cqzones-error" class="error" role="alert"></p>
+            </div>
+          </div>
+          <div class="panel" data-panel="cqzones.to-work">
+            <h3 id="cqzones-missing-head" class="zone-missing-head"></h3>
+            <ul id="cqzones-missing" class="zone-missing"></ul>
+            <p id="cqzones-other" class="hint zone-other" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="ituzones" class="card module" data-module="ituzones">
+        <h2>ITU zones <span class="hint"><span id="ituzones-scope">with a QSO in the log</span></span></h2>
+        <div class="map-tools">
+          <span id="ituzones-count" class="zone-count" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" id="ituzones-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="ituzones-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="ituzones-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="panels" data-panels="ituzones">
+          <div class="panels-row">
+            <div class="panel-main">
+              <div class="map-frame">
+                <svg id="ituzones-svg" class="zone-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of ITU zones"></svg>
+              </div>
+              <p id="ituzones-info" class="hint zone-info" aria-live="polite">Tap a zone for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+              <p id="ituzones-error" class="error" role="alert"></p>
+            </div>
+          </div>
+          <div class="panel" data-panel="ituzones.to-work">
+            <h3 id="ituzones-missing-head" class="zone-missing-head"></h3>
+            <ul id="ituzones-missing" class="zone-missing"></ul>
+            <p id="ituzones-other" class="hint zone-other" hidden></p>
+          </div>
+        </div>
       </section>
 
       <section id="stats" class="card module" data-module="stats">

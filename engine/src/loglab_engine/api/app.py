@@ -98,10 +98,14 @@ from loglab_engine.onair import OnAir, Report
 from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
 from loglab_engine.reference import (
     SECTIONS,
+    ZONE_FIELDS,
+    ZONES,
+    ZoneKind,
     distance_km,
     grid_place,
     record_place,
     tally_sections,
+    tally_zones,
 )
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.reference import Place as MapPlace
@@ -531,7 +535,19 @@ class QsoChange(_Strict):
 
 
 MAX_PATHS: Final = 500  # the most QSOs the world map draws
-ModuleId = Literal["entry", "profile", "journal", "log", "detail", "map", "world", "stats", "onair"]
+ModuleId = Literal[
+    "entry",
+    "profile",
+    "journal",
+    "log",
+    "detail",
+    "map",
+    "world",
+    "cqzones",
+    "ituzones",
+    "stats",
+    "onair",
+]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
 ColumnId = Annotated[
@@ -836,6 +852,29 @@ class SectionsOut(BaseModel):
     unrecognized: list[ValueCount]
     without_section: int
     source: str
+
+
+class ZoneOut(BaseModel):
+    """One CQ or ITU zone, and how many QSOs in the log are with it."""
+
+    zone: int
+    qsos: int
+
+
+class ZonesOut(BaseModel):
+    """Every CQ zone, or every ITU zone, and how many QSOs the log has in each.
+
+    A QSO's zone is its ADIF ``CQZ`` or ``ITUZ`` field, named in ``field``.
+    ``unrecognized`` lists the values that name no zone; ``without_zone``
+    counts QSOs with none.
+    """
+
+    kind: ZoneKind
+    field: str
+    zones: list[ZoneOut]
+    worked: int
+    unrecognized: list[ValueCount]
+    without_zone: int
 
 
 class PlaceOut(BaseModel):
@@ -1295,6 +1334,30 @@ def list_sections(
         unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
         without_section=tally.without_section,
         source=SECTIONS_SOURCE,
+    )
+
+
+@api.get("/zones")
+def list_zones(
+    who: Signed,
+    conn: Conn,
+    kind: Annotated[ZoneKind, Query()],
+    operation: Annotated[uuid.UUID | None, Query()] = None,
+) -> ZonesOut:
+    """The CQ or ITU zones, each with how many current QSOs are in it.
+
+    This is what the zone maps colour in. Deleted QSOs do not count; with
+    ``operation``, only the QSOs logged in that operation do.
+    """
+    _require(conn, who, Permission.VIEW)
+    tally = tally_zones(kind, LogStore(conn).field_counts(ZONE_FIELDS[kind], operation))
+    return ZonesOut(
+        kind=kind,
+        field=ZONE_FIELDS[kind],
+        zones=[ZoneOut(zone=z, qsos=tally.worked.get(z, 0)) for z in range(1, ZONES[kind] + 1)],
+        worked=len(tally.worked),
+        unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
+        without_zone=tally.without_zone,
     )
 
 
