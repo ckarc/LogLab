@@ -254,11 +254,12 @@ def test_unknown_qsos_are_404(client: TestClient, k9ksu: dict[str, str]) -> None
 LAYOUT = {
     "version": 1,
     "modules": [
-        {"id": "log", "width": "full", "side": "left", "hidden": False},
-        {"id": "entry", "width": "half", "side": "right", "hidden": False},
-        {"id": "journal", "width": "half", "side": "left", "hidden": True},
-        {"id": "map", "width": "third", "side": "middle", "hidden": False},
-        {"id": "profile", "width": "third", "side": "right", "hidden": False},
+        {"id": "log", "width": "full", "side": "left", "scale": 100, "hidden": False},
+        {"id": "entry", "width": "half", "side": "right", "scale": 85, "hidden": False},
+        {"id": "journal", "width": "half", "side": "left", "scale": 100, "hidden": True},
+        {"id": "map", "width": "third", "side": "middle", "scale": 150, "hidden": False},
+        {"id": "profile", "width": "quarter", "side": "middle-right", "scale": 60, "hidden": False},
+        {"id": "stats", "width": "quarter", "side": "right", "scale": 100, "hidden": False},
     ],
     "tables": {
         "profile": {"columns": ["date", "band", "mode"], "sort": "qso_start", "descending": True},
@@ -291,7 +292,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.get("/api/v1/layout", headers=w0xyz).json() == {"layout": None}
     changed = {
         "version": 1,
-        "modules": [{"id": "log", "width": "full", "side": "left", "hidden": False}],
+        "modules": [{"id": "log", "width": "full", "side": "left", "scale": 100, "hidden": False}],
     }
     assert client.put("/api/v1/layout", headers=elsewhere, json=changed).status_code == 200
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
@@ -309,6 +310,14 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 1, "modules": [{"id": "log", "width": "wide"}]}, "width"),
         ({"version": 1, "modules": [{"id": "log", "width": "half", "side": "middle"}]}, "side"),
         ({"version": 1, "modules": [{"id": "log", "width": "full", "side": "centre"}]}, "side"),
+        (
+            {"version": 1, "modules": [{"id": "log", "width": "third", "side": "middle-left"}]},
+            "only a quarter",
+        ),
+        ({"version": 1, "modules": [{"id": "log", "width": "quarter", "side": "middle"}]}, "side"),
+        ({"version": 1, "modules": [{"id": "log", "scale": 49}]}, "scale"),
+        ({"version": 1, "modules": [{"id": "log", "scale": 201}]}, "scale"),
+        ({"version": 1, "modules": [{"id": "log", "scale": 1.5}]}, "scale"),
         ({"version": 1, "modules": [{"id": "log"}, {"id": "log"}]}, "only once"),
         ({"version": 1, "modules": [{"id": "log", "x": 1}]}, "Extra inputs"),
         ({"version": 1, "modules": [{"id": "log"}], "world_qsos": 0}, "world_qsos"),

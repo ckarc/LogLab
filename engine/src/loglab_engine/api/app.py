@@ -699,22 +699,33 @@ PanelId = Literal["map.to-work"]
 PanelPlace = Literal["top", "bottom", "left", "right"]
 
 
-class ModuleLayout(_Strict):
-    """One module of the workspace: its width, the side it sits on, and whether it is shown.
+# How small or large a box may draw its contents, in percent.
+MIN_SCALE: Final = 50
+MAX_SCALE: Final = 200
 
-    A third sits on the left, middle or right; a half on the left or right;
-    a full-width box ignores it.
+
+class ModuleLayout(_Strict):
+    """One module of the workspace: its width, side, scale, and whether it is shown.
+
+    A quarter sits on the left, middle-left, middle-right or right; a third
+    on the left, middle or right; a half on the left or right; a full-width
+    box ignores it. ``scale`` is how large the box draws what is inside it,
+    in percent of the normal size.
     """
 
     id: ModuleId
-    width: Literal["third", "half", "full"] = "full"
-    side: Literal["left", "middle", "right"] = "left"
+    width: Literal["quarter", "third", "half", "full"] = "full"
+    side: Literal["left", "middle-left", "middle", "middle-right", "right"] = "left"
+    scale: Annotated[int, Field(ge=MIN_SCALE, le=MAX_SCALE)] = 100
     hidden: bool = False
 
     @model_validator(mode="after")
-    def _middle_is_for_thirds(self) -> Self:
+    def _side_fits_width(self) -> Self:
         if self.side == "middle" and self.width != "third":
             msg = "only a third can sit on the middle side"
+            raise ValueError(msg)
+        if self.side in ("middle-left", "middle-right") and self.width != "quarter":
+            msg = "only a quarter can sit middle-left or middle-right"
             raise ValueError(msg)
         return self
 
