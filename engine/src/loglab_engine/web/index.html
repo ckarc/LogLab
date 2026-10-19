@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
   <link rel="stylesheet" href="/static/profile.css">
+  <link rel="stylesheet" href="/static/licenses.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
@@ -23,6 +24,7 @@
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
   <script src="/static/profile.js" defer></script>
+  <script src="/static/licenses.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -262,6 +264,7 @@
     <div class="menu-items">
       <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
       <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
+      <button type="button" class="link" id="licenses-open">US and Canada call lists</button>
     </div>
 
     <div class="menu-foot">
@@ -312,7 +315,7 @@
     </form>
     <form id="qrz-form" method="dialog" autocomplete="off">
       <h3>Callsign lookup</h3>
-      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. With no internet, nothing is filled in and logging works the same.</p>
+      <p class="hint">When you type a call, LogLab asks QRZ.com for the name, QTH, state and grid and fills in any of those boxes you left empty. QRZ.com's lookup takes your QRZ username and password (not the API key) and an XML subscription. US and Canadian calls fill in from LogLab's own copy of the FCC and Canadian lists even with no internet; QRZ.com adds the grid and other countries' calls. With no internet, logging works the same.</p>
       <p id="qrz-state" class="hint"></p>
       <label>QRZ.com username (your callsign) <input name="username" required maxlength="64" autocapitalize="characters" spellcheck="false"></label>
       <label>QRZ.com password <input name="password" type="password" required maxlength="128"></label>
@@ -323,6 +326,19 @@
       <p class="error" role="alert"></p>
     </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
+  </dialog>
+
+  <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">
+    <h2 id="licenses-title">US and Canada call lists</h2>
+    <p class="hint">LogLab keeps its own copy of the FCC's and Canada's amateur license lists, so US and Canadian calls fill in with no internet. Whenever it can reach them, it loads the FCC's weekly list and each day's changes, and Canada's list. Only the call, name, city, state or province and license class are kept.</p>
+    <ul id="licenses-list" class="licenses-list"></ul>
+    <p id="licenses-problem" class="hint"></p>
+    <div class="actions">
+      <button type="button" id="licenses-check" class="secondary">Check for newer lists now</button>
+      <button type="button" id="licenses-close" class="secondary">Close</button>
+    </div>
+    <p class="error" role="alert"></p>
+    <div id="licenses-credits" class="licenses-credits"></div>
   </dialog>
 
   <dialog id="lotw-dialog" class="card qrz-dialog lotw-dialog">
