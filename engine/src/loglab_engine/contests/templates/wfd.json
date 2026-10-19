@@ -97,6 +97,11 @@
       }
     ]
   },
+  "stats": {
+    "show": ["rate", "hourly", "score", "band_mode", "operators", "dupes", "sections"],
+    "points": {"CW": 2, "Digital": 2, "Phone": 1},
+    "satellite_points": false
+  },
   "entry": {
     "fields": [
       "CALL",

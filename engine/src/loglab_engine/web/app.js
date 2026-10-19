@@ -26,17 +26,20 @@
 
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
-    map: "Field Day sections",
+    map: "Field Day sections", stats: "Operation stats", onair: "On air",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "stats", "onair"]);
+  // Boxes each operator turns on for themselves, from the "Show" buttons:
+  // they start out hidden unless an overlay's layout shows them.
+  const START_HIDDEN = new Set(["stats", "onair"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows.
   const JOINS = { profile: { after: "entry", width: "full", side: "left" } };
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
-    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false, ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: START_HIDDEN.has(id), ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
     tables: {},
     panels: {},
     detail: null,
@@ -61,7 +64,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map"];
+  const POPPABLE = ["entry", "profile", "log", "map", "stats", "onair"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -310,7 +313,7 @@
     for (const id of Object.keys(MODULES)) {
       if (seen.has(id)) continue;
       const join = JOINS[id];
-      const added = { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: false };
+      const added = { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: START_HIDDEN.has(id) };
       const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
       if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);
