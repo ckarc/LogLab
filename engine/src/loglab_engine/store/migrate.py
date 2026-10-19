@@ -139,7 +139,7 @@ def pending_migrations(
         if migration is None:
             msg = (
                 f"the database has migration {record.version:04d}_{record.name}, which this "
-                "version of LogLab does not know; it is newer than this code"
+                "version of LabLog does not know; it is newer than this code"
             )
             raise MigrationError(msg)
         if migration.sha256 != record.sha256 or migration.name != record.name:

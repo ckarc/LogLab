@@ -221,11 +221,11 @@ def _export(store: LogStore, args: argparse.Namespace, out: TextIO) -> int:
         return EXIT_DIFFERENT
     now = datetime.now(UTC)
     header = Header(
-        f"LogLab export of the whole log, {_utc(now)}.\n",
+        f"LabLog export of the whole log, {_utc(now)}.\n",
         (
             Field("ADIF_VER", ADIF_VERSION),
             Field("CREATED_TIMESTAMP", now.strftime("%Y%m%d %H%M%S")),
-            Field("PROGRAMID", "LogLab"),
+            Field("PROGRAMID", "LabLog"),
             Field("PROGRAMVERSION", __version__),
         ),
     )
@@ -329,7 +329,7 @@ def _add_actor(parser: argparse.ArgumentParser) -> None:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-log",
-        description="LogLab's log in PostgreSQL: versioned, audited, never erased.",
+        description="LabLog's log in PostgreSQL: versioned, audited, never erased.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

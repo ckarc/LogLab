@@ -1,23 +1,23 @@
-# LogLab decoder on the FT8 bench
+# LabLog decoder on the FT8 bench
 
-LogLab's own FT8 decoder (`agent/src/ft8/decode.rs`), stage 3, produced
+LabLog's own FT8 decoder (`agent/src/ft8/decode.rs`), stage 3, produced
 2026-10-19 by `run-loglab.sh`, against WSJT-X 3.0.2 (`jt9 -8 -d 3`) on the
-same recordings. The decoder is LogLab's own design from the published FT8
+same recordings. The decoder is LabLog's own design from the published FT8
 description; it is not a port of WSJT-X.
 
 ## Received and assisted decodes (Principle XX)
 
-Every LogLab decode here is *received*: all of the message came from the
+Every LabLog decode here is *received*: all of the message came from the
 signal and passed the parity checks, the phase-coherence check and the CRC.
 WSJT-X also reports a few *assisted* decodes, marked `a1` in its output: it
 assumed the message was a CQ and filled in those bits. Both of WSJT-X's
-counts are shown below, and LogLab is compared against each.
+counts are shown below, and LabLog is compared against each.
 
 ## Six standard sets, 3,600 signals
 
 Seeds 1, 4, 5, 6, 9 and 10, each 60 recordings of 10 signals.
 
-| SNR (dB) | Sent | WSJT-X (all) | WSJT-X (received only) | LogLab stage 2 | LogLab stage 3 |
+| SNR (dB) | Sent | WSJT-X (all) | WSJT-X (received only) | LabLog stage 2 | LabLog stage 3 |
 |---|---|---|---|---|---|
 | -26 to -24 | 327 | 0 | 0 | 0 | 0 |
 | -24 to -22 | 320 | 10 | 4 | 6 | 27 |
@@ -33,7 +33,7 @@ Seeds 1, 4, 5, 6, 9 and 10, each 60 recordings of 10 signals.
 | -4 to -2 | 6 | 6 | 6 | 6 | 6 |
 | **All** | **3,600** | **2,777** | **2,752** | **2,786** | **2,903** |
 
-| Seed | WSJT-X (all) | WSJT-X (received only) | LogLab stage 2 | LogLab stage 3 |
+| Seed | WSJT-X (all) | WSJT-X (received only) | LabLog stage 2 | LabLog stage 3 |
 |---|---|---|---|---|
 | 1 | 458 | 452 | 463 | 485 |
 | 4 | 458 | 454 | 464 | 478 |
@@ -46,7 +46,7 @@ Stage 3 was tuned on seeds 1 and 4 only. Seeds 5, 6, 9 and 10 were decoded
 once, with the tuning finished, and used only to check it.
 
 **False decodes:** none from either decoder in the 3,600 signals, and none
-from LogLab in 600 recordings of noise alone (seeds 3, 7 and 8, 200 each).
+from LabLog in 600 recordings of noise alone (seeds 3, 7 and 8, 200 each).
 The bench now also reports how many wrong codewords got as far as the CRC
 check, since a wrong codeword passes the CRC about once in 16,000 times and
 zero false decodes in a few hundred recordings cannot by itself tell a safe
@@ -58,9 +58,9 @@ recordings like these.
 
 ## What this shows
 
-- LogLab finds 151 more signals than WSJT-X's received decodes, and 126
+- LabLog finds 151 more signals than WSJT-X's received decodes, and 126
   more than WSJT-X even counting its assisted ones; 117 more than stage 2.
-- From -20 dB up, LogLab found every signal sent. From -22 to -20 dB it
+- From -20 dB up, LabLog found every signal sent. From -22 to -20 dB it
   found 79 percent against WSJT-X's 54 percent, and below -22 dB 27 signals
   against WSJT-X's 10.
 - Speed: about 2.4 s per 15-second recording on 4 threads (slowest 3.5 s),
@@ -97,6 +97,6 @@ more often. So:
 ## Reproducing it
 
 ```sh
-tools/ft8-reference/run-loglab.sh 1      # LogLab only; needs no WSJT-X
+tools/ft8-reference/run-loglab.sh 1      # LabLog only; needs no WSJT-X
 tools/ft8-reference/run-reference.sh 1   # WSJT-X, after build-wsjtx.sh
 ```

@@ -101,8 +101,8 @@ def test_whole_log_export_has_a_loglab_header(cli: Terminal, tmp_path: Path) -> 
     assert "Wrote the whole log (20 QSOs" in out
     exported = parse_adi(whole.read_bytes()).document
     assert exported.header is not None
-    assert exported.header.get("PROGRAMID") == "LogLab"
-    assert exported.header.preamble.startswith("LogLab export of the whole log")
+    assert exported.header.get("PROGRAMID") == "LabLog"
+    assert exported.header.preamble.startswith("LabLog export of the whole log")
     assert exported.records == parse_adi(ghosts.read_bytes()).document.records
 
 

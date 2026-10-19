@@ -19,7 +19,7 @@
     "6mm", "4mm", "2.5mm", "2mm", "1mm", "submm",
   ];
   const MODULE_NAMES = { entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections", stats: "Operation stats", onair: "On air" };
-  const WIDTH_NAMES = { third: "⅓", half: "½", full: "full" };
+  const WIDTH_NAMES = { quarter: "¼", third: "⅓", half: "½", full: "full" };
   const ABOUT = ["builtin", "version", "retired", "saved_by", "saved_at"];
   const ID = /^[a-z][a-z0-9-]{0,31}$/;
   const KEY = /^[a-z][a-z0-9_]{0,31}$/;
@@ -62,7 +62,7 @@
       <button type="button" class="secondary small" data-ov="close">Close</button>
     </div>
     <div id="ov-list-view">
-      <p class="hint">An overlay sets up LogLab for one kind of operating: which boxes New QSO asks for, how the page starts out, and, for a contest, its bands, modes, exchange and dupe check. The built-in ones can't be changed, but you can copy one and change the copy.</p>
+      <p class="hint">An overlay sets up LabLog for one kind of operating: which boxes New QSO asks for, how the page starts out, and, for a contest, its bands, modes, exchange and dupe check. The built-in ones can't be changed, but you can copy one and change the copy.</p>
       <div class="actions ov-top">
         <button type="button" class="small" data-ov="new">New overlay</button>
         <label class="inline"><input type="checkbox" id="ov-retired"> Show retired ones</label>
