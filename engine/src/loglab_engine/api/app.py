@@ -959,7 +959,7 @@ api = APIRouter(prefix="/api/v1")
 def get_status() -> StatusOut:
     """Name, version, and source location. No sign-in needed."""
     return StatusOut(
-        name="LogLab Engine",
+        name="LabLog Engine",
         version=__version__,
         source=SOURCE,
         license="AGPL-3.0-only",
@@ -1843,7 +1843,7 @@ def refresh_licenses(request: Request, who: Signed, conn: Conn) -> None:
 
 def _lotw(request: Request, conn: Conn) -> Lotw:
     link: LotwLink = request.app.state.lotw
-    return Lotw(conn, link, f"LogLab Engine {__version__}")
+    return Lotw(conn, link, f"LabLog Engine {__version__}")
 
 
 LotwService = Annotated[Lotw, Depends(_lotw)]
@@ -2120,7 +2120,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     ``app.state.licenses.start()`` is.
     """
     app = FastAPI(
-        title="LogLab Engine",
+        title="LabLog Engine",
         version=__version__,
         summary="The log, operators, and sign-in. Every client uses these operations.",
         license_info={"name": "AGPL-3.0-only", "url": f"{SOURCE}/blob/main/LICENSE"},
@@ -2129,12 +2129,12 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
         openapi_url="/api/v1/openapi.json",
     )
     app.state.database = database
-    app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch, qrz_fetch_large))
+    app.state.qrz = Link(QrzClient(f"LabLog-{__version__}", qrz_fetch, qrz_fetch_large))
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
     app.state.licenses = Refresher(
-        database, license_downloads or HttpDownloads(f"LogLab/{__version__} ({SOURCE})")
+        database, license_downloads or HttpDownloads(f"LabLog/{__version__} ({SOURCE})")
     )
-    app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
+    app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LabLog/{__version__}", qrz_post))
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

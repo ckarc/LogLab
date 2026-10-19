@@ -1,6 +1,6 @@
 # Third-Party Licenses
 
-Every third-party component that ships in LogLab is recorded here, with its
+Every third-party component that ships in LabLog is recorded here, with its
 license (CONSTITUTION.md, Technology Constraints, Licensing). Only licenses
 compatible with the AGPL-3.0 are permitted; CI enforces this with the
 **License check** job.
@@ -33,7 +33,7 @@ dependencies:
 
 psycopg is used unmodified as a separate library, as the LGPL-3.0 permits.
 It loads the system's PostgreSQL client library, libpq (PostgreSQL License,
-a permissive BSD-style license), which LogLab does not ship.
+a permissive BSD-style license), which LabLog does not ship.
 
 ## Shipped data
 
@@ -50,8 +50,8 @@ portions (C) 2003-2026 The TrustedQSL Developers, under a BSD-style license
 whose notice and disclaimer travel with the data in
 `engine/tools/trustedqsl/LICENSE.txt`. Its conditions are to keep the notice
 and disclaimer, not to name a product after ARRL's marks ("Logbook of the
-World", "LoTW"), and not to claim ARRL's endorsement. LogLab is not named
-after them and claims no endorsement. How LogLab builds and signs LoTW
+World", "LoTW"), and not to claim ARRL's endorsement. LabLog is not named
+after them and claims no endorsement. How LabLog builds and signs LoTW
 upload files was learned from TrustedQSL's published source (Principle XVI);
 no TrustedQSL code is copied.
 
@@ -76,7 +76,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## Development and CI tooling (not shipped)
 
-These tools build, check, and test LogLab but are not distributed with it.
+These tools build, check, and test LabLog but are not distributed with it.
 They are listed for transparency and are held to the same license policy.
 
 | Component      | Used for                    | License                    |

@@ -170,7 +170,7 @@ def test_a_logged_qso_goes_to_the_operators_qrz_logbook(
         "problem": None,
         "message": "",
     }
-    assert qrz.agents == {"LogLab/0.0.0"}  # QRZ.com asks every program to name itself
+    assert qrz.agents == {"LabLog/0.0.0"}  # QRZ.com asks every program to name itself
     sync.run_once()
     assert sum(1 for q in qrz.asked if q["ACTION"] == "INSERT") == 1  # sent once
 

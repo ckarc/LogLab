@@ -143,7 +143,7 @@ def _roundtrip(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-adif",
-        description="LogLab ADIF tools: ghost QSOs, validation, and lossless round trips.",
+        description="LabLog ADIF tools: ghost QSOs, validation, and lossless round trips.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     commands = parser.add_subparsers(dest="command", required=True)

@@ -1,6 +1,6 @@
 # What counts as a dupe
 
-Research for LogLab's contest overlays, 18 October 2026. Each rule here is encoded in
+Research for LabLog's contest overlays, 18 October 2026. Each rule here is encoded in
 the overlay files in `engine/src/loglab_engine/contests/templates/`. Dupe checks run only in contest overlays; Everyday never checks.
 
 ## ARRL Field Day
@@ -55,13 +55,13 @@ same call, same band, same mode group, same station callsign, during the same
 Winter Field Day. The difference from Field Day is which bands count, and that
 FT8, FT4 and the other WSJT modes don't count at all.
 
-## Decisions LogLab makes where the rules are silent
+## Decisions LabLog makes where the rules are silent
 
 - **Portable and mobile suffixes.** The rules count stations by the call they
-  sign, so K9KSU and K9KSU/M are different stations. LogLab compares the call
+  sign, so K9KSU and K9KSU/M are different stations. LabLog compares the call
   exactly as logged, ignoring upper or lower case.
 - **Dupes are warned, not blocked.** Neither contest penalizes a dupe, and ARRL
-  asks for a log of stations worked. LogLab shows a dupe warning before you
+  asks for a log of stations worked. LabLog shows a dupe warning before you
   store the QSO, and you can still store it (the other station may have lost
   your first QSO). A stored dupe scores nothing.
 - **Which Field Day.** Field Day is in June and Winter Field Day in January, so

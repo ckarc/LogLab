@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: 2026 LogLab contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! LogLab Station Agent.
+//! LabLog Station Agent.
 //!
 //! The Agent owns the radios: it is the only component that opens a radio's
 //! port or control connection, it presents every radio through one common rig
