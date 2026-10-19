@@ -7,8 +7,33 @@ compatible with the AGPL-3.0 are permitted; CI enforces this with the
 
 ## Shipped components
 
-The Station Agent has no crate dependencies yet. The Engine's runtime
-dependencies:
+The Station Agent's crates, compiled into its single executable:
+
+| Component        | Used for                                  | License                          |
+| ---------------- | ----------------------------------------- | -------------------------------- |
+| ureq, ureq-proto | Sending the radio's state to the Engine   | MIT OR Apache-2.0                |
+| http, httparse   | ureq dependencies (HTTP types and parser) | MIT OR Apache-2.0                |
+| base64, log, percent-encoding, utf8-zero | ureq dependencies | MIT OR Apache-2.0           |
+| bytes            | http dependency                           | MIT                              |
+| itoa             | http and serde_json dependency            | MIT OR Apache-2.0                |
+| serde, serde_core, serde_json | Writing the Agent's reports as JSON | MIT OR Apache-2.0           |
+| memchr           | serde_json dependency                     | Unlicense OR MIT                 |
+| zmij             | serde_json dependency (number formatting) | MIT                              |
+| ctrlc            | Stopping Hamlib when the Agent is stopped | MIT OR Apache-2.0                |
+| nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
+| windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
+| dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |
+| serde_derive, syn, proc-macro2, quote | Build time only (serde's derive) | MIT OR Apache-2.0  |
+| cfg_aliases      | Build time only (nix dependency)          | MIT                              |
+| unicode-ident    | Build time only (syn dependency)          | (MIT OR Apache-2.0) AND Unicode-3.0 |
+
+The Agent can also run Hamlib's `rigctld` (https://hamlib.github.io; the
+library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a
+radio. Hamlib is installed separately and runs as its own program, which the
+Agent talks to over Hamlib's documented network protocol; none of its code is
+in LogLab, and LogLab does not ship it.
+
+The Engine's runtime dependencies:
 
 | Component         | Used for                           | License       |
 | ----------------- | ---------------------------------- | ------------- |
