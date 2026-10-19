@@ -26,11 +26,14 @@
 
   const MODULES = {
     entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
-    map: "Section map", world: "World map",
+    map: "Section map", world: "World map", stats: "Operation stats", onair: "On air",
   };
   // The journal is never hidden: the operator must always see what is not
   // logged yet (Principle XV). The detail panel opens from the log.
-  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world"]);
+  const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "stats", "onair"]);
+  // Boxes each operator turns on for themselves, from the "Show" buttons:
+  // they start out hidden unless an overlay's layout shows them.
+  const START_HIDDEN = new Set(["stats", "onair"]);
   // Where a box added since the operator saved their layout first appears:
   // the station profile goes beside New QSO, the box it follows; the world
   // map takes the section map's place, since an overlay offers one or the other.
@@ -47,7 +50,7 @@
   const MAX_WORLD_QSOS = 500;
   const DEFAULT_LAYOUT = Object.freeze({
     version: 1,
-    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: false, ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
+    modules: Object.keys(MODULES).map((id) => ({ id, width: "full", side: "left", hidden: START_HIDDEN.has(id), ...(JOINS[id] && { width: JOINS[id].width, side: JOINS[id].side }) })),
     tables: {},
     panels: {},
     detail: null,
@@ -73,7 +76,7 @@
   // full width, for a second screen or a bookmark. The journal still shows
   // when a QSO is waiting (Principle XV), and a QSO opened from the log
   // still opens its detail. The operator's saved layout is left alone.
-  const POPPABLE = ["entry", "profile", "log", "map", "world"];
+  const POPPABLE = ["entry", "profile", "log", "map", "world", "stats", "onair"];
   const SOLO = (() => {
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
@@ -324,8 +327,8 @@
       const join = JOINS[id];
       const like = join && join.like && modules.find((m) => m.id === join.like);
       const added = like
-        ? { id, width: like.width, side: like.side, hidden: false }
-        : { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: false };
+        ? { id, width: like.width, side: like.side, hidden: START_HIDDEN.has(id) }
+        : { id, width: join ? join.width : "full", side: join ? join.side : "left", hidden: START_HIDDEN.has(id) };
       const after = join ? modules.findIndex((m) => m.id === join.after) : -1;
       if (after >= 0) modules.splice(after + 1, 0, added);
       else modules.push(added);

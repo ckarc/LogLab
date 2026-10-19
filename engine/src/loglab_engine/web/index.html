@@ -14,6 +14,7 @@
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
   <link rel="stylesheet" href="/static/profile.css">
+  <link rel="stylesheet" href="/static/stats.css">
   <link rel="stylesheet" href="/static/licenses.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -24,6 +25,8 @@
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
   <script src="/static/profile.js" defer></script>
+  <script src="/static/stats.js" defer></script>
+  <script src="/static/onair.js" defer></script>
   <script src="/static/licenses.js" defer></script>
 </head>
 <body>
@@ -194,6 +197,26 @@
         <p id="world-info" class="hint" aria-live="polite">QSOs with a grid square are drawn. Tap a path for its QSO; Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
         <p id="world-note" class="hint" hidden></p>
         <p id="world-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="stats" class="card module" data-module="stats">
+        <h2>Operation stats <span id="stats-scope" class="hint"></span></h2>
+        <p id="stats-none" class="hint">Stats show while you log in an operation, like Field Day. Pick one in the Menu.</p>
+        <div id="stats-body" hidden></div>
+        <p id="stats-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="onair" class="card module" data-module="onair">
+        <h2>On air <span id="onair-scope" class="hint"></span></h2>
+        <p id="onair-none" class="hint">Shows who is on the air while you log in an operation, like Field Day.</p>
+        <div class="table-wrap" id="onair-wrap" hidden>
+          <table id="onair-list" class="onair-list">
+            <thead><tr><th></th><th>Operator</th><th>Station</th><th>As</th><th>Band</th><th>Mode</th><th>Last QSO</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="onair-note" class="hint"></p>
+        <p id="onair-error" class="error" role="alert"></p>
       </section>
 
       <section id="detail" class="card module" data-module="detail" hidden>
