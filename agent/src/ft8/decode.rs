@@ -778,6 +778,39 @@ mod tests {
     }
 
     #[test]
+    fn decodes_a_field_day_band() -> Result<(), MessageError> {
+        // A Field Day band: calls and exchanges, every one received exactly.
+        let messages = [
+            "CQ FD K9KSU EN52",
+            "K9KSU W1AW 2A EMA",
+            "W1AW K9KSU R 1D IL",
+            "KD9ABC VE3XYZ 32F ONE",
+            "N0X AA9ZZZ R 17C DX",
+            "WA9XYZ N9ABC 5B WI",
+        ];
+        let signals: Vec<Signal> = messages
+            .iter()
+            .zip([300.0, 700.0, 1100.0, 1500.0, 1900.0, 2300.0])
+            .map(|(message, base_hz)| Signal {
+                message: (*message).to_owned(),
+                base_hz,
+                dt_s: 0.2,
+                snr_db: -14.0,
+            })
+            .collect();
+        let slot = Slot { index: 0, signals };
+        let mut decoded: Vec<String> = decode_slot(&audio(&slot)?, &Options::default())
+            .into_iter()
+            .map(|d| d.message)
+            .collect();
+        decoded.sort();
+        let mut expected: Vec<String> = messages.iter().map(|m| (*m).to_owned()).collect();
+        expected.sort();
+        assert_eq!(decoded, expected);
+        Ok(())
+    }
+
+    #[test]
     fn noise_alone_decodes_to_nothing() -> Result<(), MessageError> {
         for index in 0..3 {
             let slot = Slot {
