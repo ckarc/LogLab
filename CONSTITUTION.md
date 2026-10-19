@@ -1,8 +1,8 @@
-# LogLab Constitution
+# LabLog Constitution
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 2.0.0                                                                                  |
+| **Version**    | 2.0.1                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -11,13 +11,13 @@
 
 ## Purpose
 
-This constitution records the principles every contribution to LogLab must
+This constitution records the principles every contribution to LabLog must
 uphold, regardless of who or what produces it — a human, an AI coding
 assistant, or an automated agent. These are not style preferences. Each one
 protects a property the project depends on; violating any of them breaks that
 property for every operator who relies on the log.
 
-LogLab is an original, open-source amateur radio logging system built on an
+LabLog is an original, open-source amateur radio logging system built on an
 API engine. It is not a clone, port, or reimplementation of any existing
 logger. Its design is its own: one log, one engine, contests defined as
 templates, radios owned by a station agent, and every user interface a client
@@ -403,7 +403,7 @@ time.*
 
 ### XX. Received Is Never Confused With Inferred
 
-LogLab keeps a hard line between what a station was heard to send and what it
+LabLog keeps a hard line between what a station was heard to send and what it
 probably sent. Every decode, from any mode or decoder, is one of three kinds,
 and it carries its kind wherever it goes: on screen, in the event stream, in
 the log, and in exports.
@@ -424,7 +424,7 @@ the log, and in exports.
 A decode is never silently upgraded from one kind to another. A QSO whose
 details rest on assisted decodes records that, so the log never presents
 inference as reception. Decoder benchmarks report received and assisted
-results separately, and any claim that LogLab decodes better than another
+results separately, and any claim that LabLog decodes better than another
 program states which kind it counts.
 
 *Why this is inviolable: a log is a record of what was actually heard. Once a
@@ -581,6 +581,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 1.1.0   | 2026-10-18 | Dropped per-change maintainer approval as a merge gate: pull requests merge automatically once every required gate passes. Governance changes are still merged by the maintainer. Principle XVIII no longer lists required review; Principle XIX names stopping and reverting as maintainer decisions. Rationale: the maintainer manages outcomes and does not read code, so a per-change approval added delay without adding review; the gates are the review (Principle XVII). |
 | 1.2.0   | 2026-10-18 | Narrowed Principle XV: a QSO counts as logged once the Engine has committed it to durable storage; a second independent copy is no longer a condition for logging. Client journals, unique QSO identifiers, further copies, and tested recovery remain. Situation: the Field Lab station runs with no internet, and its operating positions include tablets and workstations that are not always on; requiring a second copy before a QSO counts as logged would leave every QSO unconfirmed whenever the second machine is a tablet, switched off, or out of reach, a worse outcome than logging on the Engine's durable commit. Decided by the maintainer. |
 | 2.0.0   | 2026-10-19 | Added Principle XX (Received Is Never Confused With Inferred): every decode is received, assisted, or predicted, carries that kind everywhere, and is never silently upgraded; benchmarks report received and assisted results separately. Added at the end so no principle is renumbered. Situation: LogLab's own FT8 decoder will reach weaker signals with help such as expected messages and combined repeats; without this rule, what a station probably sent could be logged and shown as what it did send, and the log could no longer be trusted as a record of what was heard. Requested by the maintainer. |
+| 2.0.1   | 2026-10-19 | Renamed the software LabLog wherever people read its name. The repository, code and database keep the name loglab. Wording only; no principle changed. Decided by the maintainer. |
 
 ---
 
