@@ -11,6 +11,7 @@ license = "AGPL-3.0-only"
 authors = ["Brian Krenzin, K9KSU"]
 repository = "https://github.com/ckarc/loglab"
 publish = false
+default-run = "loglab-agent"
 
 [dependencies]
 
