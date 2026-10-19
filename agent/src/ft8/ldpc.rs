@@ -140,15 +140,16 @@ fn generator_rows() -> &'static [Bits; 91] {
 ///
 /// The 91 most reliable bits that determine a codeword are taken as given,
 /// and the codeword they imply is tested, along with every codeword that
-/// differs from it in one of those bits or in two of the `pair_span` least
-/// reliable of them. The codeword that disagrees least with the received
-/// likelihoods wins. Returns it with its disagreement (the sum of `|llr|`
-/// over the bits where it differs from the hard decisions).
+/// differs from it in one of those bits, in two of the `pair_span` least
+/// reliable of them, or in three of the `triple_span` least reliable. The
+/// codeword that disagrees least with the received likelihoods wins.
+/// Returns it with its disagreement (the sum of `|llr|` over the bits where
+/// it differs from the hard decisions).
 ///
 /// Unlike belief propagation this always returns some codeword, so callers
 /// must check it (the CRC, and the disagreement) before trusting it.
 #[must_use]
-pub fn osd(llr: &[f32; N], pair_span: usize) -> Option<([bool; N], f32)> {
+pub fn osd(llr: &[f32; N], pair_span: usize, triple_span: usize) -> Option<([bool; N], f32)> {
     let mut order: Vec<usize> = (0..N).collect();
     order.sort_by(|&a, &b| llr[b].abs().total_cmp(&llr[a].abs()));
 
@@ -226,6 +227,19 @@ pub fn osd(llr: &[f32; N], pair_span: usize) -> Option<([bool; N], f32)> {
             xor(&mut word, &rows[a]);
             xor(&mut word, &rows[b]);
             consider(word);
+        }
+    }
+    let span = triple_span.min(91);
+    for a in 91 - span..91 {
+        for b in a + 1..91 {
+            let mut pair = base;
+            xor(&mut pair, &rows[a]);
+            xor(&mut pair, &rows[b]);
+            for row in &rows[b + 1..91] {
+                let mut word = pair;
+                xor(&mut word, row);
+                consider(word);
+            }
         }
     }
     let (distance, word) = best;
@@ -321,7 +335,7 @@ mod tests {
                 *l = 2.0 * received / 0.9;
             }
             if decode(&llr, 40).is_none() {
-                let (word, _) = super::osd(&llr, 40).ok_or(MessageError::Empty)?;
+                let (word, _) = super::osd(&llr, 40, 0).ok_or(MessageError::Empty)?;
                 rescued += usize::from(word == sent);
             }
         }
@@ -349,7 +363,7 @@ mod tests {
             if decoded.is_some() {
                 continue;
             }
-            let rescued = |l: &[f32; N]| super::osd(l, 30).is_some_and(|(w, _)| w == sent);
+            let rescued = |l: &[f32; N]| super::osd(l, 30, 0).is_some_and(|(w, _)| w == sent);
             raw += usize::from(rescued(&llr));
             refined += usize::from(rescued(&accumulated));
         }
