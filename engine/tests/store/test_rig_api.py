@@ -98,6 +98,31 @@ def test_the_agent_reports_and_its_station_sees_the_radio(
     assert (other["station"], other["heard"], other["radio"]) == ("fd-2", False, None)
 
 
+def test_a_flexradio_reports_through_its_api(
+    client: TestClient, agent: dict[str, str], k9ksu: dict[str, str]
+) -> None:
+    """A FlexRadio's slice shows like any other radio, named by its own model (Principle IX)."""
+    flex = {
+        "maker": "FlexRadio",
+        "model": "FLEX-8400",
+        "path": {"kind": "flex"},
+        "frequency_hz": 14_074_000,
+        "mode": "DATA-USB",
+        "passband_hz": 3000,
+        "ptt": True,
+        "vfo": "Slice A",
+    }
+    response = client.put("/api/v1/agent/rig", headers=agent, json=_report(flex))
+    assert response.status_code == 204, response.text
+    radio = client.get("/api/v1/rig", headers=k9ksu).json()["radio"]
+    assert (radio["maker"], radio["model"], radio["path"]) == (
+        "FlexRadio",
+        "FLEX-8400",
+        "FlexRadio API",
+    )
+    assert (radio["band"], radio["transmitting"], radio["vfo"]) == ("20m", True, "Slice A")
+
+
 def test_a_radio_the_agent_cannot_read_says_why(
     client: TestClient, agent: dict[str, str], k9ksu: dict[str, str]
 ) -> None:
