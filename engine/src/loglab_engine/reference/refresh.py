@@ -23,6 +23,7 @@ import email.utils
 import logging
 import tempfile
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -49,6 +50,7 @@ MAX_SMALL_DOWNLOAD: Final = 64 * 1024 * 1024
 CHECK_EVERY_SECONDS: Final = 6 * 3600.0
 FIRST_CHECK_AFTER_SECONDS: Final = 60.0
 TIMEOUT_SECONDS: Final = 30.0
+RETRY_PAUSE_SECONDS: Final = 5.0
 _LOCK_KEY: Final = 0x4C6963656E7365  # "License": one refresh at a time
 _log = logging.getLogger(__name__)
 
@@ -78,6 +80,18 @@ def _last_modified(value: str | None) -> datetime | None:
         return None
 
 
+def _twice[T](attempt: Callable[[], T]) -> T:
+    """``attempt()``, tried once more after a short pause if the site could not be reached.
+
+    ISED's site sometimes times out on the first connection and answers the second.
+    """
+    try:
+        return attempt()
+    except UnreachableError:
+        time.sleep(RETRY_PAUSE_SECONDS)
+        return attempt()
+
+
 class HttpDownloads:
     """The agencies' files over HTTPS, with timeouts and size caps."""
 
@@ -94,6 +108,13 @@ class HttpDownloads:
 
     def published(self, url: str) -> datetime | None:
         """When the file at ``url`` was last published (its Last-Modified date)."""
+        return _twice(lambda: self._published(url))
+
+    def fetch(self, url: str, dest: Path, cap: int) -> datetime | None:
+        """Save the file at ``url`` to ``dest``; return its publication date."""
+        return _twice(lambda: self._fetch(url, dest, cap))
+
+    def _published(self, url: str) -> datetime | None:
         try:
             with urllib.request.urlopen(  # noqa: S310 - https only
                 self._request(url, "HEAD"), timeout=TIMEOUT_SECONDS
@@ -102,8 +123,7 @@ class HttpDownloads:
         except (urllib.error.URLError, TimeoutError, OSError) as error:
             raise UnreachableError(f"{url} could not be reached ({error})") from error
 
-    def fetch(self, url: str, dest: Path, cap: int) -> datetime | None:
-        """Save the file at ``url`` to ``dest``; return its publication date."""
+    def _fetch(self, url: str, dest: Path, cap: int) -> datetime | None:
         try:
             with (
                 urllib.request.urlopen(  # noqa: S310 - https only

@@ -10,8 +10,8 @@
   class), joined by the FCC's unique system identifier. FCC data is a work of
   the US government, in the public domain.
 * ISED Canada publishes every amateur call in ``amateur_delim.zip``: one
-  semicolon-separated text file. It is published under the Open Government
-  Licence - Canada, which asks for :data:`ISED_CREDIT`.
+  semicolon-separated text file, column names first. It is published under
+  the Open Government Licence - Canada, which asks for :data:`ISED_CREDIT`.
 
 Both downloads are untrusted (Principle XII). A zip member larger than its
 cap is refused; a line longer than :data:`MAX_LINE` is skipped and counted;
@@ -160,6 +160,19 @@ def _member(archive: zipfile.ZipFile, name: str, cap: int = MAX_MEMBER) -> zipfi
     return info
 
 
+def _decode(line: bytes) -> str:
+    """A line as text.
+
+    Both agencies write UTF-8; an odd line in an older single-byte code page
+    is read as Latin-1, which decodes any byte. Cleaning later drops control
+    characters.
+    """
+    try:
+        return line.decode("utf-8")
+    except UnicodeDecodeError:
+        return line.decode("latin-1")
+
+
 def _lines(archive: zipfile.ZipFile, info: zipfile.ZipInfo, tally: Tally) -> Iterator[str]:
     """Each line of a member, decoded; an overlong line is skipped and counted."""
     # A zip member's own readline can return more than it is asked for.
@@ -171,9 +184,7 @@ def _lines(archive: zipfile.ZipFile, info: zipfile.ZipInfo, tally: Tally) -> Ite
                 tally.read += 1
                 tally.skip(f"a line in {info.filename} is longer than {MAX_LINE} bytes")
                 continue
-            # Every agency writes these files in a single-byte code page; Latin-1
-            # decodes any byte, and the cleaning below drops control characters.
-            yield chunk.rstrip(b"\r\n").decode("latin-1")
+            yield _decode(chunk.rstrip(b"\r\n"))
 
 
 def _fcc_records(

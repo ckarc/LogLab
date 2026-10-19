@@ -175,3 +175,19 @@ def test_canadian_calls_are_read_with_their_qualifications(tmp_path: Path) -> No
 def test_names_in_capitals_are_written_in_title_case(written: str, shown: str) -> None:
     """Mixed case is left as it is."""
     assert tidy_case(written) == shown
+
+
+def test_accented_names_are_read_as_the_utf8_the_agencies_write(tmp_path: Path) -> None:
+    """Both agencies write UTF-8; an odd Latin-1 line is still read."""
+    path = fcc_zip(
+        tmp_path / "l_amat.zip", [], [en("1", "VE2XX", "José", "Pérez", city="Montréal")]
+    )
+    with zipfile.ZipFile(path) as archive:
+        (entity,) = fcc_entities(archive, Tally())
+    assert (entity.name, entity.city) == ("José Pérez", "Montréal")
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("HD.dat", b"")
+        archive.writestr("EN.dat", en("2", "W1XY", "Ren\xe9", "Roy").encode("latin-1") + b"\r\n")
+    with zipfile.ZipFile(path) as archive:
+        (entity,) = fcc_entities(archive, Tally())
+    assert entity.name == "René Roy"
