@@ -19,7 +19,7 @@
     "6mm", "4mm", "2.5mm", "2mm", "1mm", "submm",
   ];
   const MODULE_NAMES = { entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail", map: "Field Day sections", stats: "Operation stats", onair: "On air" };
-  const WIDTH_NAMES = { quarter: "¼", third: "⅓", half: "½", full: "full" };
+  const WIDTH_NAMES = { quarter: "¼", third: "⅓", half: "½", "two-thirds": "⅔", full: "full" };
   const ABOUT = ["builtin", "version", "retired", "saved_by", "saved_at"];
   const ID = /^[a-z][a-z0-9-]{0,31}$/;
   const KEY = /^[a-z][a-z0-9_]{0,31}$/;

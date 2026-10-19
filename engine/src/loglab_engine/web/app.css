@@ -517,9 +517,7 @@ h2 .popout:hover { color: var(--accent); }
 /* Boxes open in windows of their own, each with a way to bring it back. */
 .elsewhere { display: flex; flex-wrap: wrap; gap: 6px 18px; margin: 0 4px 12px; }
 #all-boxes { text-decoration: none; }
-.widths { display: flex; gap: 4px; }
-.widths button { min-width: 34px; padding-left: 8px; padding-right: 8px; }
-.widths button[aria-pressed="true"] { color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2)); }
+.module-head select.widths { width: auto; min-width: 76px; padding: 6px 10px; font-size: 14px; font-weight: 600; }
 
 /* Panels: parts of a box placed above, below, or beside its main content.
    Beside it, a panel drops below when the box is too narrow for both. */

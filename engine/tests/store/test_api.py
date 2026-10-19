@@ -260,6 +260,7 @@ LAYOUT = {
         {"id": "map", "width": "third", "side": "middle", "scale": 150, "hidden": False},
         {"id": "profile", "width": "quarter", "side": "middle-right", "scale": 60, "hidden": False},
         {"id": "stats", "width": "quarter", "side": "right", "scale": 100, "hidden": False},
+        {"id": "world", "width": "two-thirds", "side": "right", "scale": 100, "hidden": False},
     ],
     "tables": {
         "profile": {"columns": ["date", "band", "mode"], "sort": "qso_start", "descending": True},
@@ -315,6 +316,10 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
             "only a quarter",
         ),
         ({"version": 1, "modules": [{"id": "log", "width": "quarter", "side": "middle"}]}, "side"),
+        (
+            {"version": 1, "modules": [{"id": "log", "width": "two-thirds", "side": "middle"}]},
+            "side",
+        ),
         ({"version": 1, "modules": [{"id": "log", "scale": 49}]}, "scale"),
         ({"version": 1, "modules": [{"id": "log", "scale": 201}]}, "scale"),
         ({"version": 1, "modules": [{"id": "log", "scale": 1.5}]}, "scale"),
