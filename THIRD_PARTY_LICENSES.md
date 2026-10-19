@@ -40,6 +40,7 @@ a permissive BSD-style license), which LogLab does not ship.
 | Component | Used for | License |
 | --------- | -------- | ------- |
 | Natural Earth 1:10m admin-1 states and provinces, admin-2 counties, lakes ([naturalearthdata.com](https://www.naturalearthdata.com), commit `ca96624` of github.com/nvkelso/natural-earth-vector) | The shapes of the section map (`engine/src/loglab_engine/web/maps/arrl-sections.json`) | Public domain |
+| Natural Earth 1:110m admin-0 countries (same source and commit) | The countries of the world map (`engine/src/loglab_engine/web/maps/world.json`, built by `engine/tools/build_world_map.py`) | Public domain |
 | [@ham2k/lib-arrl-data](https://github.com/ham2k/ham-js-libs) 1.2.0 | The ARRL and RAC section list, and which county is in which section (`engine/tools/ham2k/`, with its license) | MIT |
 
 | [TrustedQSL](https://sourceforge.net/p/trustedqsl/tqsl/) configuration 11.34 (`src/config.xml`) | Which LoTW mode each ADIF mode is sent as, band and DXCC entity names, US states and counties and Canadian provinces with their zones (`engine/src/loglab_engine/lotw/tqsl-tables.json`, built by `engine/tools/build_lotw_tables.py`; the license is kept in `engine/tools/trustedqsl/LICENSE.txt`) | TrustedQSL license (BSD-style) |

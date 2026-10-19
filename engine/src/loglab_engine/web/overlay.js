@@ -89,6 +89,8 @@
       }
     }
     LogLab.setDefaultLayout(overlay.layout ? arrangement(overlay) : null);
+    // The page shows the map this overlay calls for (app.js, map.js).
+    document.dispatchEvent(new CustomEvent("loglab:overlay-shown", { detail: { overlay } }));
     showLoggingAs();
     renderMenu();
     renderLogChoice();
