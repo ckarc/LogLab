@@ -1,0 +1,35 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The station's radio, live: the small label on New QSO, the line in On air, and TX. */
+
+.radio-label {
+  margin-left: 4px;
+  padding: 2px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  border: 1px solid var(--glass-line);
+  border-radius: 999px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.radio-label.problem { color: var(--danger); border-color: var(--danger); }
+.radio-tx {
+  display: inline-block;
+  padding: 0 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: 6px;
+  color: var(--ok);
+  border: 1px solid var(--ok);
+  vertical-align: 1px;
+}
+.radio-tx.on { color: #ffffff; background: var(--danger); border-color: var(--danger); }
+.grid > label:has(.from-radio) { position: relative; }
+.from-radio { position: absolute; top: 1px; right: 2px; font-size: 11px; font-weight: 600; color: var(--ok); }
+.onair-radio { margin: 0 0 10px; font-size: 14px; font-variant-numeric: tabular-nums; }
+.onair-radio:empty { display: none; }
+.onair-radio.problem { color: var(--danger); }
+.onair-freq { font-size: 12px; font-variant-numeric: tabular-nums; }
