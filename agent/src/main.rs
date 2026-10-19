@@ -10,13 +10,16 @@
 //!
 //! This version reads one radio, through Hamlib, a FlexRadio's own API or
 //! the built-in pretend radio, and streams its live state to the Engine. It never tunes the radio
-//! and never keys it.
+//! and never keys it. With the pretend radio it can also listen to a pretend
+//! FT8 band, decode it with LogLab's own decoder, and send what it heard.
 
 mod engine;
 mod flex;
 mod hamlib;
+mod listen;
 mod pairing;
 mod pretend;
+mod pretend_ft8;
 mod rig;
 
 use std::fs;
@@ -50,6 +53,8 @@ Usage:
 
 RADIO is one of:
   --pretend                            the built-in pretend radio
+  --pretend --ft8                      the pretend radio on 20 m FT8, with a
+                                       pretend FT8 band to listen to (run only)
   --hamlib-model N --device PORT [--baud N] [--rigctld-program PATH]
                                        start Hamlib's rigctld for a radio
                                        (3073 is the Icom IC-7300)
@@ -94,6 +99,8 @@ enum Command {
         key_file: String,
         station: Option<String>,
         radio: RadioChoice,
+        /// Listen to the pretend FT8 band (pretend radio only).
+        ft8: bool,
     },
 }
 
@@ -103,6 +110,7 @@ struct Options {
     key_file: Option<String>,
     station: Option<String>,
     pretend: bool,
+    ft8: bool,
     model: Option<u32>,
     device: Option<String>,
     baud: Option<u32>,
@@ -131,6 +139,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
             options.pretend = true;
             continue;
         }
+        if flag == "--ft8" {
+            options.ft8 = true;
+            continue;
+        }
         let value = words
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?
@@ -153,7 +165,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
     }
     let radio = radio_choice(&mut options)?;
+    if options.ft8 && radio != RadioChoice::Pretend {
+        return Err(
+            "--ft8 works only with --pretend for now: real radio audio comes later".to_owned(),
+        );
+    }
     match verb.as_str() {
+        "read" if options.ft8 => Err("--ft8 is for run, not read".to_owned()),
         "read" => Ok(Command::Read(radio)),
         "run" => Ok(Command::Run {
             engine: options
@@ -164,6 +182,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
                 .ok_or("run needs --key-file, the file holding this station's key")?,
             station: options.station,
             radio,
+            ft8: options.ft8,
         }),
         other => Err(format!("unknown command {other:?}")),
     }
@@ -202,8 +221,9 @@ fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     }
 }
 
-fn open(choice: &RadioChoice) -> Result<Box<dyn Radio>, rig::RadioError> {
+fn open(choice: &RadioChoice, ft8: bool) -> Result<Box<dyn Radio>, rig::RadioError> {
     Ok(match choice {
+        RadioChoice::Pretend if ft8 => Box::new(PretendRadio::on_ft8()),
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
         RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
@@ -242,7 +262,7 @@ fn describe(radio: &dyn Radio, reading: &Reading) -> String {
 }
 
 fn read_once(choice: &RadioChoice) -> Result<(), String> {
-    let mut radio = open(choice).map_err(|error| error.to_string())?;
+    let mut radio = open(choice, false).map_err(|error| error.to_string())?;
     let reading = radio.read().map_err(|error| error.to_string())?;
     println!("{}", describe(radio.as_ref(), &reading));
     Ok(())
@@ -343,6 +363,7 @@ fn run(
     key_file: &str,
     station: Option<&str>,
     choice: &RadioChoice,
+    ft8: bool,
 ) -> Result<(), String> {
     // Check the address before anything waits on it.
     Uplink::new(engine, "check")?;
@@ -360,6 +381,20 @@ fn run(
         refused: false,
     };
     println!("{agent}: sending this station's radio to {engine}");
+    let listener = if ft8 {
+        println!("listening to the pretend FT8 band (nothing is real, nothing is transmitted)");
+        let uplink = Uplink::new(engine, &key)?;
+        let agent = agent.clone();
+        let running = Arc::clone(&running);
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(1, |d| d.as_secs());
+        Some(thread::spawn(move || {
+            listen::listen_to_pretend_band(&uplink, &agent, &running, seed);
+        }))
+    } else {
+        None
+    };
     let mut radio: Option<Box<dyn Radio>> = None;
     let mut sent = Sent::Nothing;
     let mut sent_at = Instant::now();
@@ -376,7 +411,7 @@ fn run(
             sent = Sent::Nothing;
         }
         if radio.is_none() && Instant::now() >= retry_at {
-            match open(choice) {
+            match open(choice, ft8) {
                 Ok(opened) => {
                     let identity = opened.identity();
                     println!("connected to {} {}", identity.maker, identity.model);
@@ -423,6 +458,9 @@ fn run(
         thread::sleep(POLL);
     }
     drop(radio);
+    if let Some(listener) = listener {
+        let _ = listener.join();
+    }
     println!("stopped");
     Ok(())
 }
@@ -440,7 +478,8 @@ fn main() -> ExitCode {
             key_file,
             station,
             radio,
-        }) => run(&engine, &key_file, station.as_deref(), &radio),
+            ft8,
+        }) => run(&engine, &key_file, station.as_deref(), &radio, ft8),
         Err(error) => Err(format!("{error}\n\n{USAGE}")),
     };
     match outcome {
@@ -489,6 +528,7 @@ mod tests {
                     device: "/dev/ttyUSB0".to_owned(),
                     baud: Some(19200),
                 })),
+                ft8: false,
             })
         );
     }
@@ -498,6 +538,22 @@ mod tests {
         assert_eq!(
             parse(&args("read --pretend")),
             Ok(Command::Read(RadioChoice::Pretend))
+        );
+    }
+
+    #[test]
+    fn runs_the_pretend_ft8_band() {
+        assert_eq!(
+            parse(&args(
+                "run --engine http://127.0.0.1:8073 --key-file k --pretend --ft8"
+            )),
+            Ok(Command::Run {
+                engine: "http://127.0.0.1:8073".to_owned(),
+                key_file: "k".to_owned(),
+                station: None,
+                radio: RadioChoice::Pretend,
+                ft8: true,
+            })
         );
     }
 
@@ -524,6 +580,8 @@ mod tests {
             "read --flex",
             "read --flex 10.0.0.2 --pretend",
             "read --flex 10.0.0.2 --hamlib-model 3073 --device x",
+            "read --pretend --ft8",
+            "run --engine http://x --key-file k --flex 10.0.0.2 --ft8",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad} should be refused");
         }

@@ -28,10 +28,16 @@ const SPOTS: [(u64, Mode, u32); 5] = [
     (146_520_000, Mode::Fm, 15_000),
 ];
 
+/// Where the pretend radio sits while it listens to the pretend FT8 band:
+/// 20 metres' FT8 frequency, upper sideband for data, a 3 kHz filter.
+pub const FT8_DIAL_HZ: u64 = 14_074_000;
+
 /// The pretend radio.
 pub struct PretendRadio {
     identity: RadioIdentity,
     started: Instant,
+    /// Whether it stays on FT8 instead of moving around the bands.
+    ft8: bool,
 }
 
 impl PretendRadio {
@@ -45,6 +51,29 @@ impl PretendRadio {
                 path: ControlPath::Pretend,
             },
             started: Instant::now(),
+            ft8: false,
+        }
+    }
+
+    /// A pretend radio that stays on 20 metres FT8, listening, so the
+    /// pretend FT8 band has a radio to come from.
+    #[must_use]
+    pub fn on_ft8() -> Self {
+        Self {
+            ft8: true,
+            ..Self::new()
+        }
+    }
+
+    /// What the pretend radio reports while it listens to FT8.
+    #[must_use]
+    pub fn listening_to_ft8() -> Reading {
+        Reading {
+            frequency_hz: FT8_DIAL_HZ,
+            mode: Some(Mode::DataUsb),
+            passband_hz: Some(3000),
+            ptt: Some(false),
+            vfo: Some("VFOA".to_owned()),
         }
     }
 
@@ -76,6 +105,9 @@ impl Radio for PretendRadio {
     }
 
     fn read(&mut self) -> Result<Reading, RadioError> {
+        if self.ft8 {
+            return Ok(Self::listening_to_ft8());
+        }
         Ok(Self::at(self.started.elapsed().as_secs()))
     }
 }
@@ -83,7 +115,7 @@ impl Radio for PretendRadio {
 #[cfg(test)]
 mod tests {
     use super::PretendRadio;
-    use crate::rig::Mode;
+    use crate::rig::{Mode, Radio};
 
     #[test]
     fn starts_on_twenty_metres_phone() {
@@ -102,5 +134,14 @@ mod tests {
         assert_eq!(next.mode, Some(Mode::Cw));
         assert_eq!(next.ptt, Some(false));
         assert_eq!(PretendRadio::at(100).frequency_hz, 14_205_000);
+    }
+
+    #[test]
+    fn stays_on_ft8_and_never_transmits_while_listening() {
+        let mut radio = PretendRadio::on_ft8();
+        let reading = radio.read().unwrap_or_else(|_| PretendRadio::at(0));
+        assert_eq!(reading.frequency_hz, 14_074_000);
+        assert_eq!(reading.mode, Some(Mode::DataUsb));
+        assert_eq!(reading.ptt, Some(false));
     }
 }

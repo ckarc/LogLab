@@ -51,6 +51,7 @@ class Operation:
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     archived_at: datetime | None = None
+    practice: bool = False
 
     def open_at(self, when: datetime) -> bool:
         """Whether ``when`` falls within the operation's hours (open ends always do)."""
@@ -65,7 +66,7 @@ class Operation:
 
 _COLUMNS = (
     "id, overlay, name, station_call, gota_call, sent, ended, created_at, changed_at,"
-    " starts_at, ends_at, archived_at"
+    " starts_at, ends_at, archived_at, practice"
 )
 
 
@@ -84,6 +85,7 @@ def _operation(row: TupleRow) -> Operation:
         starts_at=row[9],
         ends_at=row[10],
         archived_at=row[11],
+        practice=row[12],
     )
 
 
@@ -99,6 +101,10 @@ class OperationSetup:
     ended: bool = False
     starts_at: datetime | None = None
     ends_at: datetime | None = None
+    # A practice operation is for trying LabLog: its QSOs never go to LoTW or
+    # QRZ.com, and only it takes contacts with pretend stations. It is set
+    # when the operation is made and can't change.
+    practice: bool = False
 
 
 class OperationStore:
@@ -153,8 +159,8 @@ class OperationStore:
             f"""
             INSERT INTO workspace.operation
                 (id, overlay, name, station_call, gota_call, sent, ended, session_id,
-                 starts_at, ends_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 starts_at, ends_at, practice)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             RETURNING {_COLUMNS}
             """,  # noqa: S608 - constant columns
             (
@@ -168,6 +174,7 @@ class OperationStore:
                 actor.session_id,
                 setup.starts_at,
                 setup.ends_at,
+                setup.practice,
             ),
         )
 
@@ -175,7 +182,8 @@ class OperationStore:
         """Change an operation, or end it.
 
         Raises:
-            ArchivedError: The operation is archived.
+            ArchivedError: The operation is archived, or the change would
+                make it a practice operation or stop it being one.
             NotAuthorizedError: The actor is not a signed-in administrator.
             OperationNotFoundError: There is no such operation.
         """
@@ -183,7 +191,7 @@ class OperationStore:
             f"""
             UPDATE workspace.operation
             SET overlay = %s, name = %s, station_call = %s, gota_call = %s, sent = %s,
-                ended = %s, session_id = %s, starts_at = %s, ends_at = %s
+                ended = %s, session_id = %s, starts_at = %s, ends_at = %s, practice = %s
             WHERE id = %s
             RETURNING {_COLUMNS}
             """,  # noqa: S608 - constant columns
@@ -197,6 +205,7 @@ class OperationStore:
                 actor.session_id,
                 setup.starts_at,
                 setup.ends_at,
+                setup.practice,
                 operation_id,
             ),
         )

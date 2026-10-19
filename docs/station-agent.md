@@ -75,3 +75,20 @@ This version only reads the radio. It never tunes it and never transmits
   expires after 10 minutes (the Agent then asks again with a new code).
 - A data mode on the radio (`DATA-USB`) leaves the QSO's mode alone, since
   only the operator knows whether it is FT8 or PSK31.
+
+## FT8 with the pretend band
+
+`--pretend --ft8` parks the pretend radio on 14.074 MHz and gives it a pretend
+FT8 band to listen to: a few dozen made-up stations calling CQ and working
+each other, at different strengths, with static. The Agent draws the audio
+as a waterfall (two rows a second) and decodes each 15-second slot with
+LabLog's own decoder, sending both to the Engine (`PUT /api/v1/agent/ft8`).
+The web client's FT8 box (Menu > Appearance and layout > Choose which boxes
+show) shows them; clicking a station fills in New QSO.
+
+Every decode is labelled received (Principle XX) and, from this band,
+pretend. A QSO filled in from a pretend station carries `APP_LOGLAB_PRETEND=Y`,
+and the database only takes it into a practice operation (set up from the
+Menu with "Practice" ticked). QSOs that are pretend or in a practice
+operation are never sent to LoTW or QRZ.com. Nothing is ever transmitted.
+Real radio audio comes later.

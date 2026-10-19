@@ -116,6 +116,7 @@ _QSL_WAITING: Final = f"""
     AND coalesce(upper(btrim(log.field_value(v.fields, %(sent)s))), '') NOT IN ('Y', 'N', 'I')
     AND {_STATION_CALL} = %(call)s
     AND NOT workspace.in_archive(v.fields)
+    AND NOT workspace.is_practice(v.fields)
 """
 _SERVICE: Final = re.compile(r"^[A-Z]{2,12}$")
 

@@ -134,7 +134,7 @@
     name.hidden = !operation;
     if (operation) {
       const when = shortHours(operation);
-      name.textContent = `${operation.name} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}${when ? ` · ${when}` : ""}`;
+      name.textContent = `${operation.name}${operation.practice ? " (practice)" : ""} · ${gota ? `GOTA ${callText(operation.gota_call)}` : callText(operation.station_call)}${when ? ` · ${when}` : ""}`;
     }
     tick();
   }
@@ -358,6 +358,8 @@
     setup.name.value = op ? op.name : "";
     setup.station_call.value = op ? op.station_call : (isAdmin() ? "" : LogLab.session()?.operator || "");
     setup.gota_call.value = op?.gota_call || "";
+    setup.practice.checked = Boolean(op?.practice);
+    setup.practice.disabled = Boolean(op); // set when the operation is made
     $("#op-end").hidden = !op || op.ended;
     $("#op-archive").hidden = !op?.ended;
     for (const end of ["starts", "ends"]) {
@@ -415,6 +417,7 @@
       ended: ended || Boolean(editing?.ended),
       starts_at,
       ends_at,
+      practice: editing ? Boolean(editing.practice) : setup.practice.checked,
     };
     try {
       const saved = editing ? await LogLab.api("PUT", `/operations/${editing.id}`, body) : await LogLab.api("POST", "/operations", body);
