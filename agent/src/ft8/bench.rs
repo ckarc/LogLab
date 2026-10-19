@@ -287,6 +287,43 @@ pub fn wav_bytes(samples: &[i16]) -> Vec<u8> {
     out
 }
 
+/// The samples of a mono 16-bit PCM WAV file at 12,000 samples per second,
+/// as floats in sample units. `None` for any other kind of file.
+#[must_use]
+pub fn wav_samples(bytes: &[u8]) -> Option<Vec<f32>> {
+    let u16_at = |i: usize| Some(u16::from_le_bytes(bytes.get(i..i + 2)?.try_into().ok()?));
+    let u32_at = |i: usize| Some(u32::from_le_bytes(bytes.get(i..i + 4)?.try_into().ok()?));
+    if bytes.get(0..4)? != b"RIFF" || bytes.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    // Walk the chunks: "fmt " must say PCM, mono, 12 kHz, 16 bits.
+    let mut at = 12;
+    let mut format_ok = false;
+    while at + 8 <= bytes.len() {
+        let id = bytes.get(at..at + 4)?;
+        let len = usize::try_from(u32_at(at + 4)?).ok()?;
+        let body = at + 8;
+        if id == b"fmt " {
+            format_ok = u16_at(body)? == 1
+                && u16_at(body + 2)? == 1
+                && u32_at(body + 4)? == SAMPLE_RATE
+                && u16_at(body + 14)? == 16;
+        } else if id == b"data" {
+            if !format_ok {
+                return None;
+            }
+            let data = bytes.get(body..body.checked_add(len)?.min(bytes.len()))?;
+            return Some(
+                data.chunks_exact(2)
+                    .map(|b| f32::from(i16::from_le_bytes([b[0], b[1]])))
+                    .collect(),
+            );
+        }
+        at = body.checked_add(len)?.checked_add(len % 2)?;
+    }
+    None
+}
+
 /// The truth file for a scenario: one tab-separated line per signal (slot,
 /// base frequency, timing offset, SNR, message) after a header naming the
 /// scenario.
@@ -429,6 +466,15 @@ pub fn score(truth: &[Slot], decoded: &BTreeMap<usize, Vec<String>>) -> Score {
             }
         }
     }
+    // Slots with nothing sent in them (pure noise) appear in the decoder's
+    // output but not in the truth: everything decoded there is false.
+    for (index, messages) in decoded {
+        if truth.iter().all(|slot| slot.index != *index) {
+            for message in messages {
+                result.false_decodes.push((*index, normalize(message)));
+            }
+        }
+    }
     result
 }
 
@@ -564,6 +610,9 @@ mod tests {
         assert_eq!(&bytes[8..16], b"WAVEfmt ");
         assert_eq!(&bytes[24..28], &12_000_u32.to_le_bytes());
         assert_eq!(&bytes[40..44], &6_u32.to_le_bytes());
+        assert_eq!(super::wav_samples(&bytes), Some(vec![0.0, 1.0, -1.0]));
+        assert_eq!(super::wav_samples(&bytes[..30]), None);
+        assert_eq!(super::wav_samples(b"not a wav file at all"), None);
     }
 
     #[test]
@@ -595,5 +644,9 @@ mod tests {
         assert_eq!(s.missed.len(), 1);
         assert_eq!(s.by_snr.get(&-10).map(|t| t.found), Some(1));
         assert_eq!(s.by_snr.get(&-26).map(|t| t.found), Some(0));
+
+        // A noise-only slot is absent from the truth; its decodes are false.
+        decoded.insert(7, vec!["CQ K1ABC FN42".to_owned()]);
+        assert_eq!(score(&truth, &decoded).false_decodes.len(), 2);
     }
 }

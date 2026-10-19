@@ -15,8 +15,12 @@
 //! files by the bench; sending it is the Agent's transmit path's job, under
 //! Principles XI and XIII.
 
+mod baseband;
 pub mod bench;
+pub mod decode;
 pub mod encode;
+pub mod ldpc;
+mod ldpc_checks;
 mod ldpc_generator;
 pub mod message;
 pub mod wave;

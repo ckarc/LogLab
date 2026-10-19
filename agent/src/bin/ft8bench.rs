@@ -6,9 +6,13 @@
 //!
 //! ```text
 //! ft8bench generate DIR [--seed N] [--slots N] [--signals N]
+//!                       [--min-snr DB] [--max-snr DB]
 //!     Write slot-NNNN.wav recordings and truth.tsv into DIR.
 //! ft8bench score TRUTH DECODES-DIR [--name NAME]
 //!     Score slot-NNNN.txt decoder output against the truth file.
+//! ft8bench decode DIR [--out OUT-DIR]
+//!     Decode every slot-NNNN.wav in DIR with LogLab's decoder, writing
+//!     slot-NNNN.txt decoder output (default OUT-DIR: DIR/loglab).
 //! ft8bench tones MESSAGE
 //!     Print the 79 tones of a message.
 //! ft8bench messages [--seed N] [--count N]
@@ -21,7 +25,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use loglab_agent::ft8::bench::{self, Rng, ScenarioSpec};
-use loglab_agent::ft8::encode;
+use loglab_agent::ft8::{decode, encode};
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,6 +49,7 @@ fn run(args: &[String]) -> Result<String, String> {
     let (positional, options) = split_options(rest)?;
     match (command.as_str(), positional.as_slice()) {
         ("generate", [dir]) => generate(Path::new(dir), &options),
+        ("decode", [dir]) => decode(Path::new(dir), &options),
         ("score", [truth, decodes]) => score(Path::new(truth), Path::new(decodes), &options),
         ("tones", [message]) => encode::tones(message)
             .map(|t| format!("{}\n", encode::tones_to_string(&t)))
@@ -93,6 +98,8 @@ fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
     let spec = ScenarioSpec {
         slots: number(options, "slots", standard.slots)?,
         signals_per_slot: number(options, "signals", standard.signals_per_slot)?,
+        min_snr_db: number(options, "min-snr", standard.min_snr_db)?,
+        max_snr_db: number(options, "max-snr", standard.max_snr_db)?,
         ..standard
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -122,19 +129,64 @@ fn score(
     let text = read(truth_path)?;
     let truth = bench::parse_truth(&text)
         .map_err(|line| format!("{}: line {line} is not a truth line", truth_path.display()))?;
+    // Every slot-NNNN.txt counts, including noise-only slots the truth
+    // file has no lines for.
     let mut decoded = BTreeMap::new();
-    for slot in &truth {
-        let path: PathBuf = decodes_dir.join(format!("{}.txt", slot.file_stem()));
-        if let Ok(output) = std::fs::read_to_string(&path) {
+    let entries =
+        std::fs::read_dir(decodes_dir).map_err(|e| format!("{}: {e}", decodes_dir.display()))?;
+    for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
+        let index = path.file_name().and_then(|n| n.to_str()).and_then(|n| {
+            n.strip_prefix("slot-")?
+                .strip_suffix(".txt")?
+                .parse::<usize>()
+                .ok()
+        });
+        if let (Some(index), Ok(output)) = (index, std::fs::read_to_string(&path)) {
             let messages = output
                 .lines()
                 .filter_map(bench::parse_decode_line)
                 .collect();
-            decoded.insert(slot.index, messages);
+            decoded.insert(index, messages);
         }
     }
     let name = options.get("name").map_or("Decoder", String::as_str);
     Ok(bench::report(name, &bench::score(&truth, &decoded)))
+}
+
+fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, String> {
+    let out = options
+        .get("out")
+        .map_or_else(|| dir.join("loglab"), PathBuf::from);
+    std::fs::create_dir_all(&out).map_err(|e| format!("{}: {e}", out.display()))?;
+    let mut wavs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .map_err(|e| format!("{}: {e}", dir.display()))?
+        .filter_map(|entry| entry.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|x| x == "wav"))
+        .collect();
+    wavs.sort();
+    let started = std::time::Instant::now();
+    let mut slowest = std::time::Duration::ZERO;
+    for wav in &wavs {
+        let bytes = std::fs::read(wav).map_err(|e| format!("{}: {e}", wav.display()))?;
+        let audio = bench::wav_samples(&bytes)
+            .ok_or_else(|| format!("{}: not a 12,000 Hz mono 16-bit WAV", wav.display()))?;
+        let one = std::time::Instant::now();
+        let decodes = decode::decode_slot(&audio, &decode::Options::default());
+        slowest = slowest.max(one.elapsed());
+        let text: String = decodes.iter().map(|d| d.to_line() + "\n").collect();
+        let stem = wav
+            .file_stem()
+            .map(|s| s.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        write(&out.join(format!("{stem}.txt")), text.as_bytes())?;
+    }
+    Ok(format!(
+        "decoded {} recordings into {} in {:.1} s (slowest {:.2} s)\n",
+        wavs.len(),
+        out.display(),
+        started.elapsed().as_secs_f64(),
+        slowest.as_secs_f64()
+    ))
 }
 
 fn read(path: &Path) -> Result<String, String> {
