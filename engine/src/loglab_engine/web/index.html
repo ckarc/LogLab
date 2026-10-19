@@ -10,26 +10,36 @@
   <link rel="stylesheet" href="/static/lookup.css">
   <link rel="stylesheet" href="/static/map.css">
   <link rel="stylesheet" href="/static/world.css">
+  <link rel="stylesheet" href="/static/zones.css">
   <link rel="stylesheet" href="/static/lotw.css">
   <link rel="stylesheet" href="/static/overlay.css">
   <link rel="stylesheet" href="/static/overlay-editor.css">
   <link rel="stylesheet" href="/static/profile.css">
+  <link rel="stylesheet" href="/static/stats.css">
   <link rel="stylesheet" href="/static/licenses.css">
+  <link rel="stylesheet" href="/static/radio.css">
+  <link rel="stylesheet" href="/static/agents.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
   <script src="/static/map.js" defer></script>
   <script src="/static/world.js" defer></script>
+  <script src="/static/zones.js" defer></script>
   <script src="/static/lotw.js" defer></script>
   <script src="/static/overlay.js" defer></script>
   <script src="/static/overlay-editor.js" defer></script>
   <script src="/static/profile.js" defer></script>
+  <script src="/static/stats.js" defer></script>
+  <script src="/static/onair.js" defer></script>
+  <script src="/static/radio.js" defer></script>
+  <script src="/static/agents.js" defer></script>
   <script src="/static/licenses.js" defer></script>
 </head>
 <body>
   <header class="bar">
     <span class="brand">LogLab</span>
     <span id="who" class="who" hidden></span>
+    <button id="agents-waiting" class="agents-waiting" type="button" title="A Station Agent is asking to join; open Station Agents" hidden></button>
     <button id="menu-open" class="link menu-open" type="button" aria-haspopup="dialog" hidden>Menu</button>
   </header>
 
@@ -58,7 +68,7 @@
       <p id="elsewhere" class="hint elsewhere" aria-live="polite" hidden></p>
       <div id="workspace" class="workspace">
       <section class="card module" data-module="entry">
-        <h2>New QSO <span class="hint">all times UTC</span> <span id="overlay-name" class="overlay-name" hidden></span> <span id="op-countdown" class="op-countdown" hidden></span></h2>
+        <h2>New QSO <span class="hint">all times UTC</span> <span id="overlay-name" class="overlay-name" hidden></span> <span id="op-countdown" class="op-countdown" hidden></span> <span id="radio-label" class="radio-label" hidden></span></h2>
         <form id="entry" autocomplete="off">
           <div class="grid">
             <label class="wide">Call <span class="zero-field"><input name="CALL" required maxlength="20" autocapitalize="characters" spellcheck="false"><span class="zero-mirror" aria-hidden="true"></span></span></label>
@@ -66,7 +76,7 @@
             <label>Time (UTC) <span class="row"><input name="TIME_ON" required maxlength="5" inputmode="numeric" pattern="([01][0-9]|2[0-3]):?[0-5][0-9]" placeholder="HHMM" title="24-hour UTC time, like 1805"><button type="button" id="now" class="small" tabindex="-1" title="Fill in the current UTC date and time">Now</button></span></label>
             <label>Band <select name="BAND" required></select></label>
             <label>Mode <select name="MODE" required></select></label>
-            <label>Freq (MHz) <input name="FREQ" inputmode="decimal" maxlength="12"></label>
+            <label>Freq (MHz) <span id="freq-from-radio" class="from-radio" title="Filled in from the radio; type here to use your own" hidden>from radio</span><input name="FREQ" inputmode="decimal" maxlength="12"></label>
             <label>RST sent <input name="RST_SENT" maxlength="8"></label>
             <label>RST rcvd <input name="RST_RCVD" maxlength="8"></label>
             <label>Name <input name="NAME" maxlength="60"></label>
@@ -196,6 +206,81 @@
         <p id="world-error" class="error" role="alert"></p>
       </section>
 
+      <section id="cqzones" class="card module" data-module="cqzones">
+        <h2>CQ zones <span class="hint"><span id="cqzones-scope">with a QSO in the log</span></span></h2>
+        <div class="map-tools">
+          <span id="cqzones-count" class="zone-count" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" id="cqzones-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="cqzones-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="cqzones-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="panels" data-panels="cqzones">
+          <div class="panels-row">
+            <div class="panel-main">
+              <div class="map-frame">
+                <svg id="cqzones-svg" class="zone-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of CQ zones"></svg>
+              </div>
+              <p id="cqzones-info" class="hint zone-info" aria-live="polite">Tap a zone for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+              <p id="cqzones-error" class="error" role="alert"></p>
+            </div>
+          </div>
+          <div class="panel" data-panel="cqzones.to-work">
+            <h3 id="cqzones-missing-head" class="zone-missing-head"></h3>
+            <ul id="cqzones-missing" class="zone-missing"></ul>
+            <p id="cqzones-other" class="hint zone-other" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="ituzones" class="card module" data-module="ituzones">
+        <h2>ITU zones <span class="hint"><span id="ituzones-scope">with a QSO in the log</span></span></h2>
+        <div class="map-tools">
+          <span id="ituzones-count" class="zone-count" aria-live="polite"></span>
+          <span class="spacer"></span>
+          <button type="button" id="ituzones-out" class="small secondary" aria-label="Zoom out">−</button>
+          <button type="button" id="ituzones-in" class="small secondary" aria-label="Zoom in">+</button>
+          <button type="button" id="ituzones-fit" class="small secondary">Whole map</button>
+        </div>
+        <div class="panels" data-panels="ituzones">
+          <div class="panels-row">
+            <div class="panel-main">
+              <div class="map-frame">
+                <svg id="ituzones-svg" class="zone-svg" xmlns="http://www.w3.org/2000/svg" role="group" aria-label="Map of ITU zones"></svg>
+              </div>
+              <p id="ituzones-info" class="hint zone-info" aria-live="polite">Tap a zone for its name and QSO count. Ctrl and the scroll wheel, or the + and − buttons, zoom in.</p>
+              <p id="ituzones-error" class="error" role="alert"></p>
+            </div>
+          </div>
+          <div class="panel" data-panel="ituzones.to-work">
+            <h3 id="ituzones-missing-head" class="zone-missing-head"></h3>
+            <ul id="ituzones-missing" class="zone-missing"></ul>
+            <p id="ituzones-other" class="hint zone-other" hidden></p>
+          </div>
+        </div>
+      </section>
+
+      <section id="stats" class="card module" data-module="stats">
+        <h2>Operation stats <span id="stats-scope" class="hint"></span></h2>
+        <p id="stats-none" class="hint">Stats show while you log in an operation, like Field Day. Pick one in the Menu.</p>
+        <div id="stats-body" hidden></div>
+        <p id="stats-error" class="error" role="alert"></p>
+      </section>
+
+      <section id="onair" class="card module" data-module="onair">
+        <h2>On air <span id="onair-scope" class="hint"></span></h2>
+        <p id="onair-radio" class="onair-radio" aria-live="polite"></p>
+        <p id="onair-none" class="hint">Shows who is on the air while you log in an operation, like Field Day.</p>
+        <div class="table-wrap" id="onair-wrap" hidden>
+          <table id="onair-list" class="onair-list">
+            <thead><tr><th></th><th>Operator</th><th>Station</th><th>As</th><th>Band</th><th>Mode</th><th>Last QSO</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+        <p id="onair-note" class="hint"></p>
+        <p id="onair-error" class="error" role="alert"></p>
+      </section>
+
       <section id="detail" class="card module" data-module="detail" hidden>
         <h2><span id="detail-title"></span> <button id="close-detail" class="link" type="button">Close</button></h2>
         <div class="detail-bar">
@@ -285,6 +370,7 @@
       <div class="menu-body">
         <div class="menu-items">
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
+          <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
         </div>
       </div>
     </details>
@@ -349,6 +435,21 @@
       <p class="error" role="alert"></p>
     </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
+  </dialog>
+
+  <dialog id="agents-dialog" class="card qrz-dialog agents-dialog" aria-labelledby="agents-title">
+    <h2 id="agents-title">Station Agents</h2>
+    <p class="hint">A Station Agent runs on the computer a radio is plugged into and sends LabLog what the radio is doing. A new Agent asks to join and shows a code. Approve it only if the code here matches the one the Agent shows.</p>
+    <h3>Asking to join</h3>
+    <ul id="agents-waiting-list" class="agents-list"></ul>
+    <p id="agents-none" class="hint">No Agent is asking to join.</p>
+    <h3>Joined</h3>
+    <ul id="agents-keyed" class="agents-list"></ul>
+    <p id="agents-no-keys" class="hint">No station has an Agent yet.</p>
+    <p class="error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="agents-close" class="secondary">Close</button>
+    </div>
   </dialog>
 
   <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">

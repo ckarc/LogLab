@@ -1,0 +1,60 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The CQ and ITU zone maps. Worked zones take the accent colour, as worked
+   sections do; the countries are a faint outline over them. They share the
+   section map's tools and frame (map.css). */
+
+.zone-svg { display: block; width: 100%; height: auto; max-height: 75vh; touch-action: manipulation; user-select: none; }
+.zone-svg.zoomed { cursor: grab; touch-action: none; }
+.zone-svg.zoomed:active { cursor: grabbing; }
+.zone-count { font-weight: 600; }
+
+.zone-areas path {
+  fill: var(--glass-strong);
+  stroke: var(--text);
+  stroke-width: 0.8;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+  cursor: pointer;
+  transition: fill 0.4s ease;
+}
+.zone-areas path:hover { fill: var(--row-hover); }
+.zone-areas path.worked { fill: var(--accent); }
+.zone-areas path.worked:hover { fill: var(--accent-2); }
+.zone-areas path.picked { stroke-width: 2.4; }
+.zone-areas path:focus { outline: none; stroke-width: 2.4; }
+
+.zone-countries use { fill: none; stroke: var(--muted); stroke-width: 0.4; stroke-linejoin: round; opacity: 0.7; pointer-events: none; }
+.zone-countries path { vector-effect: non-scaling-stroke; }
+
+.zone-labels text {
+  font-size: 7px;
+  font-weight: 700;
+  text-anchor: middle;
+  dominant-baseline: middle;
+  fill: var(--text);
+  pointer-events: none;
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 1.5px;
+}
+.zone-svg.zoomed .zone-labels text { font-size: 3.5px; stroke-width: 0.8px; }
+
+.zone-info { min-height: 1.5em; margin: 8px 0 0; }
+.zone-missing-head { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.zone-missing { display: flex; flex-wrap: wrap; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.zone-missing li {
+  min-width: 2.2em;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--glass-line);
+  background: var(--field);
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+.zone-other { margin: 8px 0 0; }
+
+/* On a page of its own, the map fills the window. */
+body.solo .zone-svg { max-height: calc(100vh - 230px); }

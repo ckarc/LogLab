@@ -40,6 +40,10 @@
        "sections": true, "also": ["DX"]}
     ]
   },
+  "stats": {
+    "show": ["rate", "hourly", "score", "band_mode", "operators", "dupes", "sections"],
+    "points": {"CW": 2, "Digital": 2, "Phone": 1}
+  },
   "entry": {
     "fields": ["CALL", "CLASS", "ARRL_SECT", "BAND", "MODE", "FREQ", "QSO_DATE", "TIME_ON", "COMMENT"],
     "live": true
@@ -48,6 +52,7 @@
     "modules": [
       {"id": "entry", "width": "half", "side": "left"},
       {"id": "map", "width": "half", "side": "right"},
+      {"id": "stats"},
       {"id": "journal"},
       {"id": "log"},
       {"id": "detail"}

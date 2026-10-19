@@ -23,12 +23,15 @@ sending it again from its journal never creates a duplicate.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import time
 import uuid
 from collections import Counter
-from collections.abc import Awaitable, Callable, Iterable, Iterator, Mapping
-from datetime import UTC, date, datetime
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable, Iterator, Mapping
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from importlib.resources import files
 from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
 
@@ -44,7 +47,7 @@ from fastapi import (
     Response,
     status,
 )
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import (
     AwareDatetime,
@@ -56,6 +59,7 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+from starlette.concurrency import run_in_threadpool
 
 from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
@@ -75,7 +79,9 @@ from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, ht
 from loglab_engine.callbook.service import SOURCE as CALLBOOK_SOURCE
 from loglab_engine.contests import EVERYDAY, Earlier, Overlay, Worked, overlays, sent_problems
 from loglab_engine.contests import check as contest_check
+from loglab_engine.contests.overlay import Band, ModeName, StatId
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
+from loglab_engine.contests.stats import Logged, operation_stats
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -88,17 +94,24 @@ from loglab_engine.lotw import (
 )
 from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
+from loglab_engine.onair import OnAir, Report
+from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
 from loglab_engine.reference import (
     SECTIONS,
+    ZONE_FIELDS,
+    ZONES,
+    ZoneKind,
     distance_km,
     grid_place,
     record_place,
     tally_sections,
+    tally_zones,
 )
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.reference import Place as MapPlace
 from loglab_engine.reference.licenses import FCC_CREDIT, ISED_CREDIT
 from loglab_engine.reference.refresh import Downloads, HttpDownloads, Refresher
+from loglab_engine.rig import Radio, RigBoard, RigMode, RigState, adif_mode, band_for
 from loglab_engine.store import (
     Actor,
     ArchivedError,
@@ -117,6 +130,7 @@ from loglab_engine.store import (
     WorkspaceStore,
     connect,
 )
+from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
 from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
 from loglab_engine.store.lotw import LotwAccountStore
@@ -191,6 +205,60 @@ _CALL_PATTERN: Final = r"^[A-Za-z0-9]+(/[A-Za-z0-9]+)*$"
 CallSign = Annotated[str, StringConstraints(max_length=20, pattern=_CALL_PATTERN)]
 
 
+class OnAirIn(_Strict):
+    """What a workstation is set to now: the band and mode in its New QSO box.
+
+    ``gota`` says it is the GOTA station, so it is on the air as the GOTA call.
+    """
+
+    band: Band | None = None
+    mode: ModeName | None = None
+    submode: ModeName | None = None
+    gota: bool = False
+
+
+# Text a radio or the Agent names itself with: printable, no control characters.
+_PLAIN: Final = r"^[^\x00-\x1f\x7f]*$"
+
+
+class RadioPathIn(_Strict):
+    """How the Agent reaches the radio: through Hamlib (with its model number), or pretend."""
+
+    kind: Literal["hamlib", "pretend"]
+    model: Annotated[int, Field(ge=1, le=99_999)] | None = None
+
+
+class RadioIn(_Strict):
+    """A radio and its live state, as the radio reported it to the Agent (Principle X)."""
+
+    maker: Annotated[str, StringConstraints(min_length=1, max_length=40, pattern=_PLAIN)]
+    model: Annotated[str, StringConstraints(min_length=1, max_length=40, pattern=_PLAIN)]
+    path: RadioPathIn
+    frequency_hz: Annotated[int, Field(ge=1, le=300_000_000_000)]
+    mode: RigMode | None = None
+    passband_hz: Annotated[int, Field(ge=1, le=1_000_000)] | None = None
+    ptt: bool | None = None
+    vfo: Annotated[str, StringConstraints(max_length=16, pattern=_PLAIN)] | None = None
+
+
+class AgentReportIn(_Strict):
+    """What a station's Agent says: its radio's live state, or why it can't read it."""
+
+    agent: Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=_PLAIN)]
+    radio: RadioIn | None = None
+    problem: Annotated[str, StringConstraints(max_length=300, pattern=_PLAIN)] | None = None
+
+
+StationName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+
+
+class PairingAskIn(_Strict):
+    """A Station Agent asking to join as a station."""
+
+    station: StationName
+    agent: Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=_PLAIN)]
+
+
 class OperationIn(_Strict):
     """An operation as an administrator sets it up.
 
@@ -248,6 +316,178 @@ class OperationSummaryOut(BaseModel):
     by_operator: list[TallyOut]
 
 
+class HourOut(BaseModel):
+    """The QSOs made in one UTC hour."""
+
+    start: datetime
+    qsos: int
+
+
+class BandModeOut(BaseModel):
+    """Counting QSOs on one band in one mode group, and the points they earn."""
+
+    band: str
+    mode: str
+    qsos: int
+    points: int
+
+
+class OperatorStatsOut(BaseModel):
+    """One operator's QSOs in an operation, in all and in the last hour."""
+
+    operator: str
+    qsos: int
+    last_hour: int
+    points: int
+
+
+class OperationStatsOut(BaseModel):
+    """How the whole group is doing in an operation, for the Operation stats box.
+
+    ``show`` lists the stats the overlay asks the box to show, in order.
+    ``counted`` QSOs count in the contest and are not dupes. ``rate`` is the
+    QSOs per hour at the pace of the last ten minutes. ``score`` is the
+    overlay's QSO points (``null`` when it gives none), before power
+    multipliers and bonus points.
+    """
+
+    operation: uuid.UUID
+    name: str
+    overlay_name: str
+    show: list[StatId]
+    now: datetime
+    starts_at: datetime | None
+    ends_at: datetime | None
+    qsos: int
+    counted: int
+    outside: int
+    not_counted: int
+    dupes: int
+    last_hour: int
+    last_10: int
+    rate: int
+    hourly: list[HourOut]
+    best_hour: HourOut | None
+    by_band_mode: list[BandModeOut]
+    by_mode: dict[str, int]
+    operators: list[OperatorStatsOut]
+    sections_worked: int
+    sections_total: int
+    score: int | None
+    points: dict[str, int]
+
+
+class OnAirOut(BaseModel):
+    """One workstation on the air in an operation.
+
+    ``active`` means its operator logged a QSO in the operation in the last
+    ``active_minutes``; ``clash`` that another workstation is on the same band
+    in the same mode group as the same call (Field Day allows one transmitter
+    per band and mode). ``mode_group`` is ``null`` outside a contest.
+
+    ``from_radio`` means the station's Agent is reporting its radio, so the
+    band (and the mode, unless the radio is set up for data) are the radio's,
+    not what was typed (Principle X); ``frequency_hz`` and ``transmitting``
+    are then the radio's too.
+    """
+
+    operator: str
+    station: str
+    call: str
+    band: str | None
+    mode: str | None
+    mode_group: str | None
+    seen_at: datetime
+    last_qso: datetime | None
+    active: bool
+    clash: bool
+    you: bool
+    from_radio: bool = False
+    frequency_hz: int | None = None
+    transmitting: bool | None = None
+
+
+class RadioOut(BaseModel):
+    """A station's radio, live: what the radio last reported, through its Agent.
+
+    ``mode`` is the radio's own (``USB``, ``CW``, ``DATA-USB``...);
+    ``adif_mode`` and ``adif_submode`` are what a QSO would record, or
+    ``null`` when the radio is set up for data and the operator says which
+    data mode. ``transmitting`` is ``null`` when the radio can't say.
+    """
+
+    maker: str
+    model: str
+    path: str
+    frequency_hz: int
+    mhz: str
+    band: str | None
+    mode: str | None
+    adif_mode: str | None
+    adif_submode: str | None
+    passband_hz: int | None
+    transmitting: bool | None
+    vfo: str | None
+
+
+class RigOut(BaseModel):
+    """The radio at the signed-in station, as its Station Agent reports it.
+
+    ``heard`` is false when no Agent at this station has reported lately;
+    ``radio`` is ``null`` when the Agent can't read the radio, and ``problem``
+    then says why.
+    """
+
+    station: str
+    heard: bool
+    agent: str | None
+    radio: RadioOut | None
+    problem: str | None
+    heard_at: datetime | None
+
+
+class PairingAskOut(BaseModel):
+    """The Agent's request: the code it shows, and its private ticket for asking how it stands."""
+
+    id: uuid.UUID
+    code: str
+    ticket: str
+    expires_at: datetime
+
+
+class PairingStateOut(BaseModel):
+    """How an Agent's request stands; ``key`` comes once, when it is approved."""
+
+    state: Literal["waiting", "approved", "refused", "expired"]
+    key: str | None
+
+
+class PairingOut(BaseModel):
+    """A request an administrator can approve. ``replaces`` means the station already has a key."""
+
+    id: uuid.UUID
+    station: str
+    agent: str
+    code: str
+    asked_at: datetime
+    replaces: bool
+
+
+class AgentKeysOut(BaseModel):
+    """The stations whose Agents have a working key."""
+
+    stations: list[str]
+
+
+class OnAirListOut(BaseModel):
+    """Who is on the air in an operation now."""
+
+    operation: uuid.UUID
+    name: str
+    active_minutes: int
+    stations: list[OnAirOut]
+
+
 class OperationOut(BaseModel):
     """An operation: its overlay, calls, and the exchange it sends."""
 
@@ -295,7 +535,19 @@ class QsoChange(_Strict):
 
 
 MAX_PATHS: Final = 500  # the most QSOs the world map draws
-ModuleId = Literal["entry", "profile", "journal", "log", "detail", "map", "world"]
+ModuleId = Literal[
+    "entry",
+    "profile",
+    "journal",
+    "log",
+    "detail",
+    "map",
+    "world",
+    "cqzones",
+    "ituzones",
+    "stats",
+    "onair",
+]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
 ColumnId = Annotated[
@@ -600,6 +852,29 @@ class SectionsOut(BaseModel):
     unrecognized: list[ValueCount]
     without_section: int
     source: str
+
+
+class ZoneOut(BaseModel):
+    """One CQ or ITU zone, and how many QSOs in the log are with it."""
+
+    zone: int
+    qsos: int
+
+
+class ZonesOut(BaseModel):
+    """Every CQ zone, or every ITU zone, and how many QSOs the log has in each.
+
+    A QSO's zone is its ADIF ``CQZ`` or ``ITUZ`` field, named in ``field``.
+    ``unrecognized`` lists the values that name no zone; ``without_zone``
+    counts QSOs with none.
+    """
+
+    kind: ZoneKind
+    field: str
+    zones: list[ZoneOut]
+    worked: int
+    unrecognized: list[ValueCount]
+    without_zone: int
 
 
 class PlaceOut(BaseModel):
@@ -982,10 +1257,12 @@ def whoami(who: Signed, conn: Conn) -> SessionOut:
 
 
 @api.delete("/sessions/current", status_code=status.HTTP_204_NO_CONTENT)
-def sign_out(who: Signed, conn: Conn, authorization: Annotated[str, Header()]) -> None:
-    """End this session."""
-    del who  # authenticated above; an ended session cannot sign out again
+def sign_out(
+    who: Signed, conn: Conn, board: Board, authorization: Annotated[str, Header()]
+) -> None:
+    """End this session, and take it off the On air list."""
     IdentityStore(conn).sign_out(authorization.partition(" ")[2].strip())
+    board.leave(who.session_id)
 
 
 @api.get("/layout")
@@ -1057,6 +1334,30 @@ def list_sections(
         unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
         without_section=tally.without_section,
         source=SECTIONS_SOURCE,
+    )
+
+
+@api.get("/zones")
+def list_zones(
+    who: Signed,
+    conn: Conn,
+    kind: Annotated[ZoneKind, Query()],
+    operation: Annotated[uuid.UUID | None, Query()] = None,
+) -> ZonesOut:
+    """The CQ or ITU zones, each with how many current QSOs are in it.
+
+    This is what the zone maps colour in. Deleted QSOs do not count; with
+    ``operation``, only the QSOs logged in that operation do.
+    """
+    _require(conn, who, Permission.VIEW)
+    tally = tally_zones(kind, LogStore(conn).field_counts(ZONE_FIELDS[kind], operation))
+    return ZonesOut(
+        kind=kind,
+        field=ZONE_FIELDS[kind],
+        zones=[ZoneOut(zone=z, qsos=tally.worked.get(z, 0)) for z in range(1, ZONES[kind] + 1)],
+        worked=len(tally.worked),
+        unrecognized=[ValueCount(value=v, qsos=n) for v, n in sorted(tally.unrecognized.items())],
+        without_zone=tally.without_zone,
     )
 
 
@@ -1301,6 +1602,444 @@ def summarize_operation(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Ope
         ],
         by_operator=[TallyOut(operator=o, qsos=n) for o, n in by_operator.most_common()],
     )
+
+
+@api.get("/operations/{operation_id}/stats")
+def operation_stats_out(operation_id: uuid.UUID, who: Signed, conn: Conn) -> OperationStatsOut:
+    """The whole group's stats in an operation: rate, hours, bands, operators, score.
+
+    Every operating position asks for the same numbers, so they all agree
+    (Principle II). Which stats a box shows is set by the overlay.
+    """
+    _require(conn, who, Permission.VIEW)
+    op = OperationStore(conn).get(operation_id)
+    found = _find(conn, op.overlay, include_retired=True)
+    logged = [
+        Logged(
+            fields={f.name.upper(): f.value for f in reversed(v.record.fields)},
+            qso_start=v.qso_start,
+            operator=v.operator,
+        )
+        for v in LogStore(conn).operation_qsos(op.id)
+    ]
+    stats = operation_stats(
+        found, logged, starts_at=op.starts_at, ends_at=op.ends_at, now=datetime.now(UTC)
+    )
+    return OperationStatsOut(
+        operation=op.id,
+        name=op.name,
+        overlay_name=found.name if found is not None else op.overlay,
+        show=list(found.shown_stats if found is not None else ("rate", "hourly", "operators")),
+        now=stats.now,
+        starts_at=op.starts_at,
+        ends_at=op.ends_at,
+        qsos=stats.qsos,
+        counted=stats.counted,
+        outside=stats.outside,
+        not_counted=stats.not_counted,
+        dupes=stats.dupes,
+        last_hour=stats.last_hour,
+        last_10=stats.last_10,
+        rate=stats.last_10 * 6,
+        hourly=[HourOut(start=h.start, qsos=h.qsos) for h in stats.hourly],
+        best_hour=(
+            HourOut(start=stats.best_hour.start, qsos=stats.best_hour.qsos)
+            if stats.best_hour is not None
+            else None
+        ),
+        by_band_mode=[
+            BandModeOut(band=b.band, mode=b.mode, qsos=b.qsos, points=b.points)
+            for b in stats.by_band_mode
+        ],
+        by_mode=dict(stats.by_mode),
+        operators=[
+            OperatorStatsOut(
+                operator=o.operator, qsos=o.qsos, last_hour=o.last_hour, points=o.points
+            )
+            for o in stats.operators
+        ],
+        sections_worked=stats.sections_worked,
+        sections_total=stats.sections_total,
+        score=stats.score,
+        points=dict(stats.points),
+    )
+
+
+ACTIVE: Final = timedelta(minutes=15)
+
+
+def _on_air(request: Request) -> OnAir:
+    board: OnAir = request.app.state.on_air
+    return board
+
+
+Board = Annotated[OnAir, Depends(_on_air)]
+
+
+def _rigs(request: Request) -> RigBoard:
+    rigs: RigBoard = request.app.state.rig
+    return rigs
+
+
+Rigs = Annotated[RigBoard, Depends(_rigs)]
+
+
+def _from_radio(report: Report, radio: Radio) -> Report:
+    """A workstation's line with the band, and the mode unless it is data, from its radio."""
+    adif = adif_mode(radio.mode)
+    mode, submode = adif if adif is not None else (report.mode, report.submode)
+    return replace(report, band=band_for(radio.frequency_hz), mode=mode, submode=submode)
+
+
+def _on_air_out(
+    conn: Conn, who: Actor, board: OnAir, rigs: RigBoard, op: Operation
+) -> OnAirListOut:
+    now = datetime.now(UTC)
+    found = _find(conn, op.overlay, include_retired=True)
+    last: dict[str, datetime] = {}
+    for v in LogStore(conn).operation_qsos(op.id):
+        name = (v.record.get("OPERATOR") or v.operator).strip().upper()
+        if v.qso_start is not None and (name not in last or v.qso_start > last[name]):
+            last[name] = v.qso_start
+    entered = board.current(op.id, now)
+    radios: dict[str, Radio] = {}
+    for r in entered:
+        live = rigs.current(r.station, now)
+        if live is not None and live.radio is not None:
+            radios[r.station] = live.radio
+    reports = [_from_radio(r, radios[r.station]) if r.station in radios else r for r in entered]
+
+    def group(r: Report) -> str | None:
+        if found is None or found.modes is None:
+            return None
+        return found.modes.group(r.mode, r.submode)
+
+    def slot(r: Report) -> tuple[str, str, str] | None:
+        g = group(r)
+        return (r.call, r.band, g) if r.band and g else None
+
+    slots = Counter(s for s in map(slot, reports) if s is not None)
+    return OnAirListOut(
+        operation=op.id,
+        name=op.name,
+        active_minutes=int(ACTIVE.total_seconds() // 60),
+        stations=[
+            OnAirOut(
+                operator=r.operator,
+                station=r.station,
+                call=r.call,
+                band=r.band,
+                mode=r.submode or r.mode,
+                mode_group=group(r),
+                seen_at=r.seen_at,
+                last_qso=last.get(r.operator),
+                active=r.operator in last and now - last[r.operator] <= ACTIVE,
+                clash=(s := slot(r)) is not None and slots[s] > 1,
+                you=r.session_id == who.session_id,
+                from_radio=r.station in radios,
+                frequency_hz=radios[r.station].frequency_hz if r.station in radios else None,
+                transmitting=radios[r.station].ptt if r.station in radios else None,
+            )
+            for r in reports
+        ],
+    )
+
+
+@api.get("/operations/{operation_id}/on-air")
+def list_on_air(
+    operation_id: uuid.UUID, who: Signed, conn: Conn, board: Board, rigs: Rigs
+) -> OnAirListOut:
+    """The workstations on the air in an operation now, with their band and mode."""
+    _require(conn, who, Permission.VIEW)
+    return _on_air_out(conn, who, board, rigs, OperationStore(conn).get(operation_id))
+
+
+@api.put("/operations/{operation_id}/on-air")
+def report_on_air(  # noqa: PLR0913 - the board and the rigs are both live state
+    operation_id: uuid.UUID,
+    body: OnAirIn,
+    *,
+    who: Signed,
+    conn: Conn,
+    board: Board,
+    rigs: Rigs,
+) -> OnAirListOut:
+    """Say what this workstation is set to now; the answer is who is on the air.
+
+    A browser sends this every so often while it is in the operation. Live
+    state only: nothing is written to the log.
+    """
+    _require(conn, who, Permission.LOG)
+    op = OperationStore(conn).get(operation_id)
+    if op.ended or op.over(datetime.now(UTC)):
+        board.leave(who.session_id)
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the operation {op.name} has ended")
+    call = op.gota_call if body.gota and op.gota_call else op.station_call
+    board.report(
+        Report(
+            session_id=who.session_id,
+            operation=op.id,
+            operator=who.operator,
+            station=who.station,
+            call=call,
+            band=body.band,
+            mode=body.mode,
+            submode=body.submode,
+            seen_at=datetime.now(UTC),
+        )
+    )
+    return _on_air_out(conn, who, board, rigs, op)
+
+
+@api.delete("/operations/{operation_id}/on-air", status_code=status.HTTP_204_NO_CONTENT)
+def leave_on_air(operation_id: uuid.UUID, who: Signed, board: Board) -> None:
+    """Take this workstation off the On air list, as when it leaves the operation."""
+    del operation_id  # a session is on the air in one operation at a time
+    board.leave(who.session_id)
+
+
+# -- The station's radio, through its Station Agent ---------------------------
+
+# How often a stream re-checks that its session is still live.
+_RECHECK_SECONDS: Final = 60.0
+# How often a stream says something even when nothing has changed, so a
+# browser can tell a quiet radio from a lost connection.
+_KEEPALIVE_SECONDS: Final = 10.0
+_STREAM_POLL_SECONDS: Final = 0.2
+
+
+def _agent_station(conn: Conn, authorization: Annotated[str | None, Header()] = None) -> str:
+    scheme, _, key = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not key.strip():
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED,
+            "send this station's key (Principle XIII)",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return AgentKeyStore(conn).authenticate(key.strip())
+
+
+AgentStation = Annotated[str, Depends(_agent_station)]
+
+
+def _radio_path(path: RadioPathIn) -> str:
+    if path.kind == "pretend":
+        return "pretend"
+    return f"Hamlib model {path.model}" if path.model is not None else "Hamlib"
+
+
+def _rig_out(station: str, state: RigState | None) -> RigOut:
+    if state is None:
+        return RigOut(
+            station=station, heard=False, agent=None, radio=None, problem=None, heard_at=None
+        )
+    radio = state.radio
+    out = None
+    if radio is not None:
+        adif = adif_mode(radio.mode)
+        hz = radio.frequency_hz
+        out = RadioOut(
+            maker=radio.maker,
+            model=radio.model,
+            path=radio.path,
+            frequency_hz=hz,
+            mhz=f"{hz // 1_000_000}.{hz % 1_000_000:06d}",
+            band=band_for(hz),
+            mode=radio.mode,
+            adif_mode=adif[0] if adif else None,
+            adif_submode=adif[1] if adif else None,
+            passband_hz=radio.passband_hz,
+            transmitting=radio.ptt,
+            vfo=radio.vfo,
+        )
+    return RigOut(
+        station=station,
+        heard=True,
+        agent=state.agent,
+        radio=out,
+        problem=state.problem,
+        heard_at=state.heard_at,
+    )
+
+
+@api.put("/agent/rig", status_code=status.HTTP_204_NO_CONTENT)
+def report_rig(body: AgentReportIn, station: AgentStation, rigs: Rigs) -> None:
+    """A Station Agent reports its radio's live state, with its station key.
+
+    The Agent sends this whenever the radio reports a change, and every few
+    seconds otherwise. Live state only: nothing is written to the log, and
+    nothing goes back to the radio (Principle X).
+    """
+    radio = body.radio
+    rigs.report(
+        RigState(
+            station=station,
+            agent=body.agent,
+            radio=None
+            if radio is None
+            else Radio(
+                maker=radio.maker,
+                model=radio.model,
+                path=_radio_path(radio.path),
+                frequency_hz=radio.frequency_hz,
+                mode=radio.mode,
+                passband_hz=radio.passband_hz,
+                ptt=radio.ptt,
+                vfo=radio.vfo,
+            ),
+            problem=body.problem if radio is None else None,
+            heard_at=datetime.now(UTC),
+        )
+    )
+
+
+def _desk(request: Request) -> PairingDesk:
+    desk: PairingDesk = request.app.state.pairings
+    return desk
+
+
+Desk = Annotated[PairingDesk, Depends(_desk)]
+
+
+@api.post("/agent/pairings", status_code=status.HTTP_201_CREATED)
+def ask_to_pair(body: PairingAskIn, desk: Desk) -> PairingAskOut:
+    """A Station Agent with no key asks to join as a station. No sign-in needed.
+
+    The request grants nothing: an administrator must approve it, after
+    checking that the code the Agent shows matches (Principle XIII).
+    """
+    now = datetime.now(UTC)
+    try:
+        pairing, ticket = desk.ask(body.station, body.agent, now)
+    except PairingError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
+    return PairingAskOut(
+        id=pairing.id, code=pairing.code, ticket=ticket, expires_at=pairing.asked_at + LIFETIME
+    )
+
+
+@api.get("/agent/pairings/{pairing_id}")
+def pairing_state(
+    pairing_id: uuid.UUID, desk: Desk, authorization: Annotated[str | None, Header()] = None
+) -> PairingStateOut:
+    """How an Agent's request stands, asked with its ticket; the key comes once."""
+    scheme, _, ticket = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not ticket.strip():
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "send the request's ticket")
+    state, key = desk.collect(pairing_id, ticket.strip(), datetime.now(UTC))
+    return PairingStateOut(state=state, key=key)
+
+
+def _pairing_out(pairing: Pairing, keyed: set[str]) -> PairingOut:
+    return PairingOut(
+        id=pairing.id,
+        station=pairing.station,
+        agent=pairing.agent,
+        code=pairing.code,
+        asked_at=pairing.asked_at,
+        replaces=pairing.station in keyed,
+    )
+
+
+@api.get("/agent/pairings")
+def list_pairings(who: Signed, conn: Conn, desk: Desk) -> list[PairingOut]:
+    """The Agents waiting to join, for an administrator to approve or refuse."""
+    _require(conn, who, Permission.ADMIN)
+    keyed = set(AgentKeyStore(conn).stations())
+    return [_pairing_out(p, keyed) for p in desk.waiting(datetime.now(UTC))]
+
+
+@api.post("/agent/pairings/{pairing_id}/approve", status_code=status.HTTP_204_NO_CONTENT)
+def approve_pairing(pairing_id: uuid.UUID, who: Signed, conn: Conn, desk: Desk) -> None:
+    """Let the Agent join: make its station's key, which the Agent then collects.
+
+    Any key the station had before stops working.
+    """
+    _require(conn, who, Permission.ADMIN)
+    now = datetime.now(UTC)
+    try:
+        pairing = desk.find(pairing_id, now)
+        key = AgentKeyStore(conn).make(who, pairing.station)
+        desk.decide(pairing_id, who.operator, key, now)
+    except PairingError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+
+
+@api.post("/agent/pairings/{pairing_id}/refuse", status_code=status.HTTP_204_NO_CONTENT)
+def refuse_pairing(pairing_id: uuid.UUID, who: Signed, conn: Conn, desk: Desk) -> None:
+    """Turn an Agent's request down; it gets no key."""
+    _require(conn, who, Permission.ADMIN)
+    try:
+        desk.decide(pairing_id, who.operator, None, datetime.now(UTC))
+    except PairingError as error:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+
+
+@api.get("/agent/keys")
+def list_agent_keys(who: Signed, conn: Conn) -> AgentKeysOut:
+    """The stations whose Agents have a working key."""
+    _require(conn, who, Permission.ADMIN)
+    return AgentKeysOut(stations=list(AgentKeyStore(conn).stations()))
+
+
+@api.delete("/agent/keys/{station}", status_code=status.HTTP_204_NO_CONTENT)
+def end_agent_key(station: str, who: Signed, conn: Conn) -> None:
+    """End a station's key, so its Agent is refused until it joins again."""
+    _require(conn, who, Permission.ADMIN)
+    AgentKeyStore(conn).end(who, station)
+
+
+@api.get("/rig")
+def get_rig(who: Signed, conn: Conn, rigs: Rigs) -> RigOut:
+    """The radio at the signed-in operator's station, as its Agent last reported it."""
+    _require(conn, who, Permission.VIEW)
+    return _rig_out(who.station, rigs.current(who.station, datetime.now(UTC)))
+
+
+@api.get("/rig/stream", response_model=None)
+async def stream_rig(
+    request: Request,
+    max_seconds: Annotated[int, Query(ge=1, le=3600)] = 600,
+    authorization: Annotated[str | None, Header()] = None,
+) -> StreamingResponse:
+    """The radio at the signed-in operator's station, live: one JSON line per change.
+
+    Each line is shaped like ``GET /rig``. A line also comes every few seconds
+    when nothing changes. The stream ends after ``max_seconds`` or when the
+    session ends; a client then opens a new one.
+    """
+    database: str = request.app.state.database
+    rigs: RigBoard = request.app.state.rig
+
+    def check() -> Actor:
+        with connect(database) as conn:
+            who = _actor(conn, authorization)
+            _require(conn, who, Permission.VIEW)
+            return who
+
+    who = await run_in_threadpool(check)
+
+    async def lines() -> AsyncIterator[bytes]:
+        started = checked = time.monotonic()
+        seen: tuple[int, bool] | None = None
+        said = 0.0
+        while time.monotonic() - started < max_seconds:
+            if time.monotonic() - checked >= _RECHECK_SECONDS:
+                try:
+                    await run_in_threadpool(check)
+                except (StoreError, HTTPException):
+                    return
+                checked = time.monotonic()
+            state = rigs.current(who.station, datetime.now(UTC))
+            now_seen = (rigs.version(who.station), state is None)
+            if now_seen != seen or time.monotonic() - said >= _KEEPALIVE_SECONDS:
+                yield (_rig_out(who.station, state).model_dump_json() + "\n").encode()
+                seen, said = now_seen, time.monotonic()
+            if await request.is_disconnected():
+                return
+            await asyncio.sleep(_STREAM_POLL_SECONDS)
+
+    return StreamingResponse(lines(), media_type="application/x-ndjson")
 
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
@@ -2062,6 +2801,7 @@ def delete_qrz_logbook(who: Signed, conn: Conn) -> None:
 
 _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (SignInError, status.HTTP_401_UNAUTHORIZED),
+    (AgentKeyError, status.HTTP_401_UNAUTHORIZED),
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
     (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
@@ -2135,6 +2875,9 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
         database, license_downloads or HttpDownloads(f"LogLab/{__version__} ({SOURCE})")
     )
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
+    app.state.on_air = OnAir()
+    app.state.rig = RigBoard()
+    app.state.pairings = PairingDesk()
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

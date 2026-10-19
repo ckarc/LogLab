@@ -7,8 +7,33 @@ compatible with the AGPL-3.0 are permitted; CI enforces this with the
 
 ## Shipped components
 
-The Station Agent has no crate dependencies yet. The Engine's runtime
-dependencies:
+The Station Agent's crates, compiled into its single executable:
+
+| Component        | Used for                                  | License                          |
+| ---------------- | ----------------------------------------- | -------------------------------- |
+| ureq, ureq-proto | Sending the radio's state to the Engine   | MIT OR Apache-2.0                |
+| http, httparse   | ureq dependencies (HTTP types and parser) | MIT OR Apache-2.0                |
+| base64, log, percent-encoding, utf8-zero | ureq dependencies | MIT OR Apache-2.0           |
+| bytes            | http dependency                           | MIT                              |
+| itoa             | http and serde_json dependency            | MIT OR Apache-2.0                |
+| serde, serde_core, serde_json | Writing the Agent's reports as JSON | MIT OR Apache-2.0           |
+| memchr           | serde_json dependency                     | Unlicense OR MIT                 |
+| zmij             | serde_json dependency (number formatting) | MIT                              |
+| ctrlc            | Stopping Hamlib when the Agent is stopped | MIT OR Apache-2.0                |
+| nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
+| windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
+| dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |
+| serde_derive, syn, proc-macro2, quote | Build time only (serde's derive) | MIT OR Apache-2.0  |
+| cfg_aliases      | Build time only (nix dependency)          | MIT                              |
+| unicode-ident    | Build time only (syn dependency)          | (MIT OR Apache-2.0) AND Unicode-3.0 |
+
+The Agent can also run Hamlib's `rigctld` (https://hamlib.github.io; the
+library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a
+radio. Hamlib is installed separately and runs as its own program, which the
+Agent talks to over Hamlib's documented network protocol; none of its code is
+in LogLab, and LogLab does not ship it.
+
+The Engine's runtime dependencies:
 
 | Component         | Used for                           | License       |
 | ----------------- | ---------------------------------- | ------------- |
@@ -41,6 +66,7 @@ a permissive BSD-style license), which LogLab does not ship.
 | --------- | -------- | ------- |
 | Natural Earth 1:10m admin-1 states and provinces, admin-2 counties, lakes ([naturalearthdata.com](https://www.naturalearthdata.com), commit `ca96624` of github.com/nvkelso/natural-earth-vector) | The shapes of the section map (`engine/src/loglab_engine/web/maps/arrl-sections.json`) | Public domain |
 | Natural Earth 1:110m admin-0 countries (same source and commit) | The countries of the world map (`engine/src/loglab_engine/web/maps/world.json`, built by `engine/tools/build_world_map.py`) | Public domain |
+| [HB9HIL/hamradio-zones-geojson](https://github.com/HB9HIL/hamradio-zones-geojson), commit `091b813` | The shapes of the CQ zone and ITU zone maps (`engine/src/loglab_engine/web/maps/cq-zones.json` and `itu-zones.json`, built by `engine/tools/build_zone_maps.py`; the license is kept in `engine/tools/hb9hil-zones/LICENSE`) | MIT |
 | [@ham2k/lib-arrl-data](https://github.com/ham2k/ham-js-libs) 1.2.0 | The ARRL and RAC section list, and which county is in which section (`engine/tools/ham2k/`, with its license) | MIT |
 
 | [ft8_lib](https://github.com/kgoba/ft8_lib) by Kārlis Goba, YL3JG, commit `9fec6ca` | The generator matrix of FT8's (174,91) LDPC code (`agent/src/ft8/ldpc_generator.rs`, converted from its bit-packed table; the license is kept in `agent/src/ft8/ft8_lib-LICENSE.txt`) | MIT |
@@ -75,6 +101,10 @@ PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT
 HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
 ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+The CQ and ITU zone shapes are MIT-licensed under the same terms as above;
+their notice ships in `engine/tools/hb9hil-zones/LICENSE` and in each map
+file's `source`: Copyright (c) 2024 HB9HIL.
 
 The FT8 LDPC generator matrix is one of FT8's published protocol constants,
 the same in every FT8 implementation (FT8 itself is by K1JT, K9AN and G4WJS).
