@@ -1,0 +1,153 @@
+{
+  "format": 1,
+  "id": "cq-ww-ssb",
+  "name": "CQ WW DX SSB",
+  "summary": "Exchange a signal report and your CQ zone, like 59 04. Each station counts once per band. Phone only, on 160 to 10 m without the WARC bands.",
+  "contest_id": "CQ-WW-SSB",
+  "rules": {
+    "title": "2026 CQ World Wide DX Contest Rules",
+    "url": "https://cqww.com/rules/2026_rules_cqww.pdf",
+    "revised": "2026-09-05",
+    "period": "Last full weekend of October, 0000 UTC Saturday to 2359 UTC Sunday (2026: October 24-25)."
+  },
+  "bands": {
+    "allowed": [
+      "160m",
+      "80m",
+      "40m",
+      "20m",
+      "15m",
+      "10m"
+    ]
+  },
+  "modes": {
+    "cw": [
+      "CW"
+    ],
+    "phone": [
+      "SSB",
+      "AM",
+      "FM",
+      "DIGITALVOICE"
+    ],
+    "excluded": [
+      "CW",
+      "RTTY",
+      "PSK",
+      "FT8",
+      "FT4",
+      "FST4",
+      "FST4W",
+      "JT4",
+      "JT6M",
+      "JT9",
+      "JT44",
+      "JT65",
+      "ISCAT",
+      "JTMS",
+      "MSK144",
+      "Q65",
+      "WSPR",
+      "MFSK",
+      "OLIVIA",
+      "CONTESTI",
+      "DOMINO",
+      "HELL",
+      "MT63",
+      "PKT",
+      "PAC",
+      "SSTV",
+      "THOR",
+      "THRB",
+      "VARA",
+      "JS8",
+      "OPERA",
+      "ROS",
+      "DSTAR",
+      "C4FM",
+      "DMR"
+    ]
+  },
+  "dupes": {
+    "per": [
+      "band"
+    ],
+    "rule": "Rule IV: stations may be contacted once on each band. Zone and country multipliers count once per band."
+  },
+  "exchange": {
+    "sent": [
+      {
+        "key": "zone",
+        "label": "Your CQ zone",
+        "hint": "The CQ zone you transmit from, like 4",
+        "pattern": "^([1-9]|[1-3][0-9]|40)$"
+      }
+    ],
+    "sent_fields": {
+      "MY_CQ_ZONE": "{zone}"
+    },
+    "received": [
+      {
+        "key": "rst",
+        "field": "RST_RCVD",
+        "label": "Report",
+        "hint": "Like 59",
+        "pattern": "^[1-5][1-9]$"
+      },
+      {
+        "key": "zone",
+        "field": "CQZ",
+        "label": "CQ zone",
+        "hint": "Like 14",
+        "pattern": "^([1-9]|[1-3][0-9]|40)$"
+      }
+    ]
+  },
+  "entry": {
+    "fields": [
+      "CALL",
+      "RST_SENT",
+      "RST_RCVD",
+      "CQZ",
+      "BAND",
+      "MODE",
+      "FREQ",
+      "QSO_DATE",
+      "TIME_ON",
+      "COMMENT"
+    ],
+    "live": true
+  },
+  "layout": {
+    "modules": [
+      {
+        "id": "entry",
+        "width": "half",
+        "side": "left"
+      },
+      {
+        "id": "cqzones",
+        "width": "half",
+        "side": "right"
+      },
+      {
+        "id": "journal"
+      },
+      {
+        "id": "log"
+      },
+      {
+        "id": "detail"
+      }
+    ],
+    "log_columns": [
+      "time",
+      "call",
+      "band",
+      "mode",
+      "field:RST_RCVD",
+      "field:CQZ",
+      "operator"
+    ]
+  }
+}

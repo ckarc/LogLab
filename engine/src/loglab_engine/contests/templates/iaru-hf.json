@@ -1,0 +1,153 @@
+{
+  "format": 1,
+  "id": "iaru-hf",
+  "name": "IARU HF World Championship",
+  "summary": "Exchange a signal report and your ITU zone, like 599 08. Each station counts once per band and mode (CW, Phone). HQ stations send their society instead of a zone.",
+  "contest_id": "IARU-HF",
+  "rules": {
+    "title": "IARU HF World Championship Rules, Version 1.21",
+    "url": "https://contests.arrl.org/ContestRules/IARU-HF-Rules.pdf",
+    "revised": "2026-10-19",
+    "period": "Second full weekend of July, 1200 UTC Saturday to 1159 UTC Sunday. (The rules are undated; revised is the day they were checked.)"
+  },
+  "bands": {
+    "allowed": [
+      "160m",
+      "80m",
+      "40m",
+      "20m",
+      "15m",
+      "10m"
+    ]
+  },
+  "modes": {
+    "cw": [
+      "CW"
+    ],
+    "phone": [
+      "SSB",
+      "AM",
+      "FM",
+      "DIGITALVOICE"
+    ],
+    "excluded": [
+      "RTTY",
+      "PSK",
+      "FT8",
+      "FT4",
+      "FST4",
+      "FST4W",
+      "JT4",
+      "JT6M",
+      "JT9",
+      "JT44",
+      "JT65",
+      "ISCAT",
+      "JTMS",
+      "MSK144",
+      "Q65",
+      "WSPR",
+      "MFSK",
+      "OLIVIA",
+      "CONTESTI",
+      "DOMINO",
+      "HELL",
+      "MT63",
+      "PKT",
+      "PAC",
+      "SSTV",
+      "THOR",
+      "THRB",
+      "VARA",
+      "JS8",
+      "OPERA",
+      "ROS",
+      "DSTAR",
+      "C4FM",
+      "DMR"
+    ]
+  },
+  "dupes": {
+    "per": [
+      "band",
+      "mode"
+    ],
+    "rule": "Contact stations only once per band and mode (CW, Phone). ITU zones and IARU HQ stations are multipliers once per band, not per mode."
+  },
+  "exchange": {
+    "sent": [
+      {
+        "key": "zone",
+        "label": "Your ITU zone",
+        "hint": "The ITU zone you transmit from, like 8",
+        "pattern": "^([1-9]|[1-8][0-9]|90)$"
+      }
+    ],
+    "sent_fields": {
+      "MY_ITU_ZONE": "{zone}"
+    },
+    "received": [
+      {
+        "key": "rst",
+        "field": "RST_RCVD",
+        "label": "Report",
+        "hint": "Like 599 or 59",
+        "pattern": "^[1-5][1-9][1-9]?$"
+      },
+      {
+        "key": "zone",
+        "field": "ITUZ",
+        "label": "ITU zone",
+        "hint": "Like 8. An HQ station sends its society (like DARC) instead: put that in Comment.",
+        "pattern": "^([1-9]|[1-8][0-9]|90)$"
+      }
+    ]
+  },
+  "entry": {
+    "fields": [
+      "CALL",
+      "RST_SENT",
+      "RST_RCVD",
+      "ITUZ",
+      "BAND",
+      "MODE",
+      "FREQ",
+      "QSO_DATE",
+      "TIME_ON",
+      "COMMENT"
+    ],
+    "live": true
+  },
+  "layout": {
+    "modules": [
+      {
+        "id": "entry",
+        "width": "half",
+        "side": "left"
+      },
+      {
+        "id": "ituzones",
+        "width": "half",
+        "side": "right"
+      },
+      {
+        "id": "journal"
+      },
+      {
+        "id": "log"
+      },
+      {
+        "id": "detail"
+      }
+    ],
+    "log_columns": [
+      "time",
+      "call",
+      "band",
+      "mode",
+      "field:RST_RCVD",
+      "field:ITUZ",
+      "operator"
+    ]
+  }
+}
