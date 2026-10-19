@@ -13,7 +13,9 @@ from loglab_engine.callbook import (
     QrzLoginError,
     QrzReplyError,
     QrzSessionError,
+    bio_text,
     parse_reply,
+    picture_type,
 )
 from loglab_engine.callbook.qrz import MAX_REPLY, clean_text
 
@@ -135,3 +137,125 @@ def test_lookup_tells_not_found_from_an_ended_session() -> None:
     assert client.lookup("abc", "XX9XX") == (None, None)
     with pytest.raises(QrzSessionError):
         client.lookup("abc", "W1AW")
+
+
+# What QRZ.com sent for a biography on 2026-10-19: the page, after the opening
+# of an XML answer that is never closed. The words here are made up.
+BIO_PAGE = b"""<?xml version="1.0" encoding="utf-8" ?>
+<QRZDatabase version="1.36" xmlns="http://xmldata.qrz.com">
+<!DOCTYPE html
+\tPUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+\t "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en-US" xml:lang="en-US">
+<head><title>Untitled Document</title><style>p { color: red }</style></head>
+<body>
+<p>Welcome to the &amp; ghost   station.</p>
+<script>alert("never shown")</script>
+<div>QSL via <a href="https://example.com/">the bureau</a><br>73!</div>
+<img src="https://example.com/x.png" onerror="alert(1)">
+</body></html>
+"""
+
+
+def test_a_record_notes_its_photo_and_whether_it_has_a_biography() -> None:
+    """QRZ.com gives the photo's address and the biography's size, not its words."""
+    body = RECORD.replace(
+        b"<grid>",
+        b"<image>https://cdn-xml.qrz.com/u/w1aw/station.jpg</image><bio>9070</bio><grid>",
+    )
+    entry = parse_reply(body).entry
+    assert entry is not None
+    assert entry.image == "https://cdn-xml.qrz.com/u/w1aw/station.jpg"
+    assert entry.bio is True
+    assert CallbookEntry.from_json(entry.to_json()) == entry
+    plain = parse_reply(RECORD).entry
+    assert plain is not None
+    assert (plain.image, plain.bio) == (None, False)
+
+
+@pytest.mark.parametrize(
+    "image",
+    [
+        "http://cdn-xml.qrz.com/u/w1aw/a.jpg",
+        "https://127.0.0.1/a.jpg",
+        "https://localhost/a.jpg",
+        "https://cdn-xml.qrz.com:8443/a.jpg",
+        "https://user:pw@cdn-xml.qrz.com/a.jpg",
+        "javascript:alert(1)",
+        "file:///etc/passwd",
+    ],
+)
+def test_a_photo_address_that_is_not_plain_https_to_a_named_host_is_dropped(image: str) -> None:
+    """The Engine never fetches a photo from a local address or another scheme (Principle XII)."""
+    body = RECORD.replace(b"<grid>", f"<image>{image}</image><grid>".encode())
+    entry = parse_reply(body).entry
+    assert entry is not None
+    assert entry.image is None
+
+
+def test_a_biography_keeps_only_its_words() -> None:
+    """No markup, script, style, link or picture survives; paragraphs do."""
+    assert bio_text(BIO_PAGE.decode()) == "Welcome to the & ghost station.\nQSL via the bureau\n73!"
+    assert bio_text("<html><body><script>x</script></body></html>") is None
+
+
+def _large(*answers: bytes) -> tuple[QrzClient, list[tuple[str, int]]]:
+    asked: list[tuple[str, int]] = []
+    queue = list(answers)
+
+    def fetch_large(url: str, limit: int) -> bytes:
+        asked.append((url, limit))
+        return queue.pop(0)
+
+    def fetch(url: str) -> bytes:
+        raise AssertionError(url)
+
+    return QrzClient("LogLab-test", fetch, fetch_large), asked
+
+
+def test_biography_reads_the_page_and_tells_an_ended_session() -> None:
+    """The html request gives the page; an XML answer means none, or a session to renew."""
+    client, asked = _large(
+        BIO_PAGE,
+        b"<QRZDatabase><Session><Error>Not found: XX9XX</Error><Key>abc</Key>"
+        b"</Session></QRZDatabase>",
+        b"<QRZDatabase><Session><Error>Session Timeout</Error></Session></QRZDatabase>",
+    )
+    assert (
+        client.biography("abc", "W1AW")
+        == "Welcome to the & ghost station.\nQSL via the bureau\n73!"
+    )
+    assert "html=W1AW" in asked[0][0]
+    assert client.biography("abc", "XX9XX") is None
+    with pytest.raises(QrzSessionError):
+        client.biography("abc", "W1AW")
+
+
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 40
+
+
+@pytest.mark.parametrize(
+    ("body", "media_type"),
+    [
+        (JPEG, "image/jpeg"),
+        (b"\x89PNG\r\n\x1a\n" + b"\x00" * 20, "image/png"),
+        (b"GIF89a" + b"\x00" * 20, "image/gif"),
+        (b"RIFF\x00\x00\x00\x00WEBPVP8 ", "image/webp"),
+        (b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>', None),
+        (b"<html>not a picture</html>", None),
+    ],
+)
+def test_only_pictures_a_page_shows_safely_are_photos(body: bytes, media_type: str | None) -> None:
+    """A photo is known by its first bytes, never by what the server calls it; never SVG."""
+    assert picture_type(body) == media_type
+
+
+def test_a_photo_is_fetched_only_from_a_plain_https_address_and_must_be_a_picture() -> None:
+    """Anything else fails closed (Principle XII)."""
+    client, asked = _large(JPEG, b"<svg/>")
+    assert client.photo("https://cdn-xml.qrz.com/u/w1aw/a.jpg") == (JPEG, "image/jpeg")
+    with pytest.raises(QrzReplyError):
+        client.photo("https://cdn-xml.qrz.com/u/w1aw/b.svg")
+    with pytest.raises(QrzReplyError):
+        client.photo("https://127.0.0.1/a.jpg")
+    assert len(asked) == 2

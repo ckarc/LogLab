@@ -37,6 +37,19 @@ class CachedEntry:
 
 
 @dataclass(frozen=True, slots=True)
+class CachedMedia:
+    """A callbook's biography (plain text) or photo of a call, as it was when fetched.
+
+    ``origin`` is where a photo came from; a biography has none.
+    """
+
+    content: bytes
+    content_type: str
+    origin: str | None
+    fetched_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class CallbookLogin:
     """An operator's login to a callbook, and its current session key if any."""
 
@@ -80,6 +93,42 @@ class CallbookStore:
             ).fetchone()
         assert row is not None  # noqa: S101 - RETURNING always returns the row
         return CachedEntry(row[0], cast("dict[str, object]", row[1]), row[2])
+
+    def media(self, source: str, call: str, kind: str) -> CachedMedia | None:
+        """The ``kind`` (``bio`` or ``photo``) ``source`` gave for ``call``, if ever fetched."""
+        row = self._conn.execute(
+            "SELECT content, content_type, origin, fetched_at FROM reference.callbook_media"
+            " WHERE source = %s AND call = %s AND kind = %s",
+            (source, call, kind),
+        ).fetchone()
+        return None if row is None else CachedMedia(bytes(row[0]), row[1], row[2], row[3])
+
+    def remember_media(  # noqa: PLR0913 - one row's columns
+        self,
+        source: str,
+        call: str,
+        kind: str,
+        *,
+        content: bytes,
+        content_type: str,
+        origin: str | None,
+    ) -> CachedMedia:
+        """Keep a biography or photo of ``call``, replacing any older one."""
+        with self._conn.transaction():
+            row = self._conn.execute(
+                """
+                INSERT INTO reference.callbook_media
+                    (source, call, kind, origin, content_type, content)
+                VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (source, call, kind) DO UPDATE SET
+                    origin = EXCLUDED.origin, content_type = EXCLUDED.content_type,
+                    content = EXCLUDED.content
+                RETURNING content, content_type, origin, fetched_at
+                """,
+                (source, call, kind, origin, content_type, content),
+            ).fetchone()
+        assert row is not None  # noqa: S101 - RETURNING always returns the row
+        return CachedMedia(bytes(row[0]), row[1], row[2], row[3])
 
     def login(self, actor: Actor, source: str) -> CallbookLogin | None:
         """The signed-in operator's login to ``source``, or ``None`` if they have none."""

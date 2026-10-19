@@ -15,7 +15,25 @@
 .profile-facts div { min-width: 0; }
 .profile-facts dt { font-size: 12px; font-weight: 600; color: var(--muted); }
 .profile-facts dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-#profile-source { margin: 6px 0 12px; }
+.profile-source { margin: 6px 0 12px; }
+.profile-source .link { font-size: 13px; }
+.profile-top { display: flex; gap: 18px; align-items: flex-start; }
+.profile-about { flex: 1; min-width: 0; }
+.profile-photo {
+  flex: none;
+  width: 140px;
+  max-height: 180px;
+  object-fit: cover;
+  border-radius: 14px;
+  border: 1px solid var(--glass-line);
+}
+.profile-bio { margin: 12px 0 14px; }
+.profile-bio summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+#profile-bio { max-height: 240px; overflow: auto; margin-top: 8px; padding-right: 6px; font-size: 14px; line-height: 1.5; }
+#profile-bio p { margin: 0 0 8px; }
+@media (max-width: 600px) {
+  .profile-photo { width: 96px; }
+}
 .profile-worked { font-weight: 600; }
 .profile-worked.first { color: var(--accent); }
 #profile-log tbody tr { cursor: pointer; }

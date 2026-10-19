@@ -92,6 +92,7 @@ def test_log_and_reference_are_separate_schemas(
     assert ("log", "qso_version") in tables
     assert {t for t in tables if t[0] == "reference"} == {
         ("reference", "callbook_entry"),
+        ("reference", "callbook_media"),
         ("reference", "license"),
         ("reference", "license_import"),
     }

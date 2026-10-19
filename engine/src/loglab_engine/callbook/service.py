@@ -21,7 +21,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final
 
@@ -42,11 +42,14 @@ if TYPE_CHECKING:
     import psycopg
     from psycopg.rows import TupleRow
 
-    from loglab_engine.store.callbook import CachedEntry, CallbookLogin
+    from loglab_engine.store.callbook import CachedEntry, CachedMedia, CallbookLogin
     from loglab_engine.store.log import Actor
 
 SOURCE: Final = "qrz"
 RETRY_AFTER_SECONDS: Final = 60.0
+# A kept answer older than this is fetched again when QRZ.com can be reached,
+# so a changed name, QTH, photo or biography shows up with no one asking.
+RECHECK_AFTER: Final = timedelta(days=30)
 
 
 class LookupStatus(StrEnum):
@@ -72,6 +75,17 @@ class LookupResult:
     # Where the answer came from: "fcc", "ised" and/or "qrz".
     sources: tuple[str, ...] = ()
     license: License | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class BioResult:
+    """A biography's answer: its plain text if there is one, and where it came from."""
+
+    status: LookupStatus
+    call: str
+    text: str | None
+    fetched_at: datetime | None
+    message: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +131,8 @@ class Link:
 
 
 _UNREACHABLE: Final = "QRZ.com can't be reached right now. Log as usual."
+_NOT_SET_UP: Final = "Set up QRZ.com to fill in names and places."
+_NO_BIO: Final = "No biography on QRZ.com."
 
 
 class Callbook:
@@ -142,16 +158,24 @@ class Callbook:
     def _online(self, actor: Actor, call: str, *, refresh: bool) -> LookupResult:
         cached = self._store.cached(SOURCE, call)
         if cached is not None and not refresh:
-            return _from_cache(call, cached, "")
+            if not _due(cached):
+                return _from_cache(call, cached, "")
+            return self._renew(actor, call, cached)
         login = self._store.login(actor, SOURCE)
         if login is None:
-            return self._fallback(
-                LookupStatus.NOT_SET_UP,
-                call,
-                cached,
-                "Set up QRZ.com to fill in names and places.",
-            )
+            return self._fallback(LookupStatus.NOT_SET_UP, call, cached, _NOT_SET_UP)
         return self._fetch(actor, login, call, cached)
+
+    def _renew(self, actor: Actor, call: str, cached: CachedEntry) -> LookupResult:
+        """Fetch again an entry that is due (see :func:`_due`), with no one asking.
+
+        When that can't be done now, the kept entry is the answer, as before.
+        """
+        login = self._store.login(actor, SOURCE)
+        if login is None or self._link.down():
+            return _from_cache(call, cached, "")
+        fresh = self._fetch(actor, login, call, cached)
+        return fresh if not fresh.cached else _from_cache(call, cached, "")
 
     def _fetch(
         self, actor: Actor, login: CallbookLogin, call: str, cached: CachedEntry | None
@@ -184,19 +208,105 @@ class Callbook:
     def _ask(
         self, actor: Actor, login: CallbookLogin, call: str
     ) -> tuple[CallbookEntry | None, str | None]:
+        return self._with_key(actor, login, lambda key: self._link.client.lookup(key, call))
+
+    def _with_key[T](self, actor: Actor, login: CallbookLogin, ask: Callable[[str], T]) -> T:
+        """``ask`` QRZ.com with the operator's session key, logging in again once if it expired."""
         client = self._link.client
         key = login.service_key
         if key is not None:
             try:
-                return client.lookup(key, call)
+                return ask(key)
             except QrzSessionError:
                 pass  # expired: log in again, once
         key = client.login(login.username, login.password)
         self._store.save_key(actor, SOURCE, key)
         try:
-            return client.lookup(key, call)
+            return ask(key)
         except QrzSessionError as error:
             raise QrzReplyError(f"a new session ended at once ({error})") from error
+
+    def biography(self, actor: Actor, call: str, *, refresh: bool = False) -> BioResult:
+        """The biography ``call`` wrote on QRZ.com, as plain text: the kept copy first.
+
+        It is fetched only for a call whose looked-up record says it has one,
+        and only with the operator's own QRZ.com login. The record dates the
+        biography, so a changed one is fetched again with no one asking; until
+        it can be, the kept copy is shown.
+        """
+        cached = self._store.media(SOURCE, call, "bio")
+        entry = self._store.cached(SOURCE, call)
+        if entry is None or not entry.found or entry.entry.get("bio") != "yes":
+            if cached is not None and entry is None:
+                return _bio(call, cached, "")
+            return BioResult(LookupStatus.NOT_FOUND, call, None, None, _NO_BIO)
+        dated = entry.entry.get("biodate")
+        date = dated if isinstance(dated, str) else None
+        if cached is not None and not refresh and cached.origin == date:
+            return _bio(call, cached, "")
+        login = self._store.login(actor, SOURCE)
+        if login is None:
+            return _bio_fallback(LookupStatus.NOT_SET_UP, call, cached, _NOT_SET_UP)
+        return self._fetch_bio(actor, login, call, cached, date)
+
+    def _fetch_bio(
+        self,
+        actor: Actor,
+        login: CallbookLogin,
+        call: str,
+        cached: CachedMedia | None,
+        date: str | None,
+    ) -> BioResult:
+        if self._link.down():
+            return _bio_fallback(LookupStatus.UNREACHABLE, call, cached, _UNREACHABLE)
+        failed: tuple[LookupStatus, str]
+        try:
+            text = self._with_key(actor, login, lambda key: self._link.client.biography(key, call))
+        except QrzLoginError as error:
+            self._store.save_key(actor, SOURCE, None)
+            failed = LookupStatus.LOGIN_FAILED, f"QRZ.com refused your login: {error}"
+        except QrzUnreachableError:
+            self._link.mark_down()
+            failed = LookupStatus.UNREACHABLE, _UNREACHABLE
+        except QrzReplyError as error:
+            failed = LookupStatus.UNREACHABLE, f"QRZ.com's answer was not usable: {error}"
+        else:
+            self._link.mark_up()
+            if text is None:
+                return BioResult(LookupStatus.NOT_FOUND, call, None, None, _NO_BIO)
+            kept = self._store.remember_media(
+                SOURCE, call, "bio", content=text.encode(), content_type="text/plain", origin=date
+            )
+            return _bio(call, kept, "")
+        status, message = failed
+        return _bio_fallback(status, call, cached, message)
+
+    def photo(self, call: str, *, refresh: bool = False) -> CachedMedia | None:
+        """The photo of ``call`` on QRZ.com, if its looked-up record has one: the kept copy first.
+
+        A new photo is fetched when the record names a different one, or on
+        ``refresh``. With no internet the kept copy is shown, if there is one.
+        """
+        entry = self._store.cached(SOURCE, call)
+        cached = self._store.media(SOURCE, call, "photo")
+        url = entry.entry.get("image") if entry is not None and entry.found else None
+        if not isinstance(url, str):
+            return cached if entry is None else None
+        if cached is not None and cached.origin == url and not refresh:
+            return cached
+        if self._link.down():
+            return cached
+        try:
+            body, media_type = self._link.client.photo(url)
+        except QrzUnreachableError:
+            self._link.mark_down()
+            return cached
+        except QrzReplyError:
+            return cached
+        self._link.mark_up()
+        return self._store.remember_media(
+            SOURCE, call, "photo", content=body, content_type=media_type, origin=url
+        )
 
     def _fallback(
         self, status: LookupStatus, call: str, cached: CachedEntry | None, message: str
@@ -250,6 +360,9 @@ def _with_license(held: License, online: LookupResult) -> LookupResult:
         state=held.state or (extra.state if extra else None),
         country=COUNTRY[held.source],
         grid=extra.grid if extra else None,
+        image=extra.image if extra else None,
+        bio=extra.bio if extra else False,
+        bio_date=extra.bio_date if extra else None,
     )
     message = f"Filled in from {_LIST_NAME[held.source]}"
     message += " and QRZ.com." if extra is not None else "."
@@ -270,6 +383,15 @@ def _with_license(held: License, online: LookupResult) -> LookupResult:
     )
 
 
+def _due(cached: CachedEntry) -> bool:
+    """Whether a kept answer should be fetched again: it is old, or predates photos.
+
+    A found entry kept before photos and biographies were noted has no ``bio``.
+    """
+    old = datetime.now(UTC) - cached.fetched_at > RECHECK_AFTER
+    return old or (cached.found and "bio" not in cached.entry)
+
+
 def _from_cache(
     call: str, answer: CachedEntry, message: str, *, cached: bool = True
 ) -> LookupResult:
@@ -280,3 +402,16 @@ def _from_cache(
     return LookupResult(
         status, call, entry, cached=cached, fetched_at=answer.fetched_at, message=message
     )
+
+
+def _bio(call: str, kept: CachedMedia, message: str) -> BioResult:
+    text = kept.content.decode()
+    return BioResult(LookupStatus.FOUND, call, text, kept.fetched_at, message)
+
+
+def _bio_fallback(
+    status: LookupStatus, call: str, cached: CachedMedia | None, message: str
+) -> BioResult:
+    if cached is not None:
+        return _bio(call, cached, f"{message} Showing what QRZ.com said before.")
+    return BioResult(status, call, None, None, message)
