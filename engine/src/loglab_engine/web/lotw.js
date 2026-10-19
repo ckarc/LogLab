@@ -209,7 +209,7 @@
   $("#lotw-fetch").addEventListener("click", (event) => act(event.target, "/lotw/download", () => {}));
 
   $("#lotw-remove").addEventListener("click", async () => {
-    if (!window.confirm("Remove your LoTW certificate, location and login from LogLab? Your QSOs keep what they say about LoTW.")) return;
+    if (!window.confirm("Remove your LoTW certificate, location and login from LabLog? Your QSOs keep what they say about LoTW.")) return;
     try {
       await api("DELETE", "/lotw");
       showSetup(await api("GET", "/lotw"));

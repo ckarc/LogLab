@@ -20,4 +20,4 @@ BENCH="$AGENT/target/release/ft8bench"
 
 "$BENCH" generate "$SCENARIO" --seed "$SEED" >/dev/null
 "$BENCH" decode "$SCENARIO" --out "$SCENARIO/loglab"
-"$BENCH" score "$SCENARIO/truth.tsv" "$SCENARIO/loglab" --name "LogLab, seed $SEED"
+"$BENCH" score "$SCENARIO/truth.tsv" "$SCENARIO/loglab" --name "LabLog, seed $SEED"

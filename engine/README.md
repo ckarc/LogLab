@@ -1,6 +1,6 @@
-# LogLab Engine
+# LabLog Engine
 
-The Engine is LogLab's server: it owns the log, contest templates, reference
+The Engine is LabLog's server: it owns the log, contest templates, reference
 data, operator identities, and the event stream. It is strictly typed Python
 on PostgreSQL. See [`../CONSTITUTION.md`](../CONSTITUTION.md).
 
@@ -54,7 +54,7 @@ uv run loglab-log delete 1a2b3c4d
 uv run loglab-log history 1a2b3c4d                # every version, who, when, what changed
 uv run loglab-log restore 1a2b3c4d
 uv run loglab-log export --import 1 -o copy.adi   # that import, with its own header
-uv run loglab-log export -o log.adi               # the whole log, with a LogLab header
+uv run loglab-log export -o log.adi               # the whole log, with a LabLog header
 uv run loglab-operator sign-out
 ```
 
@@ -95,7 +95,7 @@ uv run loglab-operator whoami
 uv run loglab-engine serve                        # http://127.0.0.1:8073
 ```
 
-The Engine serves LogLab's HTTP API at `/api/v1` and a web page at `/` that
+The Engine serves LabLog's HTTP API at `/api/v1` and a web page at `/` that
 uses only that API (Principle I). Open the page, sign in with your callsign,
 PIN, and station name, and you can enter QSOs, search the log, edit a QSO
 (each save is a new version), delete and restore one, and read its full
@@ -116,7 +116,7 @@ own reference is at `/api/docs`.
   needs your attention.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
-- The top bar holds only LogLab, who is signed in, and **Menu**. Menu opens
+- The top bar holds only LabLog, who is signed in, and **Menu**. Menu opens
   a box with a few headings: **Operation**, **Appearance and layout**,
   **Connections** (QRZ.com, LoTW, the US and Canada call lists) and
   **Admin** (shown only to admins), with who is signed in and **Sign out**
@@ -228,7 +228,7 @@ own reference is at `/api/docs`.
   waits on this (Principle V): with no internet, QSOs wait and go out once
   QRZ.com can be reached, retried every five minutes and whenever a QSO
   changes. Each callsign has one key, so nothing is sent twice. What was sent
-  is kept in the `workspace` schema, apart from the log. LogLab only ever
+  is kept in the `workspace` schema, apart from the log. LabLog only ever
   removes its own copies, by the id QRZ.com gave them, and never asks QRZ.com
   to replace a QSO, so QSOs QRZ.com got another way (from LoTW, say) are
   never changed or removed.

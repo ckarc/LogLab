@@ -1,6 +1,6 @@
 # Third-Party Licenses
 
-Every third-party component that ships in LogLab is recorded here, with its
+Every third-party component that ships in LabLog is recorded here, with its
 license (CONSTITUTION.md, Technology Constraints, Licensing). Only licenses
 compatible with the AGPL-3.0 are permitted; CI enforces this with the
 **License check** job.
@@ -34,7 +34,7 @@ The Agent can also run Hamlib's `rigctld` (https://hamlib.github.io; the
 library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a
 radio. Hamlib is installed separately and runs as its own program, which the
 Agent talks to over Hamlib's documented network protocol; none of its code is
-in LogLab, and LogLab does not ship it.
+in LabLog, and LabLog does not ship it.
 
 The Engine's runtime dependencies:
 
@@ -61,7 +61,7 @@ The Engine's runtime dependencies:
 
 psycopg is used unmodified as a separate library, as the LGPL-3.0 permits.
 It loads the system's PostgreSQL client library, libpq (PostgreSQL License,
-a permissive BSD-style license), which LogLab does not ship.
+a permissive BSD-style license), which LabLog does not ship.
 
 ## Shipped data
 
@@ -81,8 +81,8 @@ portions (C) 2003-2026 The TrustedQSL Developers, under a BSD-style license
 whose notice and disclaimer travel with the data in
 `engine/tools/trustedqsl/LICENSE.txt`. Its conditions are to keep the notice
 and disclaimer, not to name a product after ARRL's marks ("Logbook of the
-World", "LoTW"), and not to claim ARRL's endorsement. LogLab is not named
-after them and claims no endorsement. How LogLab builds and signs LoTW
+World", "LoTW"), and not to claim ARRL's endorsement. LabLog is not named
+after them and claims no endorsement. How LabLog builds and signs LoTW
 upload files was learned from TrustedQSL's published source (Principle XVI);
 no TrustedQSL code is copied.
 
@@ -111,15 +111,15 @@ file's `source`: Copyright (c) 2024 HB9HIL.
 
 The FT8 LDPC generator matrix and parity checks are published protocol constants,
 the same in every FT8 implementation (FT8 itself is by K1JT, K9AN and G4WJS).
-LogLab's copy was converted from ft8_lib's table; its MIT copyright and
+LabLog's copy was converted from ft8_lib's table; its MIT copyright and
 permission notice travel with it in `agent/src/ft8/ft8_lib-LICENSE.txt`.
-No ft8_lib code is copied. LogLab's FT8 message packing follows the
+No ft8_lib code is copied. LabLog's FT8 message packing follows the
 published protocol and WSJT-X's published source (Principle XVI) and is
 checked tone for tone against WSJT-X's own output.
 
 ## Development and CI tooling (not shipped)
 
-These tools build, check, and test LogLab but are not distributed with it.
+These tools build, check, and test LabLog but are not distributed with it.
 They are listed for transparency and are held to the same license policy.
 
 | Component      | Used for                    | License                    |

@@ -4,7 +4,7 @@
 [project]
 name = "loglab-engine"
 version = "0.0.0"
-description = "LogLab Engine: owns the log, contest templates, reference data, operator identities, and the event stream."
+description = "LabLog Engine: owns the log, contest templates, reference data, operator identities, and the event stream."
 readme = "README.md"
 requires-python = ">=3.12"
 license = "AGPL-3.0-only"

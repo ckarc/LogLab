@@ -69,7 +69,7 @@ def test_the_web_client_is_served_with_a_strict_policy(client: TestClient) -> No
     """The page and its files load only from the Engine itself (Principle V)."""
     page = client.get("/")
     assert page.status_code == 200
-    assert "<title>LogLab</title>" in page.text
+    assert "<title>LabLog</title>" in page.text
     assert "default-src 'self'" in page.headers["content-security-policy"]
     assert client.get("/static/app.js").status_code == 200
     assert client.get("/static/app.css").status_code == 200

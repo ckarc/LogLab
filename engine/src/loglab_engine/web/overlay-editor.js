@@ -62,7 +62,7 @@
       <button type="button" class="secondary small" data-ov="close">Close</button>
     </div>
     <div id="ov-list-view">
-      <p class="hint">An overlay sets up LogLab for one kind of operating: which boxes New QSO asks for, how the page starts out, and, for a contest, its bands, modes, exchange and dupe check. The built-in ones can't be changed, but you can copy one and change the copy.</p>
+      <p class="hint">An overlay sets up LabLog for one kind of operating: which boxes New QSO asks for, how the page starts out, and, for a contest, its bands, modes, exchange and dupe check. The built-in ones can't be changed, but you can copy one and change the copy.</p>
       <div class="actions ov-top">
         <button type="button" class="small" data-ov="new">New overlay</button>
         <label class="inline"><input type="checkbox" id="ov-retired"> Show retired ones</label>
