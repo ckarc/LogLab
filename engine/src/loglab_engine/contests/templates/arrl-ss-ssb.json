@@ -1,0 +1,182 @@
+{
+  "format": 1,
+  "id": "arrl-ss-ssb",
+  "name": "ARRL Sweepstakes Phone",
+  "summary": "Exchange a serial number, precedence, your call, check and ARRL or RAC section. Each station counts once, whatever the band. Only US and Canadian stations count.",
+  "contest_id": "ARRL-SS-SSB",
+  "rules": {
+    "title": "ARRL November Sweepstakes Rules, Version 2.1",
+    "url": "https://contests.arrl.org/ContestRules/SS-Rules.pdf",
+    "revised": "2026-10-19",
+    "period": "Third full weekend of November, 2100 UTC Saturday to 0259 UTC Monday; up to 24 of the 30 hours. (The rules are undated; revised is the day they were checked.)"
+  },
+  "bands": {
+    "allowed": [
+      "160m",
+      "80m",
+      "40m",
+      "20m",
+      "15m",
+      "10m"
+    ]
+  },
+  "modes": {
+    "cw": [
+      "CW"
+    ],
+    "phone": [
+      "SSB",
+      "AM",
+      "FM",
+      "DIGITALVOICE"
+    ],
+    "excluded": [
+      "CW",
+      "RTTY",
+      "PSK",
+      "FT8",
+      "FT4",
+      "FST4",
+      "FST4W",
+      "JT4",
+      "JT6M",
+      "JT9",
+      "JT44",
+      "JT65",
+      "ISCAT",
+      "JTMS",
+      "MSK144",
+      "Q65",
+      "WSPR",
+      "MFSK",
+      "OLIVIA",
+      "CONTESTI",
+      "DOMINO",
+      "HELL",
+      "MT63",
+      "PKT",
+      "PAC",
+      "SSTV",
+      "THOR",
+      "THRB",
+      "VARA",
+      "JS8",
+      "OPERA",
+      "ROS",
+      "DSTAR",
+      "C4FM",
+      "DMR"
+    ]
+  },
+  "dupes": {
+    "per": [],
+    "rule": "Each station may be contacted only once, regardless of band. Sections are multipliers once each."
+  },
+  "exchange": {
+    "sent": [
+      {
+        "key": "precedence",
+        "label": "Your precedence",
+        "hint": "Q, A, B, U, M or S",
+        "pattern": "^[QABUMS]$"
+      },
+      {
+        "key": "check",
+        "label": "Your check",
+        "hint": "The last two digits of the year first licensed, like 98",
+        "pattern": "^[0-9]{2}$"
+      },
+      {
+        "key": "section",
+        "label": "Your section",
+        "hint": "ARRL or RAC section, like KS",
+        "sections": true
+      }
+    ],
+    "sent_fields": {
+      "MY_ARRL_SECT": "{section}",
+      "STX_STRING": "{precedence} {check} {section}"
+    },
+    "received": [
+      {
+        "key": "serial",
+        "field": "SRX",
+        "label": "Serial number",
+        "hint": "Like 123",
+        "pattern": "^[1-9][0-9]{0,4}$"
+      },
+      {
+        "key": "precedence",
+        "field": "PRECEDENCE",
+        "label": "Precedence",
+        "hint": "Q, A, B, U, M or S",
+        "pattern": "^[QABUMS]$"
+      },
+      {
+        "key": "check",
+        "field": "CHECK",
+        "label": "Check",
+        "hint": "Like 98",
+        "pattern": "^[0-9]{2}$"
+      },
+      {
+        "key": "section",
+        "field": "ARRL_SECT",
+        "label": "Section",
+        "hint": "Like KS",
+        "sections": true
+      }
+    ]
+  },
+  "entry": {
+    "fields": [
+      "CALL",
+      "STX",
+      "SRX",
+      "PRECEDENCE",
+      "CHECK",
+      "ARRL_SECT",
+      "BAND",
+      "MODE",
+      "FREQ",
+      "QSO_DATE",
+      "TIME_ON",
+      "COMMENT"
+    ],
+    "live": true
+  },
+  "layout": {
+    "modules": [
+      {
+        "id": "entry",
+        "width": "half",
+        "side": "left"
+      },
+      {
+        "id": "map",
+        "width": "half",
+        "side": "right"
+      },
+      {
+        "id": "journal"
+      },
+      {
+        "id": "log"
+      },
+      {
+        "id": "detail"
+      }
+    ],
+    "log_columns": [
+      "time",
+      "call",
+      "band",
+      "mode",
+      "field:SRX",
+      "field:PRECEDENCE",
+      "field:CHECK",
+      "field:ARRL_SECT",
+      "operator"
+    ]
+  }
+}
