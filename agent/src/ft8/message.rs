@@ -3,12 +3,19 @@
 
 //! FT8 message text to its 77-bit payload ("source encoding").
 //!
-//! Only the standard message (type 1) is supported so far: two standard
-//! callsigns, or CQ (with an optional modifier such as `CQ DX`) and a
-//! callsign, followed by a grid square, a signal report, `RRR`, `RR73`, `73`,
-//! or nothing. That covers ordinary FT8 QSOs. Hashed and compound callsigns,
-//! free text, and the Field Day and contest exchanges come later; until then
-//! they are refused with [`MessageError::Unsupported`] rather than guessed.
+//! Two kinds of message are supported so far:
+//!
+//! - The standard message (type 1): two standard callsigns, or CQ (with an
+//!   optional modifier such as `CQ DX` or `CQ FD`) and a callsign, followed
+//!   by a grid square, a signal report, `RRR`, `RR73`, `73`, or nothing.
+//!   That covers ordinary FT8 QSOs.
+//! - The ARRL Field Day exchange (type 0.3, or 0.4 above 16 transmitters):
+//!   two standard callsigns, an optional `R`, the number of transmitters and
+//!   the class (`3A`), and the ARRL or RAC section (`EMA`), or `DX`.
+//!
+//! Hashed and compound callsigns, free text, and the other contest
+//! exchanges come later; until then they are refused with
+//! [`MessageError::Unsupported`] rather than guessed.
 
 use std::fmt;
 
@@ -24,6 +31,26 @@ const MAXGRID4: u16 = 32_400;
 
 /// Payload type of the standard message.
 const I3_STANDARD: u128 = 1;
+
+/// Payload subtypes (with type 0) of the Field Day exchange, for 1 to 16
+/// transmitters and for 17 to 32.
+const N3_FIELD_DAY: u128 = 3;
+const N3_FIELD_DAY_LARGE: u128 = 4;
+
+/// The sections a Field Day exchange can carry, in the order of their
+/// 7-bit numbers, which start at 1. The order is fixed by the protocol (it
+/// is not alphabetical: a few places were reused when sections changed).
+const SECTIONS: [&str; 86] = [
+    "AB", "AK", "AL", "AR", "AZ", "BC", "CO", "CT", "DE", "EB", "EMA", "ENY", "EPA", "EWA", "GA",
+    "GH", "IA", "ID", "IL", "IN", "KS", "KY", "LA", "LAX", "NS", "MB", "MDC", "ME", "MI", "MN",
+    "MO", "MS", "MT", "NC", "ND", "NE", "NFL", "NH", "NL", "NLI", "NM", "NNJ", "NNY", "TER", "NTX",
+    "NV", "OH", "OK", "ONE", "ONN", "ONS", "OR", "ORG", "PAC", "PR", "QC", "RI", "SB", "SC", "SCV",
+    "SD", "SDG", "SF", "SFL", "SJV", "SK", "SNJ", "STX", "SV", "TN", "UT", "VA", "VI", "VT", "WCF",
+    "WI", "WMA", "WNY", "WPA", "WTX", "WV", "WWA", "WY", "DX", "PE", "NB",
+];
+
+/// Field Day classes, by their 3-bit number.
+const CLASSES: &str = "ABCDEF";
 
 /// Characters allowed in each of the six positions of a standard callsign,
 /// after it is right-aligned on its digit.
@@ -104,6 +131,9 @@ pub fn pack(text: &str) -> Result<Payload, MessageError> {
     if words.is_empty() {
         return Err(MessageError::Empty);
     }
+    if let Some(payload) = field_day(&words)? {
+        return Ok(payload);
+    }
 
     // "CQ DX K9KSU EN52": the modifier is part of the first field.
     let (to, rest): (u32, &[&str]) = if words[0] == "CQ" {
@@ -134,6 +164,48 @@ pub fn pack(text: &str) -> Result<Payload, MessageError> {
         | u128::from(g15) << 3
         | I3_STANDARD;
     Ok(Payload(value))
+}
+
+/// The Field Day exchange `CALL CALL [R] 3A EMA`, or `None` if the words
+/// are not shaped like one.
+fn field_day(words: &[&str]) -> Result<Option<Payload>, MessageError> {
+    let (calls, roger, exchange) = match words {
+        [to, de, "R", class, section] => ([to, de], true, [class, section]),
+        [to, de, class, section] => ([to, de], false, [class, section]),
+        _ => return Ok(None),
+    };
+    let Some((transmitters, class)) = field_day_class(exchange[0]) else {
+        return Ok(None);
+    };
+    let Some(section) = SECTIONS.iter().position(|s| s == exchange[1]) else {
+        return Ok(None);
+    };
+    let (n3, count) = if transmitters <= 16 {
+        (N3_FIELD_DAY, transmitters - 1)
+    } else {
+        (N3_FIELD_DAY_LARGE, transmitters - 17)
+    };
+    let to = standard_call(calls[0])?;
+    let de = standard_call(calls[1])?;
+    let value = u128::from(to) << 49
+        | u128::from(de) << 21
+        | u128::from(roger) << 20
+        | u128::from(count) << 16
+        | u128::from(class) << 13
+        | (section as u128 + 1) << 6
+        | n3 << 3;
+    Ok(Some(Payload(value)))
+}
+
+/// `3A`: the number of transmitters (1 to 32) and the class's number.
+fn field_day_class(word: &str) -> Option<(u32, u32)> {
+    let (digits, letter) = word.split_at(word.len().checked_sub(1)?);
+    let class = CLASSES.find(letter)?;
+    if digits.is_empty() || digits.len() > 2 || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let transmitters: u32 = digits.parse().ok()?;
+    ((1..=32).contains(&transmitters)).then_some((transmitters, u32::try_from(class).ok()?))
 }
 
 /// The 28-bit field value for a standard callsign.
@@ -271,6 +343,10 @@ fn signal_report(word: &str) -> Option<u16> {
 pub fn unpack(payload: Payload) -> Option<String> {
     let v = payload.value();
     let i3 = v & 0b111;
+    let n3 = (v >> 3) & 0b111;
+    if i3 == 0 && (n3 == N3_FIELD_DAY || n3 == N3_FIELD_DAY_LARGE) {
+        return unpack_field_day(v, n3 == N3_FIELD_DAY_LARGE);
+    }
     if i3 != I3_STANDARD {
         return None;
     }
@@ -300,6 +376,29 @@ pub fn unpack(payload: Payload) -> Option<String> {
             .collect::<Vec<_>>()
             .join(" "),
     )
+}
+
+/// A Field Day exchange back to text.
+fn unpack_field_day(v: u128, large: bool) -> Option<String> {
+    let field = |shift: u32, bits: u32| u32::try_from((v >> shift) & ((1 << bits) - 1)).ok();
+    let to = unpack_call(field(49, 28)?)?;
+    let de = unpack_call(field(21, 28)?)?;
+    // Only real callsigns: the special tokens and hashes cannot appear in
+    // this exchange.
+    if field(49, 28)? < NTOKENS + MAX22 || field(21, 28)? < NTOKENS + MAX22 {
+        return None;
+    }
+    let roger = field(20, 1)? == 1;
+    let transmitters = field(16, 4)? + if large { 17 } else { 1 };
+    let class = CLASSES.chars().nth(usize::try_from(field(13, 3)?).ok()?)?;
+    let section = SECTIONS.get(usize::try_from(field(6, 7)?).ok()?.checked_sub(1)?)?;
+    let mut words = vec![to, de];
+    if roger {
+        words.push("R".to_owned());
+    }
+    words.push(format!("{transmitters}{class}"));
+    words.push((*section).to_owned());
+    Some(words.join(" "))
 }
 
 /// A 28-bit callsign field back to text.
@@ -471,6 +570,39 @@ mod tests {
         for message in messages {
             assert_eq!(unpack(pack(&message)?).as_deref(), Some(message.as_str()));
         }
+        Ok(())
+    }
+
+    #[test]
+    fn packs_field_day_exactly_as_wsjtx_does() -> Result<(), MessageError> {
+        // From WSJT-X's ft8code "K9KSU W1AW 2A EMA" (type 0.3).
+        assert_eq!(
+            pack("K9KSU W1AW 2A EMA")?.to_bit_string(),
+            "00001001111001100011101001000000101111111110101011010001000010000001011011000"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn field_day_round_trips_and_refuses_what_it_cannot_carry() -> Result<(), MessageError> {
+        for message in [
+            "K9KSU W1AW 1A EMA",
+            "W1AW K9KSU R 16F KS",
+            "K9KSU W1AW 17A DX",
+            "K9KSU W1AW R 32D NB",
+            "VE3XYZ K9KSU 3B GH",
+        ] {
+            assert_eq!(unpack(pack(message)?).as_deref(), Some(message));
+        }
+        for refused in [
+            "K9KSU W1AW 33A EMA",
+            "K9KSU W1AW 0A EMA",
+            "K9KSU W1AW 3A XX",
+        ] {
+            assert!(pack(refused).is_err(), "{refused}");
+        }
+        // A class that is not A to F is not a Field Day exchange.
+        assert!(pack("K9KSU W1AW 3G EMA").is_err());
         Ok(())
     }
 
