@@ -18,6 +18,14 @@ This version only reads the radio. It never tunes it and never transmits
   only on this computer, and is its only user. Hamlib must be installed
   (`sudo apt install libhamlib-utils` on Debian or Ubuntu). Hamlib numbers
   each radio model; `rigctl --list` shows them (3073 is the Icom IC-7300).
+- **FlexRadio.** A FlexRadio 6000- or 8000-series radio (the FLEX-8400, for
+  example) is reached over the network through its own published API, on TCP
+  port 4992, with `--flex ADDRESS`. Nothing needs installing. The radio lets
+  several programs connect at once, so SmartSDR keeps working beside the
+  Agent. The Agent reports the transmit slice (or the active slice when none
+  transmits) and names it, such as "Slice A". SmartSDR's radio chooser shows
+  the radio's IP address; giving the radio a fixed address on the network
+  keeps the Agent's command line right.
 - **The pretend radio.** Built in, for trying LogLab with no radio. It visits
   a few spots on the bands and "transmits" for a few seconds at each.
 
@@ -32,8 +40,9 @@ This version only reads the radio. It never tunes it and never transmits
        --hamlib-model 3073 --device /dev/ttyUSB0 --baud 19200
    ```
 
-   Use `--pretend` in place of the Hamlib options to try it without a radio,
-   or `--rigctld 127.0.0.1:4532` to use a `rigctld` already running there.
+   Use `--flex 192.168.1.20` (the radio's address) in place of the Hamlib
+   options for a FlexRadio, `--pretend` to try it without a radio, or
+   `--rigctld 127.0.0.1:4532` to use a `rigctld` already running there.
    `loglab-agent read RADIO` reads the radio once and prints it, without the
    Engine.
 
@@ -57,6 +66,10 @@ This version only reads the radio. It never tunes it and never transmits
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
   (Principle XIII). Stopping the Agent stops it too.
+- The FlexRadio driver only asks: it subscribes to slice and transmitter
+  status, asks the radio's model, and pings it every 5 seconds. It sends no
+  command that changes the radio. If the radio says nothing for 15 seconds,
+  the Agent reconnects.
 - The Engine forgets a station's radio 15 seconds after its Agent goes quiet.
 - A request to join grants nothing until an administrator approves it, and
   expires after 10 minutes (the Agent then asks again with a new code).

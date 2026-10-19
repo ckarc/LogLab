@@ -69,6 +69,8 @@ pub enum ControlPath {
         /// Hamlib's number for the radio model.
         model: u32,
     },
+    /// Over the network, through a FlexRadio's own API.
+    Flex,
     /// The Agent's built-in pretend radio, for trying LogLab without one.
     Pretend,
 }
