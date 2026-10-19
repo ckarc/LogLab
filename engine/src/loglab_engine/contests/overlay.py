@@ -234,6 +234,46 @@ class Entry(_Strict):
         return self
 
 
+StatId = Literal["rate", "hourly", "band_mode", "operators", "dupes", "sections", "score"]
+STAT_IDS: Final[tuple[StatId, ...]] = (
+    "rate",
+    "hourly",
+    "band_mode",
+    "operators",
+    "dupes",
+    "sections",
+    "score",
+)
+
+
+class Stats(_Strict):
+    """What the Operation stats box shows for operations using this overlay.
+
+    ``show`` picks from the stats the Engine can work out, in the order the
+    box shows them: the QSO rate (``rate``), QSOs in each hour (``hourly``),
+    QSOs by band and mode (``band_mode``), each operator's QSOs
+    (``operators``), dupes (``dupes``), sections worked (``sections``), and a
+    rough score (``score``). The score is the contest's QSO points: each
+    counting QSO that is not a dupe earns the ``points`` of its mode group,
+    and a satellite QSO only with ``satellite_points``. Power multipliers and
+    bonus points are not part of it.
+    """
+
+    show: Annotated[tuple[StatId, ...], Field(max_length=len(STAT_IDS))]
+    points: dict[ModeGroup, Annotated[int, Field(ge=0, le=100)]] | None = None
+    satellite_points: bool = True
+
+    @model_validator(mode="after")
+    def _whole(self) -> Self:
+        if len(self.show) != len(set(self.show)):
+            msg = "each stat may be shown only once"
+            raise ValueError(msg)
+        if "score" in self.show and not self.points:
+            msg = "a score needs the points each mode group earns"
+            raise ValueError(msg)
+        return self
+
+
 class Overlay(_Strict):
     """One operation overlay.
 
@@ -255,6 +295,7 @@ class Overlay(_Strict):
     entry: Entry
     layout: Layout | None = None
     gota: bool = False
+    stats: Stats | None = None
 
     @model_validator(mode="after")
     def _contest_is_whole(self) -> Self:
@@ -268,12 +309,27 @@ class Overlay(_Strict):
         elif any(part is None for part in contest):
             msg = "a contest overlay needs rules, bands, modes and an exchange"
             raise ValueError(msg)
+        if self.stats is not None:
+            if "dupes" in self.stats.show and self.dupes is None:
+                msg = "dupes can be shown only by an overlay with a dupe check"
+                raise ValueError(msg)
+            if "score" in self.stats.show and self.contest_id is None:
+                msg = "a score can be shown only by a contest overlay"
+                raise ValueError(msg)
         return self
 
     @property
     def is_contest(self) -> bool:
         """Whether this overlay is a contest (and so may check for dupes)."""
         return self.contest_id is not None
+
+    @property
+    def shown_stats(self) -> tuple[StatId, ...]:
+        """The stats the Operation stats box shows: the overlay's choice, or the usual ones."""
+        if self.stats is not None:
+            return self.stats.show
+        usual: tuple[StatId, ...] = ("rate", "hourly", "band_mode", "operators")
+        return (*usual, "dupes") if self.dupes is not None else usual
 
 
 def parse(data: bytes, name: str) -> Overlay:

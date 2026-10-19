@@ -43,6 +43,61 @@ def test_each_field_day_names_its_rules_and_counts_by_band_and_mode(
     assert "CALL" in found.entry.fields
 
 
+@pytest.mark.parametrize(
+    ("overlay_id", "contest_id", "per", "zone_field"),
+    [
+        ("cq-ww-ssb", "CQ-WW-SSB", ("band",), "CQZ"),
+        ("cq-ww-cw", "CQ-WW-CW", ("band",), "CQZ"),
+        ("iaru-hf", "IARU-HF", ("band", "mode"), "ITUZ"),
+        ("arrl-ss-cw", "ARRL-SS-CW", (), None),
+        ("arrl-ss-ssb", "ARRL-SS-SSB", (), None),
+    ],
+)
+def test_the_zone_and_sweepstakes_contests_follow_their_rules(
+    overlay_id: str, contest_id: str, per: tuple[str, ...], zone_field: str | None
+) -> None:
+    """CQ WW counts once per band, IARU once per band and mode, Sweepstakes once at all.
+
+    The zone contests receive the zone in the ADIF field their map counts.
+    """
+    found = overlay(overlay_id)
+    assert found is not None
+    assert found.contest_id == contest_id
+    assert found.dupes is not None
+    assert found.dupes.per == per
+    assert found.rules is not None
+    assert found.rules.url.startswith("https://")
+    assert found.bands is not None
+    assert found.bands.allowed == ("160m", "80m", "40m", "20m", "15m", "10m")
+    assert found.exchange is not None
+    fields = {p.field for p in found.exchange.received}
+    if zone_field is None:
+        assert any(p.sections for p in found.exchange.received)
+    else:
+        assert zone_field in fields
+        assert zone_field in found.entry.fields
+    # Their points depend on continent or zone, not mode group, so no score is shown.
+    assert found.stats is not None
+    assert "score" not in found.stats.show
+    assert ("sections" in found.stats.show) == (zone_field is None)
+
+
+def test_a_single_mode_contest_does_not_count_the_other_modes() -> None:
+    """CQ WW CW counts CW only; the SSB weekend counts phone only."""
+    cw = overlay("cq-ww-cw")
+    ssb = overlay("cq-ww-ssb")
+    assert cw is not None
+    assert ssb is not None
+    assert cw.modes is not None
+    assert ssb.modes is not None
+    assert cw.modes.group("CW", None) == "CW"
+    assert cw.modes.group("SSB", None) is None
+    assert cw.modes.group("RTTY", None) is None
+    assert ssb.modes.group("SSB", "USB") == "Phone"
+    assert ssb.modes.group("CW", None) is None
+    assert ssb.modes.group("FT8", None) is None
+
+
 def _minimal(**changes: object) -> dict[str, object]:
     raw: dict[str, object] = {
         "format": 1,
