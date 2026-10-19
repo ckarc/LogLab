@@ -20,8 +20,8 @@ use rustfft::num_complex::Complex32;
 
 use super::{
     Baseband, Candidate, GROUPS, Locked, OSD_GROUPS, OSD_MAX_DISTANCE, Options, STEP, Spectrogram,
-    TONE_SPACING_HZ, ToneMeter, candidates, coherence, data_symbols, ldpc, lock, metrics,
-    noise_power, normalize, row_to_hz, to_isize,
+    TONE_SPACING_HZ, ToneMeter, candidates, coherence, data_symbols, ldpc, likelihoods, lock,
+    noise_power, row_to_hz, to_isize,
 };
 use crate::ft8::baseband;
 use crate::ft8::encode::{self, Tones};
@@ -229,8 +229,7 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
     let mut bp = Vec::new();
     let mut osd = vec![Outcome::Nothing; OSD_GROUPS.len()];
     for group in GROUPS {
-        let mut llr = metrics(&data, group, noise);
-        normalize(&mut llr);
+        let llr = likelihoods(locked, &data, group, noise);
         bit_errors.push(
             llr.iter()
                 .zip(&truth.bits)

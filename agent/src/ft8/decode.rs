@@ -406,7 +406,8 @@ const FINE_HZ: [f32; 7] = [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5];
 const FINE_SAMPLES: isize = 6;
 
 /// Reach and step, in hertz, of the first coherent frequency refinement,
-/// and of the second after the timing has been settled.
+/// and of the second after the timing has been settled. Both search for
+/// drift too; see [`DRIFT_HZ_PER_S`].
 const COHERENT_HZ: (f32, f32) = (0.6, 0.02);
 const COHERENT_HZ_AGAIN: (f32, f32) = (0.3, 0.01);
 
@@ -494,35 +495,31 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
     }
     let (_, mut hz, mut start) = best;
 
-    // Coherent refinement from the Costas tones' phases.
+    // Coherent refinement from the Costas tones' phases: the frequency
+    // offset and steady drift that make each Costas array add up in phase
+    // at its own time, then the start that gives the largest in-phase sum,
+    // then offset and drift once more, finely. The drift is reckoned from
+    // the middle of the transmission, so `hz` is the frequency there.
     let measure = |shifted: &[Complex32], start: isize| -> Vec<[Complex32; 8]> {
         (0..SYMBOLS)
             .map(|k| meter.tones(shifted, start + sps * to_isize(k)))
             .collect()
     };
+    let middle = start + sps * to_isize(SYMBOLS / 2) + sps / 2;
+    let mut drift = 0.0_f32;
     let mut symbols = measure(&baseband::shift(&slice, hz), start);
-    hz += costas_offset_hz(&symbols, COHERENT_HZ);
-    let shifted = baseband::shift(&slice, hz);
+    let (offset, slope) = costas_offset_and_drift(&symbols, COHERENT_HZ, DRIFT_HZ_PER_S);
+    hz += offset;
+    drift += slope;
+    let shifted = baseband::chirp(&slice, hz, drift, middle);
     (start, symbols) = (start - COHERENT_SAMPLES..=start + COHERENT_SAMPLES)
         .map(|s| (s, measure(&shifted, s)))
         .max_by(|a, b| costas_power(&a.1).total_cmp(&costas_power(&b.1)))
         .unwrap_or((start, symbols));
-    hz += costas_offset_hz(&symbols, COHERENT_HZ_AGAIN);
-
-    // Drift: the Costas arrays at the start, middle and end each give the
-    // frequency at their time; a steady drift shows as a slope through them.
-    let mut drift = 0.0_f32;
-    if exp("drift") {
-        let middle = start + sps * to_isize(SYMBOLS / 2) + sps / 2;
-        for _ in 0..2 {
-            let shifted = baseband::chirp(&slice, hz, drift, middle);
-            let symbols = measure(&shifted, start);
-            let (offset, slope) = costas_offset_and_drift(&symbols);
-            hz += offset;
-            drift += slope;
-        }
-    }
-    let middle = start + sps * to_isize(SYMBOLS / 2) + sps / 2;
+    let (offset, slope) =
+        costas_offset_and_drift(&symbols, COHERENT_HZ_AGAIN, DRIFT_HZ_PER_S_AGAIN);
+    hz += offset;
+    drift += slope;
 
     std::iter::once((0.0, 0))
         .chain(NEIGHBOURS)
@@ -538,22 +535,6 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
         .collect()
 }
 
-/// Experiment switches, from the `LOGLAB_FT8_EXP` environment variable
-/// (comma-separated names). Bench-only, for measuring changes.
-fn exp(name: &str) -> bool {
-    static FLAGS: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
-    FLAGS
-        .get_or_init(|| {
-            std::env::var("LOGLAB_FT8_EXP")
-                .unwrap_or_default()
-                .split(',')
-                .map(str::to_owned)
-                .collect()
-        })
-        .iter()
-        .any(|f| f == name)
-}
-
 /// A number from the experiment switches (`name=value`).
 fn exp_value(name: &str, default: f32) -> f32 {
     std::env::var("LOGLAB_FT8_EXP")
@@ -563,27 +544,46 @@ fn exp_value(name: &str, default: f32) -> f32 {
         .unwrap_or(default)
 }
 
-/// Reach and step of the drift search, in hertz per second.
-const DRIFT_REACH: (f32, f32) = (0.6, 0.01);
+/// Reach and step, in hertz per second, of the drift search alongside
+/// [`COHERENT_HZ`], and of the finer one alongside [`COHERENT_HZ_AGAIN`].
+/// Half a hertz per second moves a signal six hertz, a whole tone, within
+/// one transmission; nothing that drifts faster is worth chasing.
+const DRIFT_HZ_PER_S: (f32, f32) = (0.5, 0.02);
+const DRIFT_HZ_PER_S_AGAIN: (f32, f32) = (0.1, 0.005);
 
-/// The frequency offset and steady drift that best explain the Costas
-/// arrays' phases: each array is added in phase at its own frequency, the
-/// offset plus the drift times the array's time from the middle of the
-/// transmission.
-fn costas_offset_and_drift(symbols: &[[Complex32; 8]]) -> (f32, f32) {
+/// Time from the middle of the transmission to the middle of each Costas
+/// array, in seconds: the first is 5.76 s early, the last 5.76 s late.
+fn costas_times() -> [f32; 3] {
     let seconds_per_symbol = to_f32(baseband::SAMPLES_PER_SYMBOL) / baseband::RATE;
-    let middle = to_f32(SYMBOLS / 2) + 0.5;
-    // Each array's in-phase power over a fine grid of frequencies.
-    let step = 0.01_f32;
-    let reach = 0.4 + DRIFT_REACH.0 * 6.0;
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, positive
-    let steps = (reach / step).round() as usize;
+    let middle = to_f32(SYMBOLS) / 2.0;
+    std::array::from_fn(|a| (to_f32(COSTAS_POSITIONS[a]) + 3.5 - middle) * seconds_per_symbol)
+}
+
+/// The frequency offset (within `reach` hertz, in steps of `step`) and the
+/// steady drift (within `drift_reach` hertz per second, in steps of
+/// `drift_step`) that together make the Costas tones add up most nearly in
+/// phase: each Costas array is added in phase at the offset plus the drift
+/// times its own time from the middle of the transmission. A frequency
+/// error turns the tones' phases steadily from symbol to symbol; a drift
+/// makes that turn differ from one array to the next.
+fn costas_offset_and_drift(
+    symbols: &[[Complex32; 8]],
+    (reach, step): (f32, f32),
+    (drift_reach, drift_step): (f32, f32),
+) -> (f32, f32) {
+    let seconds_per_symbol = to_f32(baseband::SAMPLES_PER_SYMBOL) / baseband::RATE;
+    let times = costas_times();
+    let farthest = times.iter().fold(0.0_f32, |m, t| m.max(t.abs()));
+    // Each array's in-phase power over a grid of frequencies wide enough
+    // for any offset and drift in reach.
+    let grid_reach = reach + drift_reach * farthest;
+    let grid_steps = round_to_usize(grid_reach / step);
     let grid: Vec<Vec<f32>> = COSTAS_POSITIONS
         .iter()
         .map(|&first| {
-            (0..=2 * steps)
+            (0..=2 * grid_steps)
                 .map(|i| {
-                    let f = (to_f32(i) - to_f32(steps)) * step;
+                    let f = (to_f32(i) - to_f32(grid_steps)) * step;
                     COSTAS
                         .iter()
                         .enumerate()
@@ -600,23 +600,17 @@ fn costas_offset_and_drift(symbols: &[[Complex32; 8]]) -> (f32, f32) {
         })
         .collect();
     let at = |a: usize, f: f32| -> f32 {
-        let x = f / step + to_f32(steps);
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let i = x.round().max(0.0) as usize;
+        let i = round_to_usize(f / step + to_f32(grid_steps));
         grid[a].get(i).copied().unwrap_or(0.0)
     };
-    let times: Vec<f32> = COSTAS_POSITIONS
-        .iter()
-        .map(|&first| (to_f32(first) + 3.0 - middle + 0.5) * seconds_per_symbol)
-        .collect();
-    let drift_steps = (DRIFT_REACH.0 / DRIFT_REACH.1).round();
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let drift_steps = drift_steps as usize;
-    let mut best = (f32::NEG_INFINITY, 0.0, 0.0);
+    let steps = round_to_usize(reach / step);
+    let drift_steps = round_to_usize(drift_reach / drift_step);
+    let mut best = (f32::NEG_INFINITY, 0.0_f32, 0.0_f32);
+    let mut best_steady = (f32::NEG_INFINITY, 0.0_f32);
     for d in 0..=2 * drift_steps {
-        let drift = (to_f32(d) - to_f32(drift_steps)) * DRIFT_REACH.1;
-        for i in 0..=80 {
-            let f = (to_f32(i) - 40.0) * step;
+        let drift = (to_f32(d) - to_f32(drift_steps)) * drift_step;
+        for i in 0..=2 * steps {
+            let f = (to_f32(i) - to_f32(steps)) * step;
             let power: f32 = times
                 .iter()
                 .enumerate()
@@ -625,13 +619,29 @@ fn costas_offset_and_drift(symbols: &[[Complex32; 8]]) -> (f32, f32) {
             if power > best.0 {
                 best = (power, f, drift);
             }
+            if d == drift_steps && power > best_steady.0 {
+                best_steady = (power, f);
+            }
         }
     }
-    let penalty = exp_value("driftmin", 0.0);
-    if best.2.abs() < penalty {
-        return (0.0, 0.0);
+    // A drift is believed only when it explains clearly more of the
+    // Costas power than a steady frequency does: on a weak steady signal
+    // noise can favour a small drift, which costs more than it gains.
+    if best.0 < best_steady.0 * (1.0 + drift_margin()) {
+        return (best_steady.1, 0.0);
     }
     (best.1, best.2)
+}
+
+/// How much more of the Costas power a drifting fit has to explain than a
+/// steady one before it is believed; see [`costas_offset_and_drift`].
+fn drift_margin() -> f32 {
+    exp_value("driftmargin", 0.0)
+}
+
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, non-negative
+fn round_to_usize(x: f32) -> usize {
+    x.round().max(0.0) as usize
 }
 
 /// The sum of the Costas tones' amplitudes of each Costas array, added in
@@ -650,40 +660,6 @@ fn costas_power(symbols: &[[Complex32; 8]]) -> f32 {
         .sum()
 }
 
-/// The frequency offset, within `reach` hertz in steps of `step`, that
-/// makes the Costas tones add up most nearly in phase: a frequency error
-/// turns their phases steadily from symbol to symbol.
-fn costas_offset_hz(symbols: &[[Complex32; 8]], (reach, step): (f32, f32)) -> f32 {
-    let seconds_per_symbol = to_f32(baseband::SAMPLES_PER_SYMBOL) / baseband::RATE;
-    let steps = (reach / step).round();
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, positive
-    let steps = steps as usize;
-    let mut best = (f32::NEG_INFINITY, 0.0_f32);
-    for i in 0..=2 * steps {
-        let dhz = (to_f32(i) - to_f32(steps)) * step;
-        let power: f32 = COSTAS_POSITIONS
-            .iter()
-            .map(|&start| {
-                COSTAS
-                    .iter()
-                    .enumerate()
-                    .map(|(j, &tone)| {
-                        let k = start + j;
-                        let angle =
-                            -2.0 * std::f32::consts::PI * dhz * seconds_per_symbol * to_f32(k);
-                        symbols[k][usize::from(tone)] * Complex32::from_polar(1.0, angle)
-                    })
-                    .sum::<Complex32>()
-                    .norm_sqr()
-            })
-            .sum();
-        if power > best.0 {
-            best = (power, dhz);
-        }
-    }
-    best.1
-}
-
 /// Indexes of the 58 data symbols, in order.
 fn data_symbols() -> impl Iterator<Item = usize> {
     (0..SYMBOLS).filter(|s| !COSTAS_POSITIONS.iter().any(|&c| (c..c + 7).contains(s)))
@@ -698,29 +674,153 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
     // largest disagreement accepted from it.
     let mut fallbacks = Vec::new();
     for group in GROUPS {
-        let mut llr = metrics(&data, group, noise);
-        normalize(&mut llr);
+        let llr = likelihoods(locked, &data, group, noise);
         let (decoded, _) = ldpc::decode_soft(&llr, options.ldpc_iterations);
+        if let Some((bits, _)) = decoded {
+            record_stats(&data, &bits, noise, "bp", group, 0.0);
+        }
         if let Some(found) = decoded
-            .filter(|(bits, _)| coherent(&data, bits, noise))
+            .filter(|(bits, _)| validates(&data, bits, noise))
             .and_then(|(bits, _)| accept(&bits))
         {
             return Some(found);
         }
         if OSD_GROUPS.contains(&group) {
-            fallbacks.push(llr);
+            fallbacks.push((group, llr));
         }
     }
     if !deep || options.osd_pairs == 0 {
         return None;
     }
-    fallbacks.iter().find_map(|llr| {
+    fallbacks.iter().find_map(|(group, llr)| {
         let (bits, distance) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
-        if distance > OSD_MAX_DISTANCE || !coherent(&data, &bits, noise) {
+        record_stats(&data, &bits, noise, "osd", *group, distance);
+        if distance > OSD_MAX_DISTANCE || !validates(&data, &bits, noise) {
             return None;
         }
         accept(&bits).filter(|(payload, _)| plausible(*payload))
     })
+}
+
+/// Whether a codeword is borne out by the signal: the phase-coherence
+/// check, or (experiment `diffmin=T`) the differential coherence against T.
+fn validates(data: &[[Complex32; 8]], bits: &[bool; ldpc::N], noise: f32) -> bool {
+    let diffmin = exp_value("diffmin", 0.0);
+    if diffmin > 0.0 {
+        let tones = encode::tones_for_codeword(bits);
+        differential_coherence(data, &tones, noise) >= diffmin
+    } else {
+        coherent(data, bits, noise)
+    }
+}
+
+/// Experiment-only: appends one line per codeword that reached validation
+/// to the file named by `LOGLAB_FT8_STATS`: source, group, OSD distance,
+/// whether the CRC is right, and the validation statistics.
+fn record_stats(
+    data: &[[Complex32; 8]],
+    bits: &[bool; ldpc::N],
+    noise: f32,
+    source: &str,
+    group: usize,
+    distance: f32,
+) {
+    use std::io::Write as _;
+    static SINK: std::sync::OnceLock<Option<std::sync::Mutex<std::fs::File>>> =
+        std::sync::OnceLock::new();
+    let Some(sink) = SINK.get_or_init(|| {
+        std::env::var("LOGLAB_FT8_STATS").ok().and_then(|p| {
+            std::fs::OpenOptions::new()
+                .append(true)
+                .create(true)
+                .open(p)
+                .ok()
+                .map(std::sync::Mutex::new)
+        })
+    }) else {
+        return;
+    };
+    let payload_bits: [bool; 77] = bits[..77].try_into().unwrap_or([false; 77]);
+    let payload = Payload::from_bits(&payload_bits);
+    let crc = bits[77..91]
+        .iter()
+        .fold(0_u16, |v, &b| v << 1 | u16::from(b));
+    let ok = u8::from(payload.value() != 0 && crc == encode::crc14(payload));
+    let tones = encode::tones_for_codeword(bits);
+    let line = format!(
+        "{source}\t{group}\t{distance:.1}\t{ok}\t{:.2}\t{:.2}\t{:.2}\t{:.3}\t{:.3}\n",
+        coherence(data, bits, noise),
+        span_coherence(data, &tones, noise, 2),
+        span_coherence(data, &tones, noise, 3),
+        differential_coherence(data, &tones, noise),
+        differential_coherence2(data, &tones, noise),
+    );
+    if let Ok(mut f) = sink.lock() {
+        let _ = f.write_all(line.as_bytes());
+    }
+}
+
+/// The coherence statistic over runs of `span` symbols.
+fn span_coherence(data: &[[Complex32; 8]], tones: &Tones, noise: f32, span: usize) -> f32 {
+    let data_tones: Vec<usize> = data_symbols().map(|k| usize::from(tones[k])).collect();
+    let mut total = 0.0_f32;
+    let mut runs = 0.0_f32;
+    for (symbols, sent) in data.chunks(29).zip(data_tones.chunks(29)) {
+        for first in 0..=symbols.len().saturating_sub(span) {
+            let sum: Complex32 = (first..first + span).map(|k| symbols[k][sent[k]]).sum();
+            total += sum.norm_sqr();
+            runs += 1.0;
+        }
+    }
+    if noise > 0.0 {
+        total / (noise * runs)
+    } else {
+        0.0
+    }
+}
+
+/// Differential coherence: the products of each decoded tone's amplitude
+/// with the conjugate of the next symbol's, summed over the transmission,
+/// in units of the noise power per pair. A real signal's products all
+/// share the phase step between symbols, whatever slow drift or fading
+/// does to the phase itself; noise's point every way.
+fn differential_coherence(data: &[[Complex32; 8]], tones: &Tones, noise: f32) -> f32 {
+    let data_tones: Vec<usize> = data_symbols().map(|k| usize::from(tones[k])).collect();
+    let mut sum = Complex32::new(0.0, 0.0);
+    let mut pairs = 0.0_f32;
+    for (symbols, sent) in data.chunks(29).zip(data_tones.chunks(29)) {
+        for k in 0..symbols.len() - 1 {
+            sum += symbols[k][sent[k]] * symbols[k + 1][sent[k + 1]].conj();
+            pairs += 1.0;
+        }
+    }
+    if noise > 0.0 {
+        sum.norm() / (noise * pairs)
+    } else {
+        0.0
+    }
+}
+
+/// As [`differential_coherence`], over pairs two symbols apart as well.
+fn differential_coherence2(data: &[[Complex32; 8]], tones: &Tones, noise: f32) -> f32 {
+    let data_tones: Vec<usize> = data_symbols().map(|k| usize::from(tones[k])).collect();
+    let mut sum1 = Complex32::new(0.0, 0.0);
+    let mut sum2 = Complex32::new(0.0, 0.0);
+    let mut pairs = 0.0_f32;
+    for (symbols, sent) in data.chunks(29).zip(data_tones.chunks(29)) {
+        for k in 0..symbols.len() - 1 {
+            sum1 += symbols[k][sent[k]] * symbols[k + 1][sent[k + 1]].conj();
+            pairs += 1.0;
+        }
+        for k in 0..symbols.len() - 2 {
+            sum2 += symbols[k][sent[k]] * symbols[k + 2][sent[k + 2]].conj();
+        }
+    }
+    if noise > 0.0 {
+        (sum1.norm() + sum2.norm()) / (noise * pairs)
+    } else {
+        0.0
+    }
 }
 
 /// How many consecutive data symbols the likelihoods take together, in the
@@ -803,6 +903,78 @@ fn noise_power(data: &[[Complex32; 8]]) -> f32 {
         .get(powers.len() / 2)
         .map_or(1.0, |m| m / std::f32::consts::LN_2)
 }
+
+/// The bit likelihoods of `group`-symbol combining from a lock, weighted
+/// by how much signal each symbol carries ([`symbol_weights`]) and scaled
+/// for belief propagation.
+fn likelihoods(
+    locked: &Locked,
+    data: &[[Complex32; 8]],
+    group: usize,
+    noise: f32,
+) -> [f32; ldpc::N] {
+    let mut llr = metrics(data, group, noise);
+    if let Some(weights) = symbol_weights(&locked.symbols, noise) {
+        for (k, w) in weights.iter().enumerate() {
+            for b in 0..3 {
+                llr[3 * k + b] *= w;
+            }
+        }
+    }
+    normalize(&mut llr);
+    llr
+}
+
+/// How much signal each data symbol carries, as an amplitude relative to
+/// the transmission's average, smoothed over neighbouring symbols: a
+/// signal that fades carries nothing for a while, and the likelihoods of
+/// those symbols should say so rather than vote at random. The Costas
+/// symbols' known tones give the signal power there outright; a data
+/// symbol's strongest tone gives it less the power the strongest of eight
+/// noise tones would have. `None` when the transmission as a whole shows
+/// no signal, or the weighting is off.
+fn symbol_weights(symbols: &[[Complex32; 8]], noise: f32) -> Option<Vec<f32>> {
+    let soften = exp_value("symw", 0.0);
+    if soften <= 0.0 || noise <= 0.0 {
+        return None;
+    }
+    let window = round_to_usize(exp_value("symwin", 4.0));
+    let excess: Vec<f32> = symbols
+        .iter()
+        .enumerate()
+        .map(|(k, tones)| {
+            let costas = COSTAS_POSITIONS
+                .iter()
+                .find(|&&c| (c..c + 7).contains(&k))
+                .map(|&c| usize::from(COSTAS[k - c]));
+            match costas {
+                Some(t) => tones[t].norm_sqr() - noise,
+                None => {
+                    tones.iter().map(Complex32::norm_sqr).fold(0.0, f32::max)
+                        - EXPECTED_MAX_OF_EIGHT * noise
+                }
+            }
+        })
+        .collect();
+    let average = excess.iter().sum::<f32>() / to_f32(excess.len());
+    if average <= 0.0 {
+        return None;
+    }
+    let local = |k: usize| -> f32 {
+        let lo = k.saturating_sub(window);
+        let hi = (k + window).min(excess.len() - 1);
+        (excess[lo..=hi].iter().sum::<f32>() / to_f32(hi - lo + 1)).max(0.0)
+    };
+    Some(
+        data_symbols()
+            .map(|k| ((local(k) + soften * average) / ((1.0 + soften) * average)).sqrt())
+            .collect(),
+    )
+}
+
+/// The average power of the strongest of eight tones carrying only noise,
+/// in units of the noise power in one tone (the eighth harmonic number).
+const EXPECTED_MAX_OF_EIGHT: f32 = 2.717_857;
 
 /// How sharply the tone amplitudes, measured in units of the noise, are
 /// weighed against each other; tuned on the bench.
