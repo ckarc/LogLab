@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 
     from loglab_engine.store import Actor
 
+PHOTO_URL = "https://cdn-xml.qrz.com/u/w1aw/w1aw.jpg"
+JPEG = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 40
 QRZ_PASSWORD = "qrz-pass"  # noqa: S105 - a stand-in QRZ.com account
 
 
@@ -37,6 +39,8 @@ class FakeQrz:
         self.asked: list[dict[str, str]] = []
         self.keys: set[str] = set()
         self.note: str | None = None  # a session <Message>, such as a subscription notice
+        self.bio = "First licensed in 1914."
+        self.photo = JPEG
 
     def __call__(self, url: str) -> bytes:
         """Answer one request."""
@@ -60,9 +64,30 @@ class FakeQrz:
         record = (
             "<Callsign><call>W1AW</call><fname>Hiram Percy</fname><name>Maxim</name>"
             "<addr2>Newington</addr2><state>CT</state><country>United States</country>"
-            "<grid>FN31pr</grid></Callsign>"
+            "<grid>FN31pr</grid><bio>120</bio><image>https://cdn-xml.qrz.com/u/w1aw/w1aw.jpg</image>"
+            "</Callsign>"
         )
         return f'<QRZDatabase xmlns="http://xmldata.qrz.com">{record}<Session>{key}</Session></QRZDatabase>'.encode()
+
+    def large(self, url: str, limit: int) -> bytes:
+        """Answer a request for a biography page or a photo."""
+        assert limit > 0
+        if not self.online:
+            raise QrzUnreachableError("no internet")
+        if url == PHOTO_URL:
+            self.asked.append({"photo": url})
+            return self.photo
+        query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))
+        self.asked.append(query)
+        if query.get("s") not in self.keys:
+            return self._session("<Error>Session Timeout</Error>")
+        key = f"<Key>{query['s']}</Key>"
+        if query["html"].upper() != "W1AW":
+            return self._session(f"<Error>Not found: {query['html']}</Error>{key}")
+        return (
+            '<?xml version="1.0" encoding="utf-8" ?>\n<QRZDatabase xmlns="http://xmldata.qrz.com">'
+            f"<html><body><p>{self.bio}</p><script>alert(1)</script></body></html>"
+        ).encode()
 
     @staticmethod
     def _session(inner: str) -> bytes:
@@ -82,7 +107,7 @@ def qrz() -> FakeQrz:
 @pytest.fixture
 def client(database: str, qrz: FakeQrz) -> TestClient:
     """The Engine's API on this test's database, reaching the stand-in QRZ.com."""
-    return TestClient(create_app(conninfo(database), qrz_fetch=qrz))
+    return TestClient(create_app(conninfo(database), qrz_fetch=qrz, qrz_fetch_large=qrz.large))
 
 
 def _sign_in(client: TestClient, callsign: str, secret: str, station: str) -> dict[str, str]:
@@ -336,3 +361,82 @@ def test_the_database_lets_only_the_signed_in_operator_change_a_login(
     login = store.login(shack, "qrz")
     assert login is not None
     assert login.password == QRZ_PASSWORD
+
+
+def _bio(client: TestClient, headers: dict[str, str], call: str, **extra: str) -> dict[str, Any]:
+    response = client.get("/api/v1/lookup/bio", headers=headers, params={"call": call, **extra})
+    assert response.status_code == 200, response.text
+    return response.json()  # type: ignore[no-any-return]
+
+
+def test_a_lookup_says_whether_there_is_a_photo_and_a_biography(
+    client: TestClient, k9ksu: dict[str, str]
+) -> None:
+    """The station profile asks for them only when QRZ.com has them."""
+    _set_up(client, k9ksu)
+    found = _look(client, k9ksu, "W1AW")
+    assert (found["photo"], found["bio"]) == (True, True)
+
+
+def test_a_biography_is_plain_words_fetched_once_and_kept_for_no_internet(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """Only the words are kept (Principle XII); the kept copy shows offline (V, VI)."""
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    bio = _bio(client, k9ksu, "w1aw")
+    assert bio["status"] == "found"
+    assert bio["text"] == "First licensed in 1914."
+    asked = len(qrz.asked)
+    assert _bio(client, k9ksu, "W1AW")["text"] == "First licensed in 1914."
+    assert len(qrz.asked) == asked
+    qrz.bio = "Now on FT8 too."
+    assert _bio(client, k9ksu, "W1AW", refresh="true")["text"] == "Now on FT8 too."
+    qrz.online = False
+    kept = _bio(client, k9ksu, "W1AW", refresh="true")
+    assert kept["text"] == "Now on FT8 too."
+    assert "before" in kept["message"]
+
+
+def test_no_biography_is_asked_for_before_a_lookup_or_without_a_login(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], qrz: FakeQrz
+) -> None:
+    """A call never looked up, or one with no biography, costs no request."""
+    assert _bio(client, k9ksu, "W1AW")["status"] == "not_found"
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    asked = len(qrz.asked)
+    assert _bio(client, w0xyz, "W1AW")["status"] == "not_set_up"
+    assert _bio(client, k9ksu, "K1XX")["status"] == "not_found"
+    assert len(qrz.asked) == asked
+
+
+def test_a_photo_is_served_as_the_picture_it_is_and_kept(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """It is fetched once, served from the Engine (Principle I), and shows offline (V)."""
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    photo = client.get("/api/v1/lookup/photo", headers=k9ksu, params={"call": "W1AW"})
+    assert photo.status_code == 200
+    assert photo.headers["content-type"] == "image/jpeg"
+    assert photo.headers["x-content-type-options"] == "nosniff"
+    assert photo.content == JPEG
+    qrz.online = False
+    again = client.get("/api/v1/lookup/photo", headers=k9ksu, params={"call": "W1AW"})
+    assert again.content == JPEG
+    assert sum(1 for q in qrz.asked if "photo" in q) == 1
+    none = client.get("/api/v1/lookup/photo", headers=k9ksu, params={"call": "K1XX"})
+    assert none.status_code == 404
+    assert client.get("/api/v1/lookup/photo", params={"call": "W1AW"}).status_code == 401
+
+
+def test_a_photo_that_is_not_a_safe_picture_is_never_served(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """An SVG or a web page in place of a photo fails closed (Principle XII)."""
+    qrz.photo = b'<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>'
+    _set_up(client, k9ksu)
+    _look(client, k9ksu, "W1AW")
+    photo = client.get("/api/v1/lookup/photo", headers=k9ksu, params={"call": "W1AW"})
+    assert photo.status_code == 404

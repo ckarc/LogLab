@@ -11,8 +11,11 @@ from loglab_engine.callbook.qrz import (
     QrzReplyError,
     QrzSessionError,
     QrzUnreachableError,
+    bio_text,
     http_fetch,
+    http_fetch_large,
     parse_reply,
+    picture_type,
 )
 from loglab_engine.callbook.service import Callbook, Link, LoginCheck, LookupResult, LookupStatus
 
@@ -29,6 +32,9 @@ __all__ = [
     "QrzReplyError",
     "QrzSessionError",
     "QrzUnreachableError",
+    "bio_text",
     "http_fetch",
+    "http_fetch_large",
     "parse_reply",
+    "picture_type",
 ]
