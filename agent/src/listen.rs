@@ -4,7 +4,7 @@
 //! Listening to FT8 and telling the Engine what was heard.
 //!
 //! Every 15-second slot's audio is drawn as a waterfall, sent to the Engine
-//! a row every half second as it arrives, and decoded by LogLab's own FT8
+//! a few rows every half second as it arrives, and decoded by LogLab's own FT8
 //! decoder once the slot is over. The decodes go to the Engine as received
 //! (Principle XX): each one came from the signal and passed the decoder's
 //! checks. Nothing is guessed or filled in here.
@@ -29,17 +29,16 @@ use crate::pretend::FT8_DIAL_HZ;
 use crate::pretend_ft8::PretendBand;
 
 /// Waterfall rows per second of audio.
-pub const ROWS_PER_SECOND: usize = 2;
+pub const ROWS_PER_SECOND: usize = 4;
 /// Waterfall rows in one slot.
 pub const ROWS_PER_SLOT: usize = ROWS_PER_SECOND * SLOT_SECONDS as usize;
 /// Samples between waterfall rows.
 const ROW_STEP: usize = SAMPLE_RATE as usize / ROWS_PER_SECOND;
-/// FFT length for a waterfall row: 0.32 s, giving 3.125 Hz bins.
+/// FFT length for a waterfall row: 0.32 s, giving 3.125 Hz bins, half an
+/// FT8 tone apart, so each tone of a signal shows on its own.
 const ROW_FFT: usize = 3_840;
-/// FFT bins added together into one waterfall column.
-const BINS_PER_COLUMN: usize = 2;
-/// Waterfall columns: 0 to 3,000 Hz of audio.
-pub const COLUMNS: usize = 480;
+/// Waterfall columns, one FFT bin each: 0 to 3,000 Hz of audio.
+pub const COLUMNS: usize = 960;
 /// How far above the row's typical level is drawn brightest, in decibels.
 const RANGE_DB: f32 = 25.0;
 /// The level the typical (noise) column is drawn at, out of 255.
@@ -71,12 +70,9 @@ pub fn waterfall_rows(audio: &[f32], from: usize, to: usize) -> Vec<String> {
             }
             fft.process(&mut buffer);
             let db: Vec<f32> = buffer
-                .chunks_exact(BINS_PER_COLUMN)
+                .iter()
                 .take(COLUMNS)
-                .map(|bins| {
-                    let power: f32 = bins.iter().map(Complex32::norm_sqr).sum();
-                    10.0 * (power + 1e-6).log10()
-                })
+                .map(|bin| 10.0 * (bin.norm_sqr() + 1e-6).log10())
                 .collect();
             let mut sorted = db.clone();
             sorted.sort_by(f32::total_cmp);
@@ -174,9 +170,14 @@ pub fn listen_to_pretend_band(uplink: &Uplink, agent: &str, running: &AtomicBool
         }
 
         if let Some(listening) = now_on.as_mut() {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0 to 30
-            let ready = ((into * 2.0).floor() as usize).min(ROWS_PER_SLOT);
-            if ready >= listening.rows_sent + 2
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss
+            )] // 0 to 60
+            let ready = ((into * ROWS_PER_SECOND as f64).floor() as usize).min(ROWS_PER_SLOT);
+            // Half a second of rows at a time.
+            if ready >= listening.rows_sent + ROWS_PER_SECOND / 2
                 || (ready == ROWS_PER_SLOT && ready > listening.rows_sent)
             {
                 let rows = waterfall_rows(&listening.audio, listening.rows_sent, ready);
@@ -269,7 +270,7 @@ mod tests {
             .collect();
         let brightest = (0..COLUMNS).max_by_key(|&c| levels[c]).unwrap_or(0);
         #[allow(clippy::cast_precision_loss)] // small whole numbers
-        let hz = brightest as f64 * 6.25;
+        let hz = brightest as f64 * 3.125;
         assert!(
             sent.iter()
                 .any(|s| hz >= s.base_hz - 10.0 && hz <= s.base_hz + 60.0),
@@ -280,7 +281,7 @@ mod tests {
     #[test]
     fn rows_past_the_slot_are_not_drawn() {
         let audio = vec![0.0; 180_000];
-        assert_eq!(waterfall_rows(&audio, 28, 40).len(), 2);
-        assert!(waterfall_rows(&audio, 30, 40).is_empty());
+        assert_eq!(waterfall_rows(&audio, ROWS_PER_SLOT - 2, 80).len(), 2);
+        assert!(waterfall_rows(&audio, ROWS_PER_SLOT, 80).is_empty());
     }
 }

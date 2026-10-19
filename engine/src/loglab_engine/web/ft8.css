@@ -1,20 +1,22 @@
 /* SPDX-FileCopyrightText: 2026 LogLab contributors */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
-/* The FT8 box: a waterfall over the list of stations heard. The waterfall
-   keeps its own dark colours in both themes, like a radio's display. */
+/* The FT8 waterfall box and the FT8 box with the list of stations heard.
+   The waterfall keeps its own dark colours in both themes, like a radio's
+   display. */
 
-.ft8-waterfall-wrap { margin-bottom: 10px; }
-.ft8-waterfall {
-  display: block;
-  width: 100%;
-  height: 160px;
+.ft8-screen {
   border-radius: 10px;
   border: 1px solid var(--glass-line);
-  background: #080c28;
+  overflow: hidden;
+  background: #04060f;
 }
+.ft8-spectrum { display: block; width: 100%; height: 72px; border-bottom: 1px solid rgba(255, 255, 255, 0.12); }
+.ft8-waterfall { display: block; width: 100%; height: 220px; }
 .ft8-scale { position: relative; height: 16px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .ft8-scale span { position: absolute; top: 2px; transform: translateX(-50%); }
+.ft8-look { justify-content: flex-end; margin: 4px 0 0; }
+.ft8-look select { width: auto; min-width: 0; padding: 3px 10px; font-size: 13px; }
 
 #ft8 .table-wrap { max-height: 440px; overflow-y: auto; }
 .ft8-list { font-size: 14px; font-variant-numeric: tabular-nums; }

@@ -270,14 +270,28 @@
         <p id="stats-error" class="error" role="alert"></p>
       </section>
 
-      <section id="ft8" class="card module" data-module="ft8">
-        <h2>FT8 <span id="ft8-scope" class="hint"></span> <span id="ft8-pretend" class="radio-label problem" title="These are made-up stations from the Station Agent's pretend FT8 band, not real ones" hidden>pretend band</span></h2>
-        <p id="ft8-none" class="hint">Shows the stations your Station Agent hears on FT8. No Agent at this station is listening to FT8 right now.</p>
-        <div id="ft8-body" hidden>
-          <div class="ft8-waterfall-wrap">
+      <section id="waterfall" class="card module" data-module="waterfall">
+        <h2>FT8 waterfall <span class="hint ft8-scope"></span> <span class="radio-label problem ft8-pretend" title="These are made-up stations from the Station Agent's pretend FT8 band, not real ones" hidden>pretend band</span></h2>
+        <p class="hint ft8-none">Shows the FT8 audio your Station Agent hears. No Agent at this station is listening to FT8 right now.</p>
+        <div class="ft8-body" hidden>
+          <div class="ft8-screen">
+            <canvas id="ft8-spectrum" class="ft8-spectrum" aria-label="FT8 spectrum: the strength of the audio across the band, this past second"></canvas>
             <canvas id="ft8-waterfall" class="ft8-waterfall" aria-label="FT8 waterfall: the last minute of audio, newest at the top"></canvas>
-            <div id="ft8-scale" class="ft8-scale" aria-hidden="true"></div>
           </div>
+          <div id="ft8-scale" class="ft8-scale" aria-hidden="true"></div>
+          <div class="filters ft8-look">
+            <label class="inline">Colours
+              <select id="ft8-palette"></select>
+            </label>
+          </div>
+        </div>
+        <p class="error ft8-error" role="alert"></p>
+      </section>
+
+      <section id="ft8" class="card module" data-module="ft8">
+        <h2>FT8 <span class="hint ft8-scope"></span> <span class="radio-label problem ft8-pretend" title="These are made-up stations from the Station Agent's pretend FT8 band, not real ones" hidden>pretend band</span></h2>
+        <p class="hint ft8-none">Shows the stations your Station Agent hears on FT8. No Agent at this station is listening to FT8 right now.</p>
+        <div class="ft8-body" hidden>
           <div class="filters">
             <span id="ft8-count" class="hint" aria-live="polite"></span>
             <span id="ft8-tools" class="table-tools"></span>
@@ -290,7 +304,7 @@
           </div>
           <p class="hint">Click a station to fill in New QSO. Nothing here transmits.</p>
         </div>
-        <p id="ft8-error" class="error" role="alert"></p>
+        <p class="error ft8-error" role="alert"></p>
       </section>
 
       <section id="onair" class="card module" data-module="onair">
