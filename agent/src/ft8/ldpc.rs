@@ -27,13 +27,25 @@ const PATIENCE: usize = 10;
 /// satisfied.
 #[must_use]
 pub fn decode(llr: &[f32; N], max_iterations: usize) -> Option<([bool; N], usize)> {
+    decode_soft(llr, max_iterations).0
+}
+
+/// [`decode`], also returning the sum of the bit likelihoods over every
+/// round: when decoding fails, these are often more reliable than the
+/// input and make a better starting point for [`osd`].
+#[must_use]
+pub fn decode_soft(
+    llr: &[f32; N],
+    max_iterations: usize,
+) -> (Option<([bool; N], usize)>, [f32; N]) {
     let phi = phi_table();
+    let mut accumulated = *llr;
     // Check-to-bit messages, one per edge, in the order of CHECKS.
     let mut to_bit: Vec<Vec<f32>> = CHECKS.iter().map(|c| vec![0.0; c.len()]).collect();
     let mut total = *llr;
     let mut bits = hard_decision(&total);
     if satisfied(&bits) {
-        return Some((bits, 0));
+        return (Some((bits, 0)), accumulated);
     }
     let mut fewest_failing = failing(&bits);
     let mut stale = 0;
@@ -68,10 +80,13 @@ pub fn decode(llr: &[f32; N], max_iterations: usize) -> Option<([bool; N], usize
                 total[bit] += m;
             }
         }
+        for (a, t) in accumulated.iter_mut().zip(&total) {
+            *a += t;
+        }
         bits = hard_decision(&total);
         let now = failing(&bits);
         if now == 0 {
-            return Some((bits, iteration));
+            return (Some((bits, iteration)), accumulated);
         }
         if now < fewest_failing {
             fewest_failing = now;
@@ -79,11 +94,11 @@ pub fn decode(llr: &[f32; N], max_iterations: usize) -> Option<([bool; N], usize
         } else {
             stale += 1;
             if stale >= PATIENCE {
-                return None;
+                return (None, accumulated);
             }
         }
     }
-    None
+    (None, accumulated)
 }
 
 /// A codeword-length bit set.
@@ -172,12 +187,16 @@ pub fn osd(llr: &[f32; N], pair_span: usize) -> Option<([bool; N], f32)> {
         h
     };
     let cost = |word: &Bits| -> f32 {
-        let mut diff = *word;
-        xor(&mut diff, &hard);
-        (0..N)
-            .filter(|&i| get(&diff, i))
-            .map(|i| llr[i].abs())
-            .sum()
+        let mut total = 0.0;
+        for (w, (&a, &b)) in word.iter().zip(&hard).enumerate() {
+            let mut diff = a ^ b;
+            while diff != 0 {
+                let i = 64 * w + diff.trailing_zeros() as usize;
+                total += llr[i].abs();
+                diff &= diff - 1;
+            }
+        }
+        total
     };
 
     // The codeword taking the hard decisions at the pivots.
@@ -307,6 +326,37 @@ mod tests {
             }
         }
         assert!(rescued >= 3, "OSD rescued only {rescued}");
+        Ok(())
+    }
+
+    #[test]
+    fn refined_likelihoods_help_ordered_statistics() -> Result<(), MessageError> {
+        // On channels too noisy for belief propagation, its accumulated
+        // likelihoods should rescue at least as many codewords through OSD
+        // as the raw ones do.
+        let sent = codeword(pack("K9KSU W1AW RR73")?);
+        let mut rng = Rng::new(33);
+        let (mut raw, mut refined) = (0, 0);
+        for _ in 0..40 {
+            let mut llr = [0.0_f32; N];
+            for (l, &bit) in llr.iter_mut().zip(&sent) {
+                let clean = if bit { -1.0 } else { 1.0 };
+                #[allow(clippy::cast_possible_truncation)]
+                let received = (clean + 0.95 * rng.gaussian()) as f32;
+                *l = 2.0 * received / 0.9;
+            }
+            let (decoded, accumulated) = super::decode_soft(&llr, 40);
+            if decoded.is_some() {
+                continue;
+            }
+            let rescued = |l: &[f32; N]| super::osd(l, 30).is_some_and(|(w, _)| w == sent);
+            raw += usize::from(rescued(&llr));
+            refined += usize::from(rescued(&accumulated));
+        }
+        assert!(
+            refined >= raw && refined > 0,
+            "raw {raw}, refined {refined}"
+        );
         Ok(())
     }
 
