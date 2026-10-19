@@ -370,6 +370,52 @@
     try { localStorage.setItem(THEME_KEY, theme); } catch { /* remembered only for this page */ }
   }
 
+  // The Menu's headings: one opens at a time, the one used last opens again
+  // next time, and each heading shows what is set under it. A heading with
+  // nothing to show hides itself; one holding an error opens so it is seen.
+  const MENU_KEY = "loglab.menu";
+  const THEME_NAMES = { auto: "Auto", light: "Light", dark: "Dark" };
+
+  function tidyMenu(menu) {
+    const sections = [...menu.querySelectorAll(".menu-section")];
+    let saved = null;
+    try { saved = localStorage.getItem(MENU_KEY); } catch { /* none remembered */ }
+    for (const section of sections) {
+      section.open = section.dataset.menuSection === saved;
+      section.addEventListener("toggle", () => {
+        if (!section.open) return;
+        for (const other of sections) if (other !== section) other.open = false;
+        try { localStorage.setItem(MENU_KEY, section.dataset.menuSection); } catch { /* not remembered */ }
+      });
+    }
+    const refresh = () => {
+      for (const section of sections) {
+        const entries = [...section.querySelectorAll(".menu-body > *:not(.error)")];
+        const empty = entries.length > 0 && entries.every((e) => e.hidden || isEmptyItems(e));
+        if (section.hidden !== empty) section.hidden = empty;
+        if ([...section.querySelectorAll(".error")].some((e) => e.textContent.trim())) section.open = true;
+      }
+      const theme = document.documentElement.dataset.theme || "auto";
+      setText($("#menu-now-appearance"), THEME_NAMES[theme] || "");
+      const choice = $("#op-choice");
+      const picked = choice.selectedOptions[0];
+      setText($("#menu-now-operation"), !picked || !choice.value ? "Everyday" : picked.textContent.replace(/ \(.*$/, ""));
+    };
+    new MutationObserver(refresh).observe(menu, { subtree: true, childList: true, characterData: true, attributes: true, attributeFilter: ["hidden"] });
+    new MutationObserver(refresh).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    $("#op-choice").addEventListener("change", refresh);
+    refresh();
+  }
+
+  // Writing only a change keeps the Menu's watcher from waking itself.
+  function setText(element, text) {
+    if (element.textContent !== text) element.textContent = text;
+  }
+
+  function isEmptyItems(element) {
+    return element.classList.contains("menu-items") && [...element.children].every((c) => c.hidden);
+  }
+
   function rememberedTheme() {
     try {
       const theme = localStorage.getItem(THEME_KEY);
@@ -1893,6 +1939,7 @@
     $("#menu-open").addEventListener("click", () => menu.showModal());
     $("#menu-close").addEventListener("click", () => menu.close());
     menu.addEventListener("click", (event) => { if (event.target === menu) menu.close(); }); // the backdrop
+    tidyMenu(menu);
     for (const b of document.querySelectorAll("[data-theme-choice]")) {
       b.addEventListener("click", () => chooseTheme(b.dataset.themeChoice));
     }
