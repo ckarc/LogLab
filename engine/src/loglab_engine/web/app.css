@@ -508,7 +508,7 @@ body.arranging .module-head {
 .handle .grip { color: var(--accent); font-size: 18px; line-height: 1; }
 .handle .module-title { flex: 1; overflow: hidden; text-overflow: ellipsis; }
 /* Pop out: a box in a window of its own. */
-h2 .popout { margin-left: auto; font-size: 13px; font-weight: 500; color: var(--muted); }
+h2 .popout { margin-left: auto; padding: 2px 6px; font-size: 17px; font-weight: 500; line-height: 1; color: var(--muted); }
 h2 .popout:hover { color: var(--accent); }
 /* The Menu's list of boxes to show. */
 .box-picker { display: flex; flex-direction: column; gap: 6px; padding: 6px 0 4px 4px; }

@@ -1194,8 +1194,10 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "link popout";
-      button.textContent = "⧉ Pop out";
-      button.title = `Open ${MODULES[id]} in a window of its own, to put on another screen`;
+      // Just the icon; the tooltip and the label say what it does.
+      button.textContent = "⧉";
+      button.title = `Pop out: open ${MODULES[id]} in a window of its own, to put on another screen`;
+      button.setAttribute("aria-label", `Pop out ${MODULES[id]}`);
       button.addEventListener("click", () => popOut(id));
       $("h2", moduleEl(id)).append(button);
     }
