@@ -76,6 +76,10 @@ def test_the_zone_and_sweepstakes_contests_follow_their_rules(
     else:
         assert zone_field in fields
         assert zone_field in found.entry.fields
+    # Their points depend on continent or zone, not mode group, so no score is shown.
+    assert found.stats is not None
+    assert "score" not in found.stats.show
+    assert ("sections" in found.stats.show) == (zone_field is None)
 
 
 def test_a_single_mode_contest_does_not_count_the_other_modes() -> None:

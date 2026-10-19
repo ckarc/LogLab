@@ -131,6 +131,16 @@
       }
     ]
   },
+  "stats": {
+    "show": [
+      "rate",
+      "hourly",
+      "band_mode",
+      "operators",
+      "dupes",
+      "sections"
+    ]
+  },
   "entry": {
     "fields": [
       "CALL",
