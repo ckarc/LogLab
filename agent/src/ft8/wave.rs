@@ -7,6 +7,8 @@
 
 use std::f64::consts::PI;
 
+use rustfft::num_complex::Complex32;
+
 use super::encode::Tones;
 use super::{SAMPLE_RATE, SAMPLES_PER_SYMBOL, SYMBOLS, TONE_SPACING_HZ};
 
@@ -17,6 +19,29 @@ const BT: f64 = 2.0;
 /// 151,680 samples at 12,000 per second, peak amplitude 1.
 #[must_use]
 pub fn synthesize(tones: &Tones, base_hz: f64) -> Vec<f32> {
+    let (phases, envelope) = phases_and_envelope(tones, base_hz);
+    phases
+        .iter()
+        .zip(&envelope)
+        .map(|(p, e)| to_f32(p.sin()) * to_f32(*e))
+        .collect()
+}
+
+/// The same transmission as a complex (analytic) signal, `e^(i phase)`
+/// times the ramps: its real part is the audio shifted a quarter cycle.
+/// Used to measure and subtract a decoded signal.
+#[must_use]
+pub fn synthesize_complex(tones: &Tones, base_hz: f64) -> Vec<Complex32> {
+    let (phases, envelope) = phases_and_envelope(tones, base_hz);
+    phases
+        .iter()
+        .zip(&envelope)
+        .map(|(p, e)| Complex32::from_polar(to_f32(*e), to_f32(*p)))
+        .collect()
+}
+
+/// The phase of every sample, and the ramp envelope.
+fn phases_and_envelope(tones: &Tones, base_hz: f64) -> (Vec<f64>, Vec<f64>) {
     let nsps = SAMPLES_PER_SYMBOL;
     let pulse = gaussian_pulse();
     let rate = f64::from(SAMPLE_RATE);
@@ -39,23 +64,24 @@ pub fn synthesize(tones: &Tones, base_hz: f64) -> Vec<f32> {
     }
 
     let mut phase = 0.0_f64;
-    let mut audio: Vec<f32> = step[nsps..(SYMBOLS + 1) * nsps]
+    let phases: Vec<f64> = step[nsps..(SYMBOLS + 1) * nsps]
         .iter()
         .map(|s| {
-            let sample = phase.sin();
+            let now = phase;
             phase = (phase + s) % (2.0 * PI);
-            to_f32(sample)
+            now
         })
         .collect();
 
     let ramp = nsps / 8;
-    let total = audio.len();
+    let total = phases.len();
+    let mut envelope = vec![1.0; total];
     for i in 0..ramp {
-        let envelope = to_f32((1.0 - (PI * index_f64(i) / index_f64(ramp)).cos()) / 2.0);
-        audio[i] *= envelope;
-        audio[total - 1 - i] *= envelope;
+        let e = (1.0 - (PI * index_f64(i) / index_f64(ramp)).cos()) / 2.0;
+        envelope[i] = e;
+        envelope[total - 1 - i] = e;
     }
-    audio
+    (phases, envelope)
 }
 
 /// The Gaussian-smoothed frequency pulse of one symbol, three symbols long.

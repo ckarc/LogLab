@@ -15,16 +15,26 @@
 //!    peaks become candidates.
 //! 3. **Lock.** Each candidate's slice of the band is moved to baseband,
 //!    where its start time is tuned to 1/32 of a symbol and its frequency
-//!    to a quarter hertz by maximizing the Costas power.
+//!    to a quarter hertz by maximizing the power on the signal: the Costas
+//!    tones and the strongest tone of each data symbol. If the best lock
+//!    does not decode, its nearest neighbours in time and frequency are
+//!    tried too.
 //! 4. **Soft demodulation.** The complex tone amplitudes of each data symbol
-//!    become a likelihood for each bit, first symbol by symbol and then, if
-//!    that fails, three symbols at a time, adding the tones coherently
-//!    (FT8's phase runs on unbroken from symbol to symbol).
+//!    become a likelihood for each bit, first symbol by symbol and then
+//!    three and two symbols at a time, adding the tones coherently (FT8's
+//!    phase runs on unbroken from symbol to symbol).
 //! 5. **Error correction.** The LDPC code's belief propagation turns the
-//!    likelihoods into a codeword; the CRC confirms it.
+//!    likelihoods into a codeword; the CRC confirms it. Signals it decodes
+//!    are removed (step 6) before the slower ordered-statistics decoding is
+//!    tried on the rest, so the leftovers of a strong signal cannot be
+//!    mistaken for another one.
 //! 6. **Subtraction.** Each decoded signal is rebuilt and removed from the
-//!    spectrogram, and the search runs again, so signals hidden under it
+//!    audio itself, and the search runs again, so signals hidden under it
 //!    can be found.
+//!
+//! Every decode here is *received* in the sense of Principle XX: all of it
+//! came from the signal and passed the parity checks and the CRC. Nothing
+//! is assumed about what a message probably says.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -36,6 +46,7 @@ use super::baseband::{self, Baseband, ToneMeter};
 use super::encode::{self, COSTAS, COSTAS_POSITIONS, Tones};
 use super::ldpc;
 use super::message::{self, Payload};
+use super::subtract;
 use super::{NOMINAL_START_SECONDS, SAMPLE_RATE, SAMPLES_PER_SYMBOL, SYMBOLS, TONE_SPACING_HZ};
 
 /// Spectrogram columns per symbol.
@@ -172,52 +183,111 @@ struct Candidate {
 /// Decodes one 15-second slot of 12,000-sample-per-second audio.
 #[must_use]
 pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
-    let mut spectrogram = Spectrogram::new(audio, options.high_hz + 8.0 * TONE_SPACING_HZ);
-    let baseband = Baseband::new(audio);
     let meter = ToneMeter::new();
+    let mut residual = audio.to_vec();
     let mut found: BTreeMap<String, Decode> = BTreeMap::new();
     let mut tried = std::collections::BTreeSet::new();
     for _ in 0..options.passes {
+        let spectrogram = Spectrogram::new(&residual, options.high_hz + 8.0 * TONE_SPACING_HZ);
+        let baseband = Baseband::new(&residual);
         // A later pass only retries a place if subtraction changed it
         // enough to move the peak.
         let fresh: Vec<Candidate> = candidates(&spectrogram, options)
             .into_iter()
             .filter(|c| tried.insert((c.column, c.row)))
             .collect();
-        let results = in_parallel(&fresh, options.threads, |&candidate| {
-            let locked = lock(&baseband, &meter, candidate);
-            demodulate(&locked, options).map(|(payload, tones)| (locked, payload, tones))
-        });
-        let mut new = Vec::new();
-        for (candidate, result) in fresh.into_iter().zip(results) {
-            let Some((locked, payload, tones)) = result else {
-                continue;
-            };
-            let Some(text) = message::unpack(payload) else {
-                continue;
-            };
-            if found.contains_key(&text) {
-                continue;
+
+        // First belief propagation alone, at the best lock and its
+        // neighbours.
+        let quick = in_parallel(&fresh, options.threads, |&candidate| {
+            let mut locks = lock(&baseband, &meter, candidate);
+            match locks
+                .iter()
+                .position(|l| demodulate(l, options, false).is_some())
+            {
+                Some(i) => Ok(locks.swap_remove(i)),
+                None => Err(locks.swap_remove(0)),
             }
-            let decode = Decode {
-                message: text.clone(),
-                snr_db: estimate_snr(&locked, &tones),
-                dt_s: start_to_dt(locked.start),
-                base_hz: (locked.base_hz * 10.0).round() / 10.0,
+        });
+        let mut decoded_hz = Vec::new();
+        let mut failed = Vec::new();
+        for (candidate, outcome) in fresh.into_iter().zip(quick) {
+            match outcome {
+                Ok(locked) => {
+                    if let Some(hz) = record(&mut found, &mut residual, &locked, options, false) {
+                        decoded_hz.push(hz);
+                    }
+                }
+                Err(locked) => failed.push((candidate, locked)),
+            }
+        }
+
+        // Then the slower, riskier ordered-statistics decoding, on audio
+        // with those signals already removed, so their leftovers cannot be
+        // mistaken for other signals. Candidates near a removed signal are
+        // locked again.
+        let baseband = if decoded_hz.is_empty() {
+            baseband
+        } else {
+            Baseband::new(&residual)
+        };
+        let near = |candidate: &Candidate| {
+            let hz = row_to_hz(candidate.row);
+            decoded_hz.iter().any(|&d| (d - hz).abs() < NEAR_HZ)
+        };
+        let deep = in_parallel(&failed, options.threads, |(candidate, locked)| {
+            let locked = if near(candidate) {
+                lock(&baseband, &meter, *candidate).swap_remove(0)
+            } else {
+                locked.clone()
             };
-            found.insert(text, decode);
-            new.push((candidate, tones));
+            demodulate(&locked, options, true).map(|_| locked)
+        });
+        let mut any = !decoded_hz.is_empty();
+        for locked in deep.into_iter().flatten() {
+            any |= record(&mut found, &mut residual, &locked, options, true).is_some();
         }
-        if new.is_empty() {
+        if !any {
             break;
-        }
-        for (candidate, tones) in new {
-            subtract(&mut spectrogram, candidate, &tones);
         }
     }
     let mut decodes: Vec<Decode> = found.into_values().collect();
     decodes.sort_by(|a, b| a.base_hz.total_cmp(&b.base_hz));
     decodes
+}
+
+/// Candidates whose frequency is within this of a signal just removed are
+/// locked again before deep decoding, in hertz: a signal and its
+/// neighbourhood are 50 Hz wide.
+const NEAR_HZ: f64 = 75.0;
+
+/// Adds the decode at `locked` (demodulating it again, which is cheap and
+/// gives the same answer) unless it is already known, and removes its
+/// signal from `residual`. Returns its frequency if it was new.
+fn record(
+    found: &mut BTreeMap<String, Decode>,
+    residual: &mut [f32],
+    locked: &Locked,
+    options: &Options,
+    deep: bool,
+) -> Option<f64> {
+    let (payload, tones) = demodulate(locked, options, deep)?;
+    let text = message::unpack(payload)?;
+    if found.contains_key(&text) {
+        return None;
+    }
+    found.insert(
+        text.clone(),
+        Decode {
+            message: text,
+            snr_db: estimate_snr(locked, &tones),
+            dt_s: start_to_dt(locked.start),
+            base_hz: (locked.base_hz * 10.0).round() / 10.0,
+        },
+    );
+    let audio_start = locked.start * to_isize(SAMPLE_RATE as usize / 200);
+    subtract::subtract(residual, &tones, locked.base_hz, audio_start);
+    Some(locked.base_hz)
 }
 
 /// `work` applied to every item, spread over up to `threads` threads; the
@@ -306,6 +376,7 @@ fn sync_score(spectrogram: &Spectrogram, column: isize, row: usize) -> f32 {
 }
 
 /// A candidate after fine timing and frequency: its 79 symbols' tones.
+#[derive(Clone)]
 struct Locked {
     /// Baseband sample where symbol 0 starts (audio sample `60 start`).
     start: isize,
@@ -322,57 +393,88 @@ const FINE_HZ: [f32; 7] = [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5];
 /// Baseband samples either side of the candidate's start that are tried.
 const FINE_SAMPLES: isize = 6;
 
-/// Tunes a candidate's start and frequency to put the most power on its
-/// Costas tones, then measures every symbol.
-fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Locked {
+/// Offsets from the best lock, in hertz and baseband samples, also tried
+/// when it fails to decode: at low signal levels the best-scoring lock is
+/// often a step away from the true one.
+const NEIGHBOURS: [(f32, isize); 4] = [(0.0, -1), (0.0, 1), (-0.25, 0), (0.25, 0)];
+
+/// Tunes a candidate's start and frequency to put the most power on the
+/// signal: its Costas tones, plus the strongest tone of every data symbol.
+/// Returns the best lock first, then its [`NEIGHBOURS`].
+fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Locked> {
     let coarse_hz = row_to_hz(candidate.row);
     let slice = baseband.slice(coarse_hz);
     let coarse_start = candidate.column * to_isize(STEP / (SAMPLE_RATE as usize / 200));
     let sps = to_isize(baseband::SAMPLES_PER_SYMBOL);
-    let costas_power = |shifted: &[Complex32], start: isize| -> f32 {
-        let mut power = 0.0;
-        for position in COSTAS_POSITIONS {
-            for (k, &tone) in COSTAS.iter().enumerate() {
-                let symbol_start = start + sps * to_isize(position + k);
-                power += meter
-                    .tone(shifted, symbol_start, usize::from(tone))
-                    .norm_sqr();
+    let costas_tone = |k: usize| -> Option<usize> {
+        COSTAS_POSITIONS
+            .iter()
+            .find(|&&c| (c..c + 7).contains(&k))
+            .map(|&c| usize::from(COSTAS[k - c]))
+    };
+    // The power on the signal for every start from `around - reach` to
+    // `around + reach`: its Costas tones, plus the strongest tone of every
+    // data symbol. The data symbols' tones are unknown, but the strongest
+    // of each is usually right, and there are nearly three times as many
+    // of them: at low signal levels this steadies the lock considerably.
+    // Each symbol's tones are measured once and then slid a sample at a
+    // time.
+    let powers = |shifted: &[Complex32], around: isize, reach: isize| -> Vec<f32> {
+        let starts = usize::try_from(2 * reach + 1).unwrap_or(1);
+        let mut totals = vec![0.0_f32; starts];
+        for k in 0..SYMBOLS {
+            let first = around - reach + sps * to_isize(k);
+            let mut tones = meter.tones(shifted, first);
+            let costas = costas_tone(k);
+            for (j, total) in totals.iter_mut().enumerate() {
+                if j > 0 {
+                    meter.slide(&mut tones, shifted, first + to_isize(j) - 1);
+                }
+                *total += match costas {
+                    Some(tone) => tones[tone].norm_sqr(),
+                    None => tones.iter().map(Complex32::norm_sqr).fold(0.0, f32::max),
+                };
             }
         }
-        power
+        totals
     };
     let best_start = |shifted: &[Complex32], around: isize, reach: isize| -> (f32, isize) {
-        (around - reach..=around + reach)
-            .map(|start| (costas_power(shifted, start), start))
+        powers(shifted, around, reach)
+            .into_iter()
+            .zip(around - reach..)
             .fold(
                 (f32::NEG_INFINITY, around),
                 |a, b| if b.0 > a.0 { b } else { a },
             )
     };
-    let mut best = (f32::NEG_INFINITY, 0.0_f32, coarse_start, Vec::new());
+    let mut best = (f32::NEG_INFINITY, 0.0_f32, coarse_start);
     for &hz in &FINE_HZ {
-        let shifted = baseband::shift(&slice, hz);
-        let (power, start) = best_start(&shifted, coarse_start, FINE_SAMPLES);
+        let (power, start) = best_start(&baseband::shift(&slice, hz), coarse_start, FINE_SAMPLES);
         if power > best.0 {
-            best = (power, hz, start, shifted);
+            best = (power, hz, start);
         }
     }
     for hz in [best.1 - 0.25, best.1 + 0.25] {
-        let shifted = baseband::shift(&slice, hz);
-        let (power, start) = best_start(&shifted, best.2, 2);
+        let (power, start) = best_start(&baseband::shift(&slice, hz), best.2, 2);
         if power > best.0 {
-            best = (power, hz, start, shifted);
+            best = (power, hz, start);
         }
     }
-    let (_, hz, start, shifted) = best;
-    let symbols = (0..SYMBOLS)
-        .map(|k| meter.tones(&shifted, start + sps * to_isize(k)))
-        .collect();
-    Locked {
-        start,
-        base_hz: coarse_hz + f64::from(hz),
-        symbols,
-    }
+    let (_, hz, start) = best;
+    std::iter::once((0.0, 0))
+        .chain(NEIGHBOURS)
+        .map(|(dhz, dstart)| {
+            let shifted = baseband::shift(&slice, hz + dhz);
+            let start = start + dstart;
+            Locked {
+                start,
+                base_hz: coarse_hz + f64::from(hz + dhz),
+                symbols: (0..SYMBOLS)
+                    .map(|k| meter.tones(&shifted, start + sps * to_isize(k)))
+                    .collect(),
+            }
+        })
+        .collect()
 }
 
 /// Indexes of the 58 data symbols, in order.
@@ -380,35 +482,46 @@ fn data_symbols() -> impl Iterator<Item = usize> {
     (0..SYMBOLS).filter(|s| !COSTAS_POSITIONS.iter().any(|&c| (c..c + 7).contains(s)))
 }
 
-/// Tries the soft-decision metrics in turn until one decodes.
-fn demodulate(locked: &Locked, options: &Options) -> Option<(Payload, Tones)> {
+/// Tries the soft-decision metrics in turn until one decodes. With `deep`,
+/// ordered-statistics decoding follows when belief propagation fails.
+fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload, Tones)> {
     let data: Vec<[Complex32; 8]> = data_symbols().map(|k| locked.symbols[k]).collect();
-    let mut sets = Vec::new();
+    let noise = noise_power(&data);
+    // Likelihood sets for ordered-statistics decoding, each with the
+    // largest disagreement accepted from it.
+    let mut fallbacks = Vec::new();
     for group in [1, 3, 2] {
-        let mut llr = metrics(&data, group);
+        let mut llr = metrics(&data, group, noise);
         normalize(&mut llr);
-        if let Some(found) = check(&llr, options) {
+        let (decoded, mut accumulated) = ldpc::decode_soft(&llr, options.ldpc_iterations);
+        if let Some(found) = decoded.and_then(|(bits, _)| accept(&bits)) {
             return Some(found);
         }
-        sets.push(llr);
+        fallbacks.push((llr, OSD_MAX_DISTANCE));
+        if group == 1 {
+            normalize(&mut accumulated);
+            fallbacks.push((accumulated, OSD_REFINED_MAX_DISTANCE));
+        }
     }
-    if options.osd_pairs == 0 {
+    if !deep || options.osd_pairs == 0 {
         return None;
     }
-    for llr in &sets {
+    fallbacks.iter().find_map(|(llr, limit)| {
         let (bits, distance) = ldpc::osd(llr, options.osd_pairs)?;
-        if distance <= OSD_MAX_DISTANCE
-            && let Some(found) = accept(&bits).filter(|(payload, _)| plausible(*payload))
-        {
-            return Some(found);
+        if distance > *limit {
+            return None;
         }
-    }
-    None
+        accept(&bits).filter(|(payload, _)| plausible(*payload))
+    })
 }
 
 /// Largest disagreement an ordered-statistics decode may have and still be
 /// accepted, tuned on the bench.
 const OSD_MAX_DISTANCE: f32 = 45.0;
+
+/// The same, for likelihoods refined by belief propagation, which are more
+/// sharply spread, so wrong codewords come nearer; tuned on the bench.
+const OSD_REFINED_MAX_DISTANCE: f32 = 24.0;
 
 /// Extra caution for ordered-statistics decodes, which can land on a wrong
 /// codeword whose CRC happens to pass (about one in 16,000 tries): the
@@ -417,19 +530,39 @@ fn plausible(payload: Payload) -> bool {
     message::unpack(payload).is_some_and(|text| !text.contains("/R"))
 }
 
+/// Average noise power in one tone of one symbol, estimated from the median
+/// tone power (most tones carry only noise, and the median of an
+/// exponential distribution is its mean times ln 2).
+fn noise_power(data: &[[Complex32; 8]]) -> f32 {
+    let mut powers: Vec<f32> = data
+        .iter()
+        .flat_map(|s| s.iter().map(Complex32::norm_sqr))
+        .collect();
+    powers.sort_by(f32::total_cmp);
+    powers
+        .get(powers.len() / 2)
+        .map_or(1.0, |m| m / std::f32::consts::LN_2)
+}
+
+/// How sharply the tone amplitudes, measured in units of the noise, are
+/// weighed against each other; tuned on the bench.
+const METRIC_SCALE: f32 = 4.0;
+
 /// Bit likelihoods from the data symbols, taking `group` consecutive symbols
-/// together (within each half between Costas arrays): the likelihood of a
-/// bit compares the strongest coherent sum of tone amplitudes over all tone
-/// combinations with that bit 0 against the strongest with it 1.
-fn metrics(data: &[[Complex32; 8]], group: usize) -> [f32; ldpc::N] {
+/// together (within each half between Costas arrays). Every combination of
+/// tones in the group is weighed by the strength of their coherent sum, and
+/// a bit's likelihood compares the total weight of the combinations with
+/// that bit 0 against those with it 1.
+fn metrics(data: &[[Complex32; 8]], group: usize, noise: f32) -> [f32; ldpc::N] {
     let mut llr = [0.0_f32; ldpc::N];
+    let mut weights = [0.0_f32; 512];
+    let mut labels = [0_usize; 512];
     for (half, symbols) in data.chunks(29).enumerate() {
         let mut first = 0;
         while first < symbols.len() {
             let size = group.min(symbols.len() - first);
             let combos = 1_usize << (3 * size);
-            let mut zero = [f32::NEG_INFINITY; 9];
-            let mut one = [f32::NEG_INFINITY; 9];
+            let spread = noise * to_f32(size);
             for combo in 0..combos {
                 let mut sum = Complex32::new(0.0, 0.0);
                 let mut bits = 0_usize;
@@ -438,30 +571,33 @@ fn metrics(data: &[[Complex32; 8]], group: usize) -> [f32; ldpc::N] {
                     sum += symbols[first + j][tone];
                     bits = bits << 3 | usize::from(TONE_BITS[tone]);
                 }
-                let amplitude = sum.norm();
-                for b in 0..3 * size {
-                    let slot = if (bits >> (3 * size - 1 - b)) & 1 == 0 {
-                        &mut zero
-                    } else {
-                        &mut one
-                    };
-                    slot[b] = slot[b].max(amplitude);
-                }
+                weights[combo] = METRIC_SCALE * (sum.norm_sqr() / spread).sqrt();
+                labels[combo] = bits;
             }
+            // Log-sum-exp, relative to the largest weight so nothing
+            // overflows.
+            let peak = weights[..combos]
+                .iter()
+                .copied()
+                .fold(f32::NEG_INFINITY, f32::max);
             let offset = 3 * (29 * half + first);
             for b in 0..3 * size {
-                llr[offset + b] = zero[b] - one[b];
+                let (mut zero, mut one) = (0.0_f32, 0.0_f32);
+                for (w, &bits) in weights[..combos].iter().zip(&labels[..combos]) {
+                    let e = (w - peak).exp();
+                    if (bits >> (3 * size - 1 - b)) & 1 == 0 {
+                        zero += e;
+                    } else {
+                        one += e;
+                    }
+                }
+                llr[offset + b] =
+                    zero.max(f32::MIN_POSITIVE).ln() - one.max(f32::MIN_POSITIVE).ln();
             }
             first += size;
         }
     }
     llr
-}
-
-/// Runs the LDPC decoder and the CRC on a set of likelihoods.
-fn check(llr: &[f32; ldpc::N], options: &Options) -> Option<(Payload, Tones)> {
-    let (bits, _) = ldpc::decode(llr, options.ldpc_iterations)?;
-    accept(&bits)
 }
 
 /// The payload of a codeword whose CRC is right.
@@ -518,41 +654,6 @@ fn estimate_snr(locked: &Locked, tones: &Tones) -> f64 {
     (10.0 * ratio.log10() - REFERENCE_BANDWIDTH_DB)
         .clamp(-30.0, 30.0)
         .round()
-}
-
-/// Removes a decoded signal's power from the spectrogram by replacing its
-/// tone cells with the median of the other tones in the same column.
-fn subtract(spectrogram: &mut Spectrogram, candidate: Candidate, tones: &Tones) {
-    for (symbol, &tone) in tones.iter().enumerate() {
-        let Some(powers) = spectrogram.tones(candidate.column, candidate.row, symbol) else {
-            continue;
-        };
-        let mut others: Vec<f32> = powers
-            .iter()
-            .enumerate()
-            .filter(|&(t, _)| t != usize::from(tone))
-            .map(|(_, &p)| p)
-            .collect();
-        others.sort_by(f32::total_cmp);
-        let floor = others[others.len() / 2];
-        let centre = candidate.column + to_isize(symbol * TIME_STEPS_PER_SYMBOL);
-        let row = candidate.row + BINS_PER_TONE * usize::from(tone);
-        // The tone's energy spreads a quarter symbol either side in time and
-        // half a tone either side in frequency.
-        for dc in -2..=2 {
-            let Ok(c) = usize::try_from(centre + dc) else {
-                continue;
-            };
-            let Some(col) = spectrogram.power.get_mut(c) else {
-                continue;
-            };
-            for r in row.saturating_sub(1)..=row + 1 {
-                if let Some(p) = col.get_mut(r) {
-                    *p = p.min(floor);
-                }
-            }
-        }
-    }
 }
 
 fn hz_to_row(hz: f64) -> usize {
@@ -633,6 +734,46 @@ mod tests {
             assert!((d.dt_s - signal.dt_s).abs() <= 0.1, "{d:?}");
             assert!((d.snr_db - signal.snr_db).abs() <= 3.0, "{d:?}");
         }
+        Ok(())
+    }
+
+    #[test]
+    fn decodes_weak_signals_without_inventing_any() -> Result<(), MessageError> {
+        // Twelve signals at -18 dB, a few decibels above where FT8 stops
+        // working; every one sent must come back, and nothing else.
+        let messages = [
+            "CQ K9KSU EN52",
+            "W1AW K9KSU -12",
+            "K9KSU W1AW R-09",
+            "CQ DL1ABC JO62",
+            "VE3XYZ DL1ABC RR73",
+            "JA1ZZZ VK2AB 73",
+            "CQ G4ABC IO91",
+            "N0AX G4ABC RRR",
+            "CQ PY2AA GG66",
+            "ZS6AB PY2AA +03",
+            "CQ VK3XY QF22",
+            "K1ABC VK3XY R+01",
+        ];
+        let mut found = 0;
+        for (index, group) in messages.chunks(4).enumerate() {
+            let signals: Vec<Signal> = group
+                .iter()
+                .zip([400.0, 1100.0, 1800.0, 2500.0])
+                .map(|(message, base_hz)| Signal {
+                    message: (*message).to_owned(),
+                    base_hz,
+                    dt_s: 0.2,
+                    snr_db: -18.0,
+                })
+                .collect();
+            let slot = Slot { index, signals };
+            for d in decode_slot(&audio(&slot)?, &Options::default()) {
+                assert!(messages.contains(&d.message.as_str()), "invented {d:?}");
+                found += 1;
+            }
+        }
+        assert_eq!(found, messages.len());
         Ok(())
     }
 

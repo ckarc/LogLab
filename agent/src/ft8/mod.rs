@@ -23,6 +23,7 @@ pub mod ldpc;
 mod ldpc_checks;
 mod ldpc_generator;
 pub mod message;
+mod subtract;
 pub mod wave;
 
 /// Audio sample rate FT8 is defined at, in samples per second.
