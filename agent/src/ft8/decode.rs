@@ -16,18 +16,23 @@
 //! 3. **Lock.** Each candidate's slice of the band is moved to baseband,
 //!    where its start time is tuned to 1/32 of a symbol and its frequency
 //!    to a quarter hertz by maximizing the power on the signal: the Costas
-//!    tones and the strongest tone of each data symbol. If the best lock
-//!    does not decode, its nearest neighbours in time and frequency are
-//!    tried too.
+//!    tones and the strongest tone of each data symbol. Then the phases of
+//!    the Costas tones settle the frequency to a few hundredths of a hertz
+//!    and the timing to a sample, by making the tones of each Costas array
+//!    add up in phase. If the best lock does not decode, its nearest
+//!    neighbours in frequency are tried too.
 //! 4. **Soft demodulation.** The complex tone amplitudes of each data symbol
 //!    become a likelihood for each bit, first symbol by symbol and then
-//!    three and two symbols at a time, adding the tones coherently (FT8's
-//!    phase runs on unbroken from symbol to symbol).
+//!    three, two and four symbols at a time, adding the tones coherently
+//!    (FT8's phase runs on unbroken from symbol to symbol).
 //! 5. **Error correction.** The LDPC code's belief propagation turns the
 //!    likelihoods into a codeword; the CRC confirms it. Signals it decodes
-//!    are removed (step 6) before the slower ordered-statistics decoding is
-//!    tried on the rest, so the leftovers of a strong signal cannot be
-//!    mistaken for another one.
+//!    are removed (step 6) before the slower, deeper ordered-statistics
+//!    decoding is tried on the rest, so the leftovers of a strong signal
+//!    cannot be mistaken for another one. Every codeword, from either, must
+//!    also be borne out by the signal's phase ([`coherent`]): the tones it
+//!    says were sent have to add up in phase along the transmission, which
+//!    the tones noise happens to favour never do.
 //! 6. **Subtraction.** Each decoded signal is rebuilt and removed from the
 //!    audio itself, and the search runs again, so signals hidden under it
 //!    can be found.
@@ -84,6 +89,8 @@ pub struct Options {
     /// How many of the least reliable bits ordered-statistics decoding tries
     /// in pairs when belief propagation fails; 0 turns it off.
     pub osd_pairs: usize,
+    /// How many of the least reliable bits it tries in triples.
+    pub osd_triples: usize,
 }
 
 impl Default for Options {
@@ -98,7 +105,8 @@ impl Default for Options {
             threads: std::thread::available_parallelism()
                 .map_or(1, usize::from)
                 .min(8),
-            osd_pairs: 30,
+            osd_pairs: 91,
+            osd_triples: 25,
         }
     }
 }
@@ -206,7 +214,7 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
                 .position(|l| demodulate(l, options, false).is_some())
             {
                 Some(i) => Ok(locks.swap_remove(i)),
-                None => Err(locks.swap_remove(0)),
+                None => Err(locks),
             }
         });
         let mut decoded_hz = Vec::new();
@@ -235,13 +243,15 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
             let hz = row_to_hz(candidate.row);
             decoded_hz.iter().any(|&d| (d - hz).abs() < NEAR_HZ)
         };
-        let deep = in_parallel(&failed, options.threads, |(candidate, locked)| {
-            let locked = if near(candidate) {
-                lock(&baseband, &meter, *candidate).swap_remove(0)
+        let deep = in_parallel(&failed, options.threads, |(candidate, locks)| {
+            let locks = if near(candidate) {
+                lock(&baseband, &meter, *candidate)
             } else {
-                locked.clone()
+                locks.clone()
             };
-            demodulate(&locked, options, true).map(|_| locked)
+            locks
+                .into_iter()
+                .find(|locked| demodulate(locked, options, true).is_some())
         });
         let mut any = !decoded_hz.is_empty();
         for locked in deep.into_iter().flatten() {
@@ -393,13 +403,33 @@ const FINE_HZ: [f32; 7] = [-1.5, -1.0, -0.5, 0.0, 0.5, 1.0, 1.5];
 /// Baseband samples either side of the candidate's start that are tried.
 const FINE_SAMPLES: isize = 6;
 
+/// Reach and step, in hertz, of the first coherent frequency refinement,
+/// and of the second after the timing has been settled.
+const COHERENT_HZ: (f32, f32) = (0.6, 0.02);
+const COHERENT_HZ_AGAIN: (f32, f32) = (0.3, 0.01);
+
+/// Baseband samples either side of the start tried by the coherent timing
+/// refinement.
+const COHERENT_SAMPLES: isize = 3;
+
 /// Offsets from the best lock, in hertz and baseband samples, also tried
-/// when it fails to decode: at low signal levels the best-scoring lock is
-/// often a step away from the true one.
-const NEIGHBOURS: [(f32, isize); 4] = [(0.0, -1), (0.0, 1), (-0.25, 0), (0.25, 0)];
+/// when it fails to decode: the coherent lock's timing is reliable, but
+/// its frequency can still be off by a few hundredths of a hertz, which
+/// the four-symbol likelihoods feel.
+const NEIGHBOURS: [(f32, isize); 2] = [(-0.1, 0), (0.1, 0)];
 
 /// Tunes a candidate's start and frequency to put the most power on the
-/// signal: its Costas tones, plus the strongest tone of every data symbol.
+/// signal, in two stages.
+///
+/// First, noncoherently: the power on its Costas tones plus the strongest
+/// tone of every data symbol, over coarse steps. Then coherently, from the
+/// phases of the Costas tones: the frequency offset that makes each Costas
+/// array add up in phase, the start that gives the largest in-phase sum,
+/// and the offset once more. The coherent stage settles the frequency to a
+/// few hundredths of a hertz and the timing to one baseband sample, which
+/// the multi-symbol likelihoods of [`metrics`] need: a quarter-hertz error
+/// turns the phase by a third of a cycle across three symbols.
+///
 /// Returns the best lock first, then its [`NEIGHBOURS`].
 fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Locked> {
     let coarse_hz = row_to_hz(candidate.row);
@@ -460,7 +490,23 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
             best = (power, hz, start);
         }
     }
-    let (_, hz, start) = best;
+    let (_, mut hz, mut start) = best;
+
+    // Coherent refinement from the Costas tones' phases.
+    let measure = |shifted: &[Complex32], start: isize| -> Vec<[Complex32; 8]> {
+        (0..SYMBOLS)
+            .map(|k| meter.tones(shifted, start + sps * to_isize(k)))
+            .collect()
+    };
+    let mut symbols = measure(&baseband::shift(&slice, hz), start);
+    hz += costas_offset_hz(&symbols, COHERENT_HZ);
+    let shifted = baseband::shift(&slice, hz);
+    (start, symbols) = (start - COHERENT_SAMPLES..=start + COHERENT_SAMPLES)
+        .map(|s| (s, measure(&shifted, s)))
+        .max_by(|a, b| costas_power(&a.1).total_cmp(&costas_power(&b.1)))
+        .unwrap_or((start, symbols));
+    hz += costas_offset_hz(&symbols, COHERENT_HZ_AGAIN);
+
     std::iter::once((0.0, 0))
         .chain(NEIGHBOURS)
         .map(|(dhz, dstart)| {
@@ -469,12 +515,60 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
             Locked {
                 start,
                 base_hz: coarse_hz + f64::from(hz + dhz),
-                symbols: (0..SYMBOLS)
-                    .map(|k| meter.tones(&shifted, start + sps * to_isize(k)))
-                    .collect(),
+                symbols: measure(&shifted, start),
             }
         })
         .collect()
+}
+
+/// The sum of the Costas tones' amplitudes of each Costas array, added in
+/// phase, as a power; largest when the frequency and timing are right.
+fn costas_power(symbols: &[[Complex32; 8]]) -> f32 {
+    COSTAS_POSITIONS
+        .iter()
+        .map(|&start| {
+            COSTAS
+                .iter()
+                .enumerate()
+                .map(|(j, &tone)| symbols[start + j][usize::from(tone)])
+                .sum::<Complex32>()
+                .norm_sqr()
+        })
+        .sum()
+}
+
+/// The frequency offset, within `reach` hertz in steps of `step`, that
+/// makes the Costas tones add up most nearly in phase: a frequency error
+/// turns their phases steadily from symbol to symbol.
+fn costas_offset_hz(symbols: &[[Complex32; 8]], (reach, step): (f32, f32)) -> f32 {
+    let seconds_per_symbol = to_f32(baseband::SAMPLES_PER_SYMBOL) / baseband::RATE;
+    let steps = (reach / step).round();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, positive
+    let steps = steps as usize;
+    let mut best = (f32::NEG_INFINITY, 0.0_f32);
+    for i in 0..=2 * steps {
+        let dhz = (to_f32(i) - to_f32(steps)) * step;
+        let power: f32 = COSTAS_POSITIONS
+            .iter()
+            .map(|&start| {
+                COSTAS
+                    .iter()
+                    .enumerate()
+                    .map(|(j, &tone)| {
+                        let k = start + j;
+                        let angle =
+                            -2.0 * std::f32::consts::PI * dhz * seconds_per_symbol * to_f32(k);
+                        symbols[k][usize::from(tone)] * Complex32::from_polar(1.0, angle)
+                    })
+                    .sum::<Complex32>()
+                    .norm_sqr()
+            })
+            .sum();
+        if power > best.0 {
+            best = (power, dhz);
+        }
+    }
+    best.1
 }
 
 /// Indexes of the 58 data symbols, in order.
@@ -490,38 +584,48 @@ fn demodulate(locked: &Locked, options: &Options, deep: bool) -> Option<(Payload
     // Likelihood sets for ordered-statistics decoding, each with the
     // largest disagreement accepted from it.
     let mut fallbacks = Vec::new();
-    for group in [1, 3, 2] {
+    for group in GROUPS {
         let mut llr = metrics(&data, group, noise);
         normalize(&mut llr);
-        let (decoded, mut accumulated) = ldpc::decode_soft(&llr, options.ldpc_iterations);
-        if let Some(found) = decoded.and_then(|(bits, _)| accept(&bits)) {
+        let (decoded, _) = ldpc::decode_soft(&llr, options.ldpc_iterations);
+        if let Some(found) = decoded
+            .filter(|(bits, _)| coherent(&data, bits, noise))
+            .and_then(|(bits, _)| accept(&bits))
+        {
             return Some(found);
         }
-        fallbacks.push((llr, OSD_MAX_DISTANCE));
-        if group == 1 {
-            normalize(&mut accumulated);
-            fallbacks.push((accumulated, OSD_REFINED_MAX_DISTANCE));
+        if OSD_GROUPS.contains(&group) {
+            fallbacks.push(llr);
         }
     }
     if !deep || options.osd_pairs == 0 {
         return None;
     }
-    fallbacks.iter().find_map(|(llr, limit)| {
-        let (bits, distance) = ldpc::osd(llr, options.osd_pairs)?;
-        if distance > *limit {
+    fallbacks.iter().find_map(|llr| {
+        let (bits, distance) = ldpc::osd(llr, options.osd_pairs, options.osd_triples)?;
+        if distance > OSD_MAX_DISTANCE || !coherent(&data, &bits, noise) {
             return None;
         }
         accept(&bits).filter(|(payload, _)| plausible(*payload))
     })
 }
 
-/// Largest disagreement an ordered-statistics decode may have and still be
-/// accepted, tuned on the bench.
-const OSD_MAX_DISTANCE: f32 = 45.0;
+/// How many consecutive data symbols the likelihoods take together, in the
+/// order tried: one symbol alone needs no phase coherence at all; three and
+/// two gain about a decibel on a steady signal; four gains a little more on
+/// a very steady one, and is tried last.
+const GROUPS: [usize; 4] = [1, 3, 2, 4];
 
-/// The same, for likelihoods refined by belief propagation, which are more
-/// sharply spread, so wrong codewords come nearer; tuned on the bench.
-const OSD_REFINED_MAX_DISTANCE: f32 = 24.0;
+/// The largest group, which sizes the tables of tone combinations.
+const MAX_GROUP: usize = 4;
+
+/// The groups whose likelihoods ordered-statistics decoding is tried on:
+/// on the bench, every signal it rescues, it rescues from one of these.
+const OSD_GROUPS: [usize; 2] = [3, 4];
+
+/// Largest disagreement an ordered-statistics decode may have and still be
+/// accepted, tuned on the bench; [`coherent`] is the stronger guard.
+const OSD_MAX_DISTANCE: f32 = 60.0;
 
 /// Extra caution for ordered-statistics decodes, which can land on a wrong
 /// codeword whose CRC happens to pass (about one in 16,000 tries): the
@@ -529,6 +633,39 @@ const OSD_REFINED_MAX_DISTANCE: f32 = 24.0;
 fn plausible(payload: Payload) -> bool {
     message::unpack(payload).is_some_and(|text| !text.contains("/R"))
 }
+
+/// Whether a codeword is borne out by the signal's phase: over every run
+/// of [`COHERENCE_SPAN`] consecutive data symbols, the amplitudes of the
+/// tones the codeword says were sent are added in phase. A real signal's
+/// tones add up (FT8's phase runs on unbroken from symbol to symbol); the
+/// tones noise happens to favour have random phases and do not. Averaged
+/// over all the runs, in units of the noise power, noise never reaches
+/// [`COHERENCE_MIN`] on the bench (about 13 typically, 24 at most in
+/// 48,000 tries), while every real decode down to -23 dB is above it.
+/// This is what lets the deeper searches below run without decoding noise.
+fn coherent(data: &[[Complex32; 8]], bits: &[bool; ldpc::N], noise: f32) -> bool {
+    let tones = encode::tones_for_codeword(bits);
+    let data_tones: Vec<usize> = data_symbols().map(|k| usize::from(tones[k])).collect();
+    let mut total = 0.0_f32;
+    let mut runs = 0.0_f32;
+    for (symbols, sent) in data.chunks(29).zip(data_tones.chunks(29)) {
+        for first in 0..=symbols.len().saturating_sub(COHERENCE_SPAN) {
+            let sum: Complex32 = (first..first + COHERENCE_SPAN)
+                .map(|k| symbols[k][sent[k]])
+                .sum();
+            total += sum.norm_sqr();
+            runs += 1.0;
+        }
+    }
+    noise > 0.0 && total / (noise * runs) >= COHERENCE_MIN
+}
+
+/// Symbols added in phase by [`coherent`]: short enough to hold on a
+/// fading channel, long enough that noise cannot match it.
+const COHERENCE_SPAN: usize = 4;
+
+/// The least in-phase power a decode must show; see [`coherent`].
+const COHERENCE_MIN: f32 = 30.0;
 
 /// Average noise power in one tone of one symbol, estimated from the median
 /// tone power (most tones carry only noise, and the median of an
@@ -555,50 +692,75 @@ const METRIC_SCALE: f32 = 4.0;
 /// that bit 0 against those with it 1.
 fn metrics(data: &[[Complex32; 8]], group: usize, noise: f32) -> [f32; ldpc::N] {
     let mut llr = [0.0_f32; ldpc::N];
-    let mut weights = [0.0_f32; 512];
-    let mut labels = [0_usize; 512];
+    // Coherent sums of every tone combination, built a symbol at a time:
+    // the sums over the first j symbols are the first 8^j entries.
+    let mut sums = vec![Complex32::new(0.0, 0.0); 1 << (3 * MAX_GROUP)];
     for (half, symbols) in data.chunks(29).enumerate() {
         let mut first = 0;
         while first < symbols.len() {
             let size = group.min(symbols.len() - first);
             let combos = 1_usize << (3 * size);
             let spread = noise * to_f32(size);
-            for combo in 0..combos {
-                let mut sum = Complex32::new(0.0, 0.0);
-                let mut bits = 0_usize;
-                for j in 0..size {
-                    let tone = (combo >> (3 * (size - 1 - j))) & 7;
-                    sum += symbols[first + j][tone];
-                    bits = bits << 3 | usize::from(TONE_BITS[tone]);
-                }
-                weights[combo] = METRIC_SCALE * (sum.norm_sqr() / spread).sqrt();
-                labels[combo] = bits;
-            }
-            // Log-sum-exp, relative to the largest weight so nothing
-            // overflows.
-            let peak = weights[..combos]
-                .iter()
-                .copied()
-                .fold(f32::NEG_INFINITY, f32::max);
-            let offset = 3 * (29 * half + first);
-            for b in 0..3 * size {
-                let (mut zero, mut one) = (0.0_f32, 0.0_f32);
-                for (w, &bits) in weights[..combos].iter().zip(&labels[..combos]) {
-                    let e = (w - peak).exp();
-                    if (bits >> (3 * size - 1 - b)) & 1 == 0 {
-                        zero += e;
-                    } else {
-                        one += e;
+            sums[0] = Complex32::new(0.0, 0.0);
+            for j in 0..size {
+                let done = 1_usize << (3 * j);
+                for prefix in (0..done).rev() {
+                    let partial = sums[prefix];
+                    for (tone, amplitude) in symbols[first + j].iter().enumerate() {
+                        sums[prefix << 3 | tone] = partial + amplitude;
                     }
                 }
-                llr[offset + b] =
-                    zero.max(f32::MIN_POSITIVE).ln() - one.max(f32::MIN_POSITIVE).ln();
+            }
+            let weight = |sum: &Complex32| METRIC_SCALE * (sum.norm_sqr() / spread).sqrt();
+            // Log-sum-exp, relative to the largest weight so nothing
+            // overflows: each combination's weight is exponentiated once
+            // and credited to the tone it has in every symbol; a bit's
+            // likelihood then compares the tones carrying 0 with those
+            // carrying 1.
+            let peak = sums[..combos]
+                .iter()
+                .map(weight)
+                .fold(f32::NEG_INFINITY, f32::max);
+            let mut mass = [[0.0_f32; 8]; MAX_GROUP];
+            for (combo, sum) in sums[..combos].iter().enumerate() {
+                let e = (weight(sum) - peak).exp();
+                for (j, m) in mass[..size].iter_mut().enumerate() {
+                    m[(combo >> (3 * (size - 1 - j))) & 7] += e;
+                }
+            }
+            for (j, m) in mass[..size].iter().enumerate() {
+                for b in 0..3 {
+                    let (mut zero, mut one) = (0.0_f32, 0.0_f32);
+                    for (tone, &e) in m.iter().enumerate() {
+                        if (TONE_BITS[tone] >> (2 - b)) & 1 == 0 {
+                            zero += e;
+                        } else {
+                            one += e;
+                        }
+                    }
+                    llr[3 * (29 * half + first + j) + b] =
+                        zero.max(f32::MIN_POSITIVE).ln() - one.max(f32::MIN_POSITIVE).ln();
+                }
             }
             first += size;
         }
     }
     llr
 }
+
+/// How many wrong codewords have reached the CRC check and failed it since
+/// the process started: each passed the parity checks (or ordered-statistics
+/// decoding, its disagreement limit and [`coherent`]) and only the CRC
+/// caught it. A wrong codeword passes the CRC about once in 16,000 times,
+/// so this count divided by 16,383 is the number of false decodes to
+/// expect; the bench reports it, since zero false decodes in a few hundred
+/// recordings cannot tell a safe decoder from a lucky one.
+#[must_use]
+pub fn crc_misses() -> u64 {
+    CRC_MISSES.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static CRC_MISSES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// The payload of a codeword whose CRC is right.
 fn accept(bits: &[bool; ldpc::N]) -> Option<(Payload, Tones)> {
@@ -611,6 +773,7 @@ fn accept(bits: &[bool; ldpc::N]) -> Option<(Payload, Tones)> {
         .iter()
         .fold(0_u16, |v, &b| v << 1 | u16::from(b));
     if crc != encode::crc14(payload) {
+        CRC_MISSES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         return None;
     }
     Some((payload, encode::tones_for_payload(payload)))
