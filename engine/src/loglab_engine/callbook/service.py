@@ -65,6 +65,18 @@ class LookupResult:
     message: str
 
 
+@dataclass(frozen=True, slots=True)
+class LoginCheck:
+    """What happened when a saved QRZ.com login was tried.
+
+    ``status`` is ``None`` when QRZ.com accepted it; ``note`` is what QRZ.com
+    said: its reason for refusing, or a notice such as a missing subscription.
+    """
+
+    status: LookupStatus | None
+    note: str | None
+
+
 class Link:
     """The Engine's one connection to QRZ.com, shared by every request.
 
@@ -177,23 +189,24 @@ class Callbook:
         login = self._store.login(actor, SOURCE)
         return None if login is None else login.username
 
-    def save_login(self, actor: Actor, username: str, password: str) -> LookupStatus | None:
+    def save_login(self, actor: Actor, username: str, password: str) -> LoginCheck:
         """Save the operator's QRZ.com login and try it.
 
-        Returns ``None`` if QRZ.com accepted it, or why it could not be checked.
-        The login is saved either way, so it can be set up with no internet.
+        The answer says whether QRZ.com accepted it (``status`` is ``None``) or
+        why it could not be checked, with what QRZ.com said. The login is saved
+        either way, so it can be set up with no internet.
         """
         self._store.save_login(actor, SOURCE, username, password)
         try:
-            key = self._link.client.login(username, password)
-        except QrzLoginError:
-            return LookupStatus.LOGIN_FAILED
+            key, note = self._link.client.sign_in(username, password)
+        except QrzLoginError as error:
+            return LoginCheck(LookupStatus.LOGIN_FAILED, str(error))
         except (QrzUnreachableError, QrzReplyError):
             self._link.mark_down()
-            return LookupStatus.UNREACHABLE
+            return LoginCheck(LookupStatus.UNREACHABLE, None)
         self._link.mark_up()
         self._store.save_key(actor, SOURCE, key)
-        return None
+        return LoginCheck(None, note)
 
     def remove_login(self, actor: Actor) -> bool:
         """Remove the operator's QRZ.com login; ``False`` if there was none."""

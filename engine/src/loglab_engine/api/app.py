@@ -60,7 +60,14 @@ from pydantic import (
 from loglab_engine import __version__
 from loglab_engine.adif import AdifModelError, Record
 from loglab_engine.adif import Field as AdifField
-from loglab_engine.callbook import Callbook, Link, LookupStatus, QrzClient, http_fetch
+from loglab_engine.callbook import (
+    Callbook,
+    Link,
+    LoginCheck,
+    LookupStatus,
+    QrzClient,
+    http_fetch,
+)
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
@@ -1554,9 +1561,23 @@ def put_qrz_login(body: QrzLoginIn, who: Signed, books: Books) -> QrzLoginOut:
     result = books.save_login(who, body.username, body.password)
     return QrzLoginOut(
         username=body.username,
-        status=None if result is None else result.value,
-        message=_LOGIN_MESSAGE[result],
+        status=None if result.status is None else result.status.value,
+        message=_login_message(result),
     )
+
+
+def _login_message(result: LoginCheck) -> str:
+    """What to tell the operator, in QRZ.com's own words where it gave any."""
+    message = _LOGIN_MESSAGE[result.status]
+    if result.status is LookupStatus.LOGIN_FAILED:
+        reason = result.note or "no reason given"
+        return (
+            f"{message} QRZ.com said: {reason}. The username is your callsign, not your"
+            " email address, and the password is the one you sign in to qrz.com with."
+        )
+    if result.note:
+        message += f" QRZ.com said: {result.note}"
+    return message
 
 
 @api.delete("/callbook/qrz", status_code=status.HTTP_204_NO_CONTENT)

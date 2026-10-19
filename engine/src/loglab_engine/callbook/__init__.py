@@ -14,12 +14,13 @@ from loglab_engine.callbook.qrz import (
     http_fetch,
     parse_reply,
 )
-from loglab_engine.callbook.service import Callbook, Link, LookupResult, LookupStatus
+from loglab_engine.callbook.service import Callbook, Link, LoginCheck, LookupResult, LookupStatus
 
 __all__ = [
     "Callbook",
     "CallbookEntry",
     "Link",
+    "LoginCheck",
     "LookupResult",
     "LookupStatus",
     "QrzClient",

@@ -238,10 +238,20 @@ class QrzClient:
             QrzUnreachableError: QRZ.com could not be reached.
             QrzReplyError: The answer could not be read.
         """
+        return self.sign_in(username, password)[0]
+
+    def sign_in(self, username: str, password: str) -> tuple[str, str | None]:
+        """Log in; return the session key and QRZ.com's note, such as a subscription notice.
+
+        Raises:
+            QrzLoginError: QRZ.com refused the login, with QRZ.com's own reason.
+            QrzUnreachableError: QRZ.com could not be reached.
+            QrzReplyError: The answer could not be read.
+        """
         reply = self._ask({"username": username, "password": password, "agent": self._agent})
         if reply.key is None:
             raise QrzLoginError(reply.error or "QRZ.com did not accept the login")
-        return reply.key
+        return reply.key, reply.message
 
     def lookup(self, key: str, call: str) -> tuple[CallbookEntry | None, str | None]:
         """Look ``call`` up; return its entry (``None`` if not found) and QRZ.com's note.
