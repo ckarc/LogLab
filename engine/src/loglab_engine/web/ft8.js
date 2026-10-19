@@ -24,6 +24,10 @@
   const spectrum = $("#ft8-spectrum");
   const POLL_MS = 1000;
   const IDLE_MS = 3000;
+  // An answer that takes longer than this is given up on and asked for
+  // again, so a request lost in a restart of the Engine or a dropped
+  // tunnel never leaves the waterfall standing still.
+  const GIVE_UP_MS = 8000;
   const SHOWN_SECONDS = 60; // one minute of waterfall
   const SPECTRUM_SECONDS = 1; // the spectrum line is the average of this past second
   const PALETTE_KEY = "loglab.ft8.palette";
@@ -405,7 +409,12 @@
     if (operation) params.set("operation", operation);
     let answer;
     try {
-      answer = await LogLab.api("GET", `/ft8?${params}`);
+      answer = await Promise.race([
+        LogLab.api("GET", `/ft8?${params}`),
+        new Promise((resolve, reject) => {
+          setTimeout(() => reject(new Error("The Engine took too long to answer; asking again.")), GIVE_UP_MS);
+        }),
+      ]);
       problem("");
     } catch (e) {
       problem(e.message);
@@ -436,7 +445,11 @@
 
   async function keepListening() {
     for (;;) {
-      const wait = await poll().catch(() => IDLE_MS);
+      const wait = await poll().catch((e) => {
+        // Never stop listening over one bad answer: say so, and try again.
+        problem(`Could not show what was heard: ${e.message}`);
+        return IDLE_MS;
+      });
       await new Promise((resolve) => { setTimeout(resolve, wait); });
     }
   }
