@@ -104,3 +104,24 @@ def test_account_commands_explain_refusals(cli: Terminal, visitor_cli: Terminal)
     assert visitor_cli.operator("set-pin", secret=new_pin)[0] == EXIT_OK
     assert visitor_cli.operator("sign-in", "W0XYZ", "--station", "fd-2", secret=new_pin)[0] == 0
     assert cli.operator("set-pin", "W0XYZ", secret=ADMIN_SECRET)[0] == EXIT_OK
+
+
+def test_an_administrator_makes_and_ends_station_keys(
+    cli: Terminal, visitor_cli: Terminal, tmp_path: Path
+) -> None:
+    """A key is saved where asked, privately; only an administrator can make one."""
+    key_file = tmp_path / "agent" / "key"
+    code, out, _ = cli.operator("agent-key", "fd-1", "--write", str(key_file))
+    assert code == EXIT_OK
+    assert f"saved it in {key_file}" in out
+    assert stat.S_IMODE(key_file.stat().st_mode) == 0o600
+    assert key_file.read_text(encoding="ascii").startswith("lls_")
+    code, out, _ = cli.operator("agent-key", "fd-2")
+    assert code == EXIT_OK
+    assert "shown only this once:\nlls_" in out
+    assert cli.operator("agent-keys")[1] == "fd-1\nfd-2\n2 station(s) with a working key\n"
+    code, _, err = visitor_cli.operator("agent-key", "fd-2", secret=VISITOR_SECRET)
+    assert code == EXIT_REFUSED
+    assert "administrator" in err
+    assert "Ended the key for fd-1" in cli.operator("agent-key", "fd-1", "--end")[1]
+    assert cli.operator("agent-keys")[1] == "fd-2\n1 station(s) with a working key\n"

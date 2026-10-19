@@ -4,9 +4,9 @@
 """``loglab-operator``: operator accounts and signing in, from the command line.
 
 Set up the first administrator, sign in at a station and out again, and, as an
-administrator, add operators, grant and revoke permissions, and disable
-accounts (Principle XIII). Everything works with no internet connection
-(Principle V).
+administrator, add operators, grant and revoke permissions, disable accounts,
+and make the station keys Station Agents sign in with (Principle XIII).
+Everything works with no internet connection (Principle V).
 
 Signing in keeps the session's token in a file only you can read
 (``$LOGLAB_SESSION_FILE``, else ``~/.local/state/loglab/session``), and
@@ -40,6 +40,7 @@ from loglab_engine.store import (
     load_migrations,
     pending_migrations,
 )
+from loglab_engine.store.agent import AgentKeyStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -236,6 +237,58 @@ def _account_command(
     return EXIT_OK
 
 
+def _write_key(path: Path, key: str) -> Path:
+    """Keep a station key in ``path``, readable only by you, written whole (Principle XIV)."""
+    path = path.expanduser().resolve()
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    fd, temp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    temp = Path(temp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="ascii") as file:  # mkstemp makes it 0600
+            file.write(key + "\n")
+            file.flush()
+            os.fsync(file.fileno())
+        temp.replace(path)
+    except BaseException:
+        temp.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _agent_key(
+    identity: IdentityStore,
+    keys: AgentKeyStore,
+    args: argparse.Namespace,
+    out: TextIO,
+) -> int:
+    actor = signed_in(identity)
+    if args.command == "agent-keys":
+        stations = keys.stations()
+        for station in stations:
+            out.write(f"{station}\n")
+        out.write(f"{len(stations)} station(s) with a working key\n")
+        return EXIT_OK
+    if args.end:
+        ended = keys.end(actor, args.station)
+        out.write(
+            f"Ended the key for {args.station}; its Agent is refused from now on.\n"
+            if ended
+            else f"{args.station} had no working key.\n",
+        )
+        return EXIT_OK
+    key = keys.make(actor, args.station)
+    if args.write:
+        path = _write_key(Path(args.write), key)
+        out.write(
+            f"Made a new key for {args.station} and saved it in {path}, readable only by you.\n"
+        )
+    else:
+        out.write(f"Made a new key for {args.station}. It is shown only this once:\n{key}\n")
+    out.write("Any earlier key for this station no longer works.\n")
+    out.write(f"Recorded as made by {actor.operator} at {actor.station}.\n")
+    return EXIT_OK
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-operator",
@@ -274,6 +327,15 @@ def _parser() -> argparse.ArgumentParser:
     for name, text in (("enable", "enable an account"), ("disable", "disable an account")):
         command = commands.add_parser(name, help=f"{text} (administrators)")
         command.add_argument("callsign")
+    agent_key = commands.add_parser(
+        "agent-key", help="make a station key for a Station Agent (administrators)"
+    )
+    agent_key.add_argument("station", help="the station the Agent's radio is at, e.g. shack")
+    agent_key.add_argument(
+        "--write", metavar="FILE", help="save the key in FILE instead of showing it"
+    )
+    agent_key.add_argument("--end", action="store_true", help="end the station's key instead")
+    commands.add_parser("agent-keys", help="the stations whose Agents have a working key")
     set_pin = commands.add_parser("set-pin", help="change a PIN or passphrase (yours by default)")
     set_pin.add_argument("callsign", nargs="?")
     return parser
@@ -294,6 +356,8 @@ def main(
             simple = {"sign-out": _sign_out, "whoami": _whoami, "list": _list}
             if args.command in simple:
                 return simple[args.command](identity, out)
+            if args.command in {"agent-key", "agent-keys"}:
+                return _agent_key(identity, AgentKeyStore(conn), args, out)
             command = {"setup": _setup, "sign-in": _sign_in}.get(args.command, _account_command)
             return command(identity, args, out, ask)
     except (RefusedError, StoreError, MigrationError) as error:
