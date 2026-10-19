@@ -93,6 +93,25 @@ pub(super) fn shift(samples: &[Complex32], hz: f32) -> Vec<Complex32> {
         .collect()
 }
 
+/// Shifts a baseband slice down in frequency by `hz` at sample `middle`,
+/// and by `hz` plus `drift` hertz per second for every second after it: a
+/// signal drifting steadily is brought back to a steady frequency.
+pub(super) fn chirp(samples: &[Complex32], hz: f32, drift: f32, middle: isize) -> Vec<Complex32> {
+    if drift == 0.0 {
+        return shift(samples, hz);
+    }
+    samples
+        .iter()
+        .enumerate()
+        .map(|(m, &s)| {
+            #[allow(clippy::cast_precision_loss)] // small
+            let t = (m as f32 - middle as f32) / RATE;
+            let phase = -2.0 * PI * (hz * t + 0.5 * drift * t * t);
+            s * Complex32::from_polar(1.0, phase)
+        })
+        .collect()
+}
+
 /// Measures the eight FT8 tones of one symbol: a 32-point DFT, only at the
 /// eight bins that carry tones.
 pub(super) struct ToneMeter {

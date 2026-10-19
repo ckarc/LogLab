@@ -13,11 +13,19 @@
 //!
 //! Everything is generated from a seed, so a scenario is the same on every
 //! machine and nothing large has to be stored in the repository.
+//!
+//! A scenario can also pass every signal through a simulated HF channel
+//! ([`Channel`]: fading, drift, phase noise, a second path). The messages,
+//! their placing and the noise depend only on the seed, never on the
+//! channel, so the same seed through different channels gives recordings
+//! that differ only in what the channel did: losses can be compared signal
+//! by signal.
 
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+use super::channel::Channel;
 use super::encode;
 use super::message::normalize;
 use super::wave;
@@ -132,6 +140,8 @@ pub struct ScenarioSpec {
     pub min_snr_db: f64,
     /// Strongest signal, in decibels.
     pub max_snr_db: f64,
+    /// What propagation does to every signal.
+    pub channel: Channel,
 }
 
 impl ScenarioSpec {
@@ -146,6 +156,7 @@ impl ScenarioSpec {
             signals_per_slot: 10,
             min_snr_db: -26.0,
             max_snr_db: -4.0,
+            channel: Channel::CLEAR,
         }
     }
 }
@@ -239,14 +250,44 @@ fn random_report(rng: &mut Rng) -> String {
 ///
 /// A signal whose message the encoder refuses (generated scenarios never
 /// contain one).
-#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped and rounded
 pub fn render(slot: &Slot, seed: u64) -> Result<Vec<i16>, super::message::MessageError> {
+    render_through(slot, seed, &Channel::CLEAR)
+}
+
+/// Renders a slot as [`render`] does, with every signal passed through
+/// `channel` first. The noise is the same whatever the channel, and each
+/// signal's share of the channel's randomness depends only on the seed,
+/// the slot and the signal's place in it. Through the clean channel this
+/// is exactly [`render`]'s recording.
+///
+/// # Errors
+///
+/// As [`render`].
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped and rounded
+pub fn render_through(
+    slot: &Slot,
+    seed: u64,
+    channel: &Channel,
+) -> Result<Vec<i16>, super::message::MessageError> {
     let mut rng = Rng::new(seed ^ (slot.index as u64).wrapping_mul(0x2545_f491_4f6c_dd1d));
     let mut audio: Vec<f64> = (0..SLOT_SAMPLES).map(|_| rng.gaussian()).collect();
     let rate = f64::from(SAMPLE_RATE);
-    for signal in &slot.signals {
+    for (number, signal) in slot.signals.iter().enumerate() {
         let tones = encode::tones(&signal.message)?;
-        let wave = wave::synthesize(&tones, signal.base_hz);
+        let wave = if channel.is_clear() {
+            wave::synthesize(&tones, signal.base_hz)
+        } else {
+            let mut fate = Rng::new(
+                seed.wrapping_mul(0x9e37_79b9_7f4a_7c15)
+                    ^ (slot.index as u64).wrapping_mul(0xd1b5_4a32_d192_ed03)
+                    ^ (number as u64).wrapping_mul(0x8cb9_2ba7_2f3d_8dd7),
+            );
+            channel
+                .apply(&wave::synthesize_complex(&tones, signal.base_hz), &mut fate)
+                .into_iter()
+                .map(|c| c.re)
+                .collect()
+        };
         // White noise of unit variance spreads over 6,000 Hz; scale the
         // signal against the share of it that falls in 2,500 Hz.
         let amplitude =
@@ -330,8 +371,17 @@ pub fn wav_samples(bytes: &[u8]) -> Option<Vec<f32>> {
 #[must_use]
 pub fn truth_tsv(spec: &ScenarioSpec, slots: &[Slot]) -> String {
     let mut out = format!(
-        "# loglab ft8bench scenario seed={} slots={} signals={} snr={}..{}\n",
-        spec.seed, spec.slots, spec.signals_per_slot, spec.min_snr_db, spec.max_snr_db
+        "# loglab ft8bench scenario seed={} slots={} signals={} snr={}..{}{}\n",
+        spec.seed,
+        spec.slots,
+        spec.signals_per_slot,
+        spec.min_snr_db,
+        spec.max_snr_db,
+        if spec.channel.is_clear() {
+            String::new()
+        } else {
+            format!(" channel={}", spec.channel)
+        }
     );
     for slot in slots {
         for s in &slot.signals {
