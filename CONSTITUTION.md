@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 1.2.0                                                                                  |
+| **Version**    | 2.0.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -401,6 +401,38 @@ treat its own conclusion as approval.
 The cycle breaks only when human intent ranks above agent consensus, every
 time.*
 
+### XX. Received Is Never Confused With Inferred
+
+LogLab keeps a hard line between what a station was heard to send and what it
+probably sent. Every decode, from any mode or decoder, is one of three kinds,
+and it carries its kind wherever it goes: on screen, in the event stream, in
+the log, and in exports.
+
+- **Received**: the whole message came from the signal and passed the mode's
+  own integrity checks (for FT8, every parity check and the CRC). Nothing about
+  its content was assumed.
+- **Assisted**: part of the message was assumed rather than received (an
+  expected callsign, a CQ, the next step of a QSO in progress, or the same
+  message combined across repeats), and the rest came from the signal and
+  passed the integrity checks. An assisted decode records what was assumed and
+  is always shown as assisted, never as received.
+- **Predicted**: anything that did not pass the integrity checks, or that was
+  filled in from expectation, history, or reference data. A prediction may be
+  offered to the operator as a suggestion, visibly distinct from a decode. It is
+  never shown, stored, or exported as something the station transmitted.
+
+A decode is never silently upgraded from one kind to another. A QSO whose
+details rest on assisted decodes records that, so the log never presents
+inference as reception. Decoder benchmarks report received and assisted
+results separately, and any claim that LogLab decodes better than another
+program states which kind it counts.
+
+*Why this is inviolable: a log is a record of what was actually heard. Once a
+guess about what a station probably sent is mixed in with what it did send,
+nobody can tell them apart afterward: not the operator, not a contest
+adjudicator, not a confirmation service. Decoding more weak signals is only
+worth something if every decode can be trusted to be what it says it is.*
+
 ---
 
 ## Technology Constraints
@@ -548,6 +580,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 1.0.0   | 2026-10-17 | Ratified by the maintainer, Brian Krenzin, K9KSU. Status `STABLE`. No principle changed from 0.6.0. The post-1.0.0 versioning rules now apply. |
 | 1.1.0   | 2026-10-18 | Dropped per-change maintainer approval as a merge gate: pull requests merge automatically once every required gate passes. Governance changes are still merged by the maintainer. Principle XVIII no longer lists required review; Principle XIX names stopping and reverting as maintainer decisions. Rationale: the maintainer manages outcomes and does not read code, so a per-change approval added delay without adding review; the gates are the review (Principle XVII). |
 | 1.2.0   | 2026-10-18 | Narrowed Principle XV: a QSO counts as logged once the Engine has committed it to durable storage; a second independent copy is no longer a condition for logging. Client journals, unique QSO identifiers, further copies, and tested recovery remain. Situation: the Field Lab station runs with no internet, and its operating positions include tablets and workstations that are not always on; requiring a second copy before a QSO counts as logged would leave every QSO unconfirmed whenever the second machine is a tablet, switched off, or out of reach, a worse outcome than logging on the Engine's durable commit. Decided by the maintainer. |
+| 2.0.0   | 2026-10-19 | Added Principle XX (Received Is Never Confused With Inferred): every decode is received, assisted, or predicted, carries that kind everywhere, and is never silently upgraded; benchmarks report received and assisted results separately. Added at the end so no principle is renumbered. Situation: LogLab's own FT8 decoder will reach weaker signals with help such as expected messages and combined repeats; without this rule, what a station probably sent could be logged and shown as what it did send, and the log could no longer be trusted as a record of what was heard. Requested by the maintainer. |
 
 ---
 
