@@ -229,46 +229,68 @@
 
   <datalist id="adif-field-list"></datalist>
 
+  <!-- The Menu is a short list of headings; each opens to show its settings,
+       one at a time. To add an entry, put it in the .menu-items of the heading
+       it belongs under. A heading whose entries are all hidden (Admin, for an
+       operator who isn't one) hides itself. -->
   <dialog id="menu-dialog" class="card menu-dialog" aria-labelledby="menu-title">
     <div class="menu-head">
       <h2 id="menu-title">Menu</h2>
       <button type="button" id="menu-close" class="secondary small">Close</button>
     </div>
-    <p id="menu-who" class="hint"></p>
 
-    <h3>Appearance</h3>
-    <div class="segmented" role="group" aria-label="Appearance">
-      <button type="button" class="secondary small" data-theme-choice="auto" aria-pressed="true">Auto</button>
-      <button type="button" class="secondary small" data-theme-choice="light" aria-pressed="false">☀ Light</button>
-      <button type="button" class="secondary small" data-theme-choice="dark" aria-pressed="false">☾ Dark</button>
-    </div>
-    <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
+    <details class="menu-section" data-menu-section="operation">
+      <summary><span>Operation</span><span class="menu-now" id="menu-now-operation"></span></summary>
+      <div class="menu-body">
+        <p id="op-current" class="hint"></p>
+        <label class="op-choice">Log as <select id="op-choice"></select></label>
+        <label class="inline" id="op-gota-row" hidden><input type="checkbox" id="op-gota"> This is the GOTA station <span id="op-gota-call" class="hint"></span></label>
+        <div class="menu-items">
+          <button type="button" id="op-new" class="link">Set up an operation</button>
+          <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
+        </div>
+        <p id="op-error" class="error" role="alert"></p>
+      </div>
+    </details>
 
-    <h3>Operation</h3>
-    <p id="op-current" class="hint"></p>
-    <label class="op-choice">Log as <select id="op-choice"></select></label>
-    <label class="inline" id="op-gota-row" hidden><input type="checkbox" id="op-gota"> This is the GOTA station <span id="op-gota-call" class="hint"></span></label>
-    <div class="menu-items">
-      <button type="button" id="op-new" class="link">Set up an operation</button>
-      <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
-      <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
-    </div>
-    <p id="op-error" class="error" role="alert"></p>
+    <details class="menu-section" data-menu-section="appearance">
+      <summary><span>Appearance and layout</span><span class="menu-now" id="menu-now-appearance"></span></summary>
+      <div class="menu-body">
+        <div class="segmented" role="group" aria-label="Appearance">
+          <button type="button" class="secondary small" data-theme-choice="auto" aria-pressed="true">Auto</button>
+          <button type="button" class="secondary small" data-theme-choice="light" aria-pressed="false">☀ Light</button>
+          <button type="button" class="secondary small" data-theme-choice="dark" aria-pressed="false">☾ Dark</button>
+        </div>
+        <p class="hint">Auto follows this computer's setting. Saved for you, on any workstation.</p>
+        <div class="menu-items">
+          <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
+          <a id="all-boxes" class="link" href="/" hidden>Show all boxes</a>
+        </div>
+      </div>
+    </details>
 
-    <h3>Layout</h3>
-    <div class="menu-items">
-      <button type="button" id="arrange" class="link" aria-pressed="false">🔓 Unlock to move boxes</button>
-      <a id="all-boxes" class="link" href="/" hidden>Show all boxes</a>
-    </div>
+    <details class="menu-section" data-menu-section="connections">
+      <summary><span>Connections</span></summary>
+      <div class="menu-body">
+        <div class="menu-items">
+          <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
+          <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
+          <button type="button" class="link" id="licenses-open">US and Canada call lists</button>
+        </div>
+      </div>
+    </details>
 
-    <h3>Services</h3>
-    <div class="menu-items">
-      <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
-      <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
-      <button type="button" class="link" id="licenses-open">US and Canada call lists</button>
-    </div>
+    <details class="menu-section" data-menu-section="admin">
+      <summary><span>Admin</span></summary>
+      <div class="menu-body">
+        <div class="menu-items">
+          <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
+        </div>
+      </div>
+    </details>
 
     <div class="menu-foot">
+      <p id="menu-who" class="hint"></p>
       <button type="button" id="sign-out" class="secondary small">Sign out</button>
     </div>
   </dialog>

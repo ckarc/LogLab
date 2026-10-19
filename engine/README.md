@@ -117,8 +117,13 @@ own reference is at `/api/docs`.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
   the same station (Principle XIII).
 - The top bar holds only LogLab, who is signed in, and **Menu**. Menu opens
-  a box with everything else: light or dark, unlocking the layout, QRZ.com,
-  LoTW, and Sign out. New settings go there too, so the bar never fills up.
+  a box with a few headings: **Operation**, **Appearance and layout**,
+  **Connections** (QRZ.com, LoTW, the US and Canada call lists) and
+  **Admin** (shown only to admins), with who is signed in and **Sign out**
+  at the bottom. A heading opens to show its settings, one at a time; the
+  one used last opens again next time, and a heading shows what is set under
+  it (the operation, Auto/Light/Dark). New settings go under the heading
+  they belong to, so the bar never fills up.
 - Each box on the page is a module. The layout is locked normally; **Menu →
   Unlock to move boxes** unlocks it, and every box shows a handle bar
   (**Lock** in the bar above the boxes locks it again). Drag a box
