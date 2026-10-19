@@ -330,32 +330,29 @@ impl Diagnosis {
             None => out.push_str("\t-\t-"),
         }
         for trial in [self.actual.as_ref(), Some(&self.oracle)] {
-            match trial {
-                Some(t) => {
-                    let _ = write!(out, "\t{}", t.symbol_errors);
-                    for e in &t.bit_errors {
-                        let _ = write!(out, "\t{e}");
-                    }
-                    let marks = |o: &[Outcome]| o.iter().map(|o| o.mark()).collect::<String>();
-                    let _ = write!(
-                        out,
-                        "\t{}\t{}\t{:.1}\t{:.0}/{:.0}/{:.0}",
-                        marks(&t.bp),
-                        marks(&t.osd),
-                        t.coherence,
-                        t.coherence_thirds[0],
-                        t.coherence_thirds[1],
-                        t.coherence_thirds[2]
-                    );
-                }
-                None => {
+            let Some(t) = trial else {
+                out.push_str("\t-");
+                for _ in GROUPS {
                     out.push_str("\t-");
-                    for _ in GROUPS {
-                        out.push_str("\t-");
-                    }
-                    out.push_str("\t-\t-\t-\t-");
                 }
+                out.push_str("\t-\t-\t-\t-");
+                continue;
+            };
+            let _ = write!(out, "\t{}", t.symbol_errors);
+            for e in &t.bit_errors {
+                let _ = write!(out, "\t{e}");
             }
+            let marks = |o: &[Outcome]| o.iter().map(|o| o.mark()).collect::<String>();
+            let _ = write!(
+                out,
+                "\t{}\t{}\t{:.1}\t{:.0}/{:.0}/{:.0}",
+                marks(&t.bp),
+                marks(&t.osd),
+                t.coherence,
+                t.coherence_thirds[0],
+                t.coherence_thirds[1],
+                t.coherence_thirds[2]
+            );
         }
         out
     }

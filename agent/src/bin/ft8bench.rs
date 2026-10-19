@@ -208,6 +208,8 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
 }
 
 fn diagnose(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, String> {
+    use std::fmt::Write as _;
+
     use loglab_agent::ft8::decode::diagnose::{self, Truth};
     let truth_path = dir.join("truth.tsv");
     let truth = bench::parse_truth(&read(&truth_path)?)
@@ -252,8 +254,9 @@ fn diagnose(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
                                     Some(_) => "missed",
                                     None => "-",
                                 };
-                                out += &format!(
-                                    "{}\t{}\t{}\t{}\t{}\t{mark}\t{}\n",
+                                let _ = writeln!(
+                                    out,
+                                    "{}\t{}\t{}\t{}\t{}\t{mark}\t{}",
                                     slot.index,
                                     signal.snr_db,
                                     signal.base_hz,

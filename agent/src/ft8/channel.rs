@@ -431,7 +431,7 @@ fn floor_to_usize(x: f64) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use rustfft::num_complex::Complex32;
+    use rustfft::num_complex::{Complex32, Complex64};
 
     use super::{Channel, fading_process};
     use crate::ft8::bench::Rng;
@@ -455,7 +455,7 @@ mod tests {
     fn settings_round_trip_and_presets_read() {
         let text = "spread=0.5,deepfade=20,fadelen=3,drift=0.1,echo=2,echodb=-3,k=6";
         let channel = Channel::parse(text).unwrap_or(Channel::CLEAR);
-        assert_eq!(channel.spread_hz, 0.5);
+        assert!((channel.spread_hz - 0.5).abs() < f64::EPSILON);
         assert_eq!(channel.rician_k_db, Some(6.0));
         assert_eq!(Channel::parse(&channel.to_string()), Ok(channel));
         assert_eq!(Channel::parse("clear"), Ok(Channel::CLEAR));
@@ -492,7 +492,7 @@ mod tests {
         for _ in 0..40 {
             let f = fading_process(0.25, &mut rng);
             #[allow(clippy::cast_precision_loss)]
-            let p = f.iter().map(|c| c.norm_sqr()).sum::<f64>() / f.len() as f64;
+            let p = f.iter().map(Complex64::norm_sqr).sum::<f64>() / f.len() as f64;
             power += p / 40.0;
         }
         assert!((power - 1.0).abs() < 0.1, "power {power}");

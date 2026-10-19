@@ -517,9 +517,9 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
         for _ in 0..2 {
             let shifted = baseband::chirp(&slice, hz, drift, middle);
             let symbols = measure(&shifted, start);
-            let (dhz, ddrift) = costas_offset_and_drift(&symbols);
-            hz += dhz;
-            drift += ddrift;
+            let (offset, slope) = costas_offset_and_drift(&symbols);
+            hz += offset;
+            drift += slope;
         }
     }
     let middle = start + sps * to_isize(SYMBOLS / 2) + sps / 2;
