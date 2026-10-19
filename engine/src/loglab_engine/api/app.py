@@ -82,6 +82,10 @@ from loglab_engine.contests import check as contest_check
 from loglab_engine.contests.overlay import Band, ModeName, StatId
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.contests.stats import Logged, operation_stats
+from loglab_engine.ft8 import COLUMN_HZ as FT8_COLUMN_HZ
+from loglab_engine.ft8 import COLUMNS as FT8_COLUMNS
+from loglab_engine.ft8 import ROWS_PER_SECOND as FT8_ROWS_PER_SECOND
+from loglab_engine.ft8 import ROWS_PER_SLOT, Decode, Ft8Board, parse_message, slot_start
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -249,6 +253,63 @@ class AgentReportIn(_Strict):
     problem: Annotated[str, StringConstraints(max_length=300, pattern=_PLAIN)] | None = None
 
 
+# An FT8 slot: seconds since 1970 (UTC) divided by 15, from 2020 to 2100.
+Ft8Slot = Annotated[int, Field(ge=105_000_000, le=275_000_000)]
+# A message as the decoder printed it: capital letters, digits, spaces and
+# FT8's few punctuation marks.
+Ft8Message = Annotated[
+    str, StringConstraints(min_length=1, max_length=40, pattern=r"^[A-Z0-9 +\-./?<>]+$")
+]
+
+
+class Ft8DecodeIn(_Strict):
+    """One message the Agent's decoder found in a slot, as it measured it."""
+
+    message: Ft8Message
+    snr_db: Annotated[float, Field(ge=-60, le=60, strict=False)]
+    dt_s: Annotated[float, Field(ge=-5, le=15, strict=False)]
+    base_hz: Annotated[float, Field(ge=0, le=5000, strict=False)]
+
+
+class Ft8WaterfallIn(_Strict):
+    """Waterfall rows of one slot: a hex byte per 6.25 Hz column, 0 to 3,000 Hz."""
+
+    slot: Ft8Slot
+    first_row: Annotated[int, Field(ge=0, lt=ROWS_PER_SLOT)]
+    rows: Annotated[
+        list[Annotated[str, StringConstraints(pattern=rf"^[0-9a-f]{{{FT8_COLUMNS * 2}}}$")]],
+        Field(min_length=1, max_length=ROWS_PER_SLOT),
+    ]
+
+    @model_validator(mode="after")
+    def _within_the_slot(self) -> Self:
+        if self.first_row + len(self.rows) > ROWS_PER_SLOT:
+            msg = f"a slot has {ROWS_PER_SLOT} rows"
+            raise ValueError(msg)
+        return self
+
+
+class Ft8DecodesIn(_Strict):
+    """Everything decoded in one slot."""
+
+    slot: Ft8Slot
+    decodes: Annotated[list[Ft8DecodeIn], Field(max_length=200)]
+
+
+class Ft8ReportIn(_Strict):
+    """What a station's Agent heard on FT8: new waterfall rows, a slot's decodes, or both.
+
+    ``source`` says where the audio came from; today only the Agent's
+    ``pretend`` FT8 band. Every decode is received (Principle XX).
+    """
+
+    agent: Annotated[str, StringConstraints(min_length=1, max_length=64, pattern=_PLAIN)]
+    source: Literal["pretend"]
+    dial_hz: Annotated[int, Field(ge=1, le=300_000_000_000)]
+    waterfall: Ft8WaterfallIn | None = None
+    decodes: Ft8DecodesIn | None = None
+
+
 StationName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
 
 
@@ -280,6 +341,7 @@ class OperationIn(_Strict):
     ended: bool = False
     starts_at: Annotated[AwareDatetime, Field(strict=False)] | None = None
     ends_at: Annotated[AwareDatetime, Field(strict=False)] | None = None
+    practice: bool = False
 
     @model_validator(mode="after")
     def _hours(self) -> Self:
@@ -446,6 +508,72 @@ class RigOut(BaseModel):
     heard_at: datetime | None
 
 
+class Ft8RowOut(BaseModel):
+    """One row of FT8 waterfall: ``levels`` has a hex byte per column, dark to bright."""
+
+    slot: int
+    row: int
+    levels: str
+
+
+class Ft8DecodeOut(BaseModel):
+    """One decoded FT8 message, with what its text says.
+
+    ``kind`` is how it was obtained (Principle XX): ``received`` means it came
+    from the signal and passed the decoder's checks. ``pretend`` is true for
+    the Agent's pretend FT8 band: made-up stations, never real ones.
+    ``de`` is the station sending it, ``to`` the station it is for (``null``
+    for a CQ), and ``grid`` and ``report`` are what the message carries.
+    ``freq_hz`` is the dial frequency plus the audio frequency. ``worked``
+    says the sender was already logged in the operation asked about.
+    """
+
+    message: str
+    kind: str
+    pretend: bool
+    snr_db: int
+    dt_s: float
+    base_hz: int
+    freq_hz: int
+    de: str | None
+    to: str | None
+    cq: str | None
+    grid: str | None
+    report: str | None
+    roger: bool
+    ending: str | None
+    worked: bool
+
+
+class Ft8SlotOut(BaseModel):
+    """Everything decoded in one 15-second slot, starting at ``starts_at`` (UTC)."""
+
+    slot: int
+    starts_at: datetime
+    decodes: list[Ft8DecodeOut]
+
+
+class Ft8Out(BaseModel):
+    """What the Agent at the signed-in station hears on FT8, since ``after``.
+
+    ``listening`` is false when no Agent there is listening. ``seq`` is the
+    number to ask ``after`` next time. The waterfall has ``columns`` columns
+    of ``column_hz`` each, ``rows_per_second`` rows a second.
+    """
+
+    station: str
+    listening: bool
+    source: str | None
+    dial_hz: int | None
+    band: str | None
+    seq: int
+    columns: int
+    column_hz: float
+    rows_per_second: int
+    rows: list[Ft8RowOut]
+    slots: list[Ft8SlotOut]
+
+
 class PairingAskOut(BaseModel):
     """The Agent's request: the code it shows, and its private ticket for asking how it stands."""
 
@@ -504,6 +632,7 @@ class OperationOut(BaseModel):
     archived_at: datetime | None
     created_at: datetime
     changed_at: datetime
+    practice: bool
 
 
 class QsoCreate(_Strict):
@@ -547,6 +676,7 @@ ModuleId = Literal[
     "ituzones",
     "stats",
     "onair",
+    "ft8",
 ]
 # A column of a table: one of the fixed columns, or ``field:NAME`` for any ADIF field.
 _FIELD_COLUMN: Final = r"field:[A-Za-z][A-Za-z0-9_]{0,63}"
@@ -562,29 +692,40 @@ SortKey = Annotated[
         pattern=rf"^(entered|qso_start|call|band|mode|operator|station|version|changed_at|{_FIELD_COLUMN})$",
     ),
 ]
-TableId = Literal["log", "profile"]
+TableId = Literal["log", "profile", "ft8"]
 # A panel inside a module, which the operator places on one side of the
 # module's main content: the map's list of sections still to work.
 PanelId = Literal["map.to-work"]
 PanelPlace = Literal["top", "bottom", "left", "right"]
 
 
-class ModuleLayout(_Strict):
-    """One module of the workspace: its width, the side it sits on, and whether it is shown.
+# How small or large a box may draw its contents, in percent.
+MIN_SCALE: Final = 50
+MAX_SCALE: Final = 200
 
-    A third sits on the left, middle or right; a half on the left or right;
-    a full-width box ignores it.
+
+class ModuleLayout(_Strict):
+    """One module of the workspace: its width, side, scale, and whether it is shown.
+
+    A quarter sits on the left, middle-left, middle-right or right; a third
+    on the left, middle or right; a half on the left or right; a full-width
+    box ignores it. ``scale`` is how large the box draws what is inside it,
+    in percent of the normal size.
     """
 
     id: ModuleId
-    width: Literal["third", "half", "full"] = "full"
-    side: Literal["left", "middle", "right"] = "left"
+    width: Literal["quarter", "third", "half", "full"] = "full"
+    side: Literal["left", "middle-left", "middle", "middle-right", "right"] = "left"
+    scale: Annotated[int, Field(ge=MIN_SCALE, le=MAX_SCALE)] = 100
     hidden: bool = False
 
     @model_validator(mode="after")
-    def _middle_is_for_thirds(self) -> Self:
+    def _side_fits_width(self) -> Self:
         if self.side == "middle" and self.width != "third":
             msg = "only a third can sit on the middle side"
+            raise ValueError(msg)
+        if self.side in ("middle-left", "middle-right") and self.width != "quarter":
+            msg = "only a quarter can sit middle-left or middle-right"
             raise ValueError(msg)
         return self
 
@@ -1439,6 +1580,7 @@ def _operation_out(conn: Conn, op: Operation) -> OperationOut:
         archived_at=op.archived_at,
         created_at=op.created_at,
         changed_at=op.changed_at,
+        practice=op.practice,
     )
 
 
@@ -1529,6 +1671,7 @@ def _setup(conn: Conn, body: OperationIn) -> OperationSetup:
         ended=body.ended,
         starts_at=body.starts_at,
         ends_at=body.ends_at,
+        practice=body.practice,
     )
 
 
@@ -2042,6 +2185,128 @@ async def stream_rig(
             await asyncio.sleep(_STREAM_POLL_SECONDS)
 
     return StreamingResponse(lines(), media_type="application/x-ndjson")
+
+
+def _ft8(request: Request) -> Ft8Board:
+    board: Ft8Board = request.app.state.ft8
+    return board
+
+
+Ft8 = Annotated[Ft8Board, Depends(_ft8)]
+
+
+@api.put("/agent/ft8", status_code=status.HTTP_204_NO_CONTENT)
+def report_ft8(body: Ft8ReportIn, station: AgentStation, ft8: Ft8) -> None:
+    """A Station Agent reports what it heard on FT8, with its station key.
+
+    Live state only: nothing is written to the log (Principle X). Every
+    decode is kept as received (Principle XX).
+    """
+    waterfall, decodes = body.waterfall, body.decodes
+    ft8.report(
+        station,
+        agent=body.agent,
+        source=body.source,
+        dial_hz=body.dial_hz,
+        now=datetime.now(UTC),
+        rows=None
+        if waterfall is None
+        else (waterfall.slot, waterfall.first_row, tuple(waterfall.rows)),
+        decodes=None
+        if decodes is None
+        else (
+            decodes.slot,
+            tuple(
+                Decode(d.message, d.snr_db, d.dt_s, d.base_hz, "received") for d in decodes.decodes
+            ),
+        ),
+    )
+
+
+def _worked_calls(conn: Conn, operation: uuid.UUID) -> set[str]:
+    calls = set()
+    for v in LogStore(conn).operation_qsos(operation):
+        if not v.deleted and v.call:
+            calls.add(v.call.upper())
+    return calls
+
+
+@api.get("/ft8")
+def get_ft8(
+    who: Signed,
+    conn: Conn,
+    ft8: Ft8,
+    after: Annotated[int, Query(ge=0)] = 0,
+    operation: uuid.UUID | None = None,
+) -> Ft8Out:
+    """What the Agent at the signed-in operator's station hears on FT8.
+
+    Only what came after number ``after`` is returned, so a browser asks
+    again with the ``seq`` it was given. With ``operation``, each decode says
+    whether its sender was already logged there.
+    """
+    _require(conn, who, Permission.VIEW)
+    heard = ft8.heard(who.station, datetime.now(UTC), after)
+    if heard is None:
+        return Ft8Out(
+            station=who.station,
+            listening=False,
+            source=None,
+            dial_hz=None,
+            band=None,
+            seq=0,
+            columns=FT8_COLUMNS,
+            column_hz=FT8_COLUMN_HZ,
+            rows_per_second=FT8_ROWS_PER_SECOND,
+            rows=[],
+            slots=[],
+        )
+    worked = (
+        _worked_calls(conn, OperationStore(conn).get(operation).id)
+        if operation is not None and heard.slots
+        else set()
+    )
+
+    def out(d: Decode) -> Ft8DecodeOut:
+        parsed = parse_message(d.message)
+        return Ft8DecodeOut(
+            message=d.message,
+            kind=d.kind,
+            pretend=heard.source == "pretend",
+            snr_db=round(d.snr_db),
+            dt_s=round(d.dt_s, 1),
+            base_hz=round(d.base_hz),
+            freq_hz=heard.dial_hz + round(d.base_hz),
+            de=parsed.de,
+            to=parsed.to,
+            cq=parsed.cq,
+            grid=parsed.grid,
+            report=parsed.report,
+            roger=parsed.roger,
+            ending=parsed.ending,
+            worked=parsed.de is not None and parsed.de in worked,
+        )
+
+    return Ft8Out(
+        station=who.station,
+        listening=True,
+        source=heard.source,
+        dial_hz=heard.dial_hz,
+        band=band_for(heard.dial_hz),
+        seq=heard.seq,
+        columns=FT8_COLUMNS,
+        column_hz=FT8_COLUMN_HZ,
+        rows_per_second=FT8_ROWS_PER_SECOND,
+        rows=[Ft8RowOut(slot=r.slot, row=r.row, levels=r.levels) for r in heard.rows],
+        slots=[
+            Ft8SlotOut(
+                slot=s.slot,
+                starts_at=slot_start(s.slot),
+                decodes=[out(d) for d in sorted(s.decodes, key=lambda d: -d.snr_db)],
+            )
+            for s in heard.slots
+        ],
+    )
 
 
 @api.post("/operations", status_code=status.HTTP_201_CREATED)
@@ -2879,6 +3144,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LabLog/{__version__}", qrz_post))
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
+    app.state.ft8 = Ft8Board()
     app.state.pairings = PairingDesk()
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
