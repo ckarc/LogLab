@@ -436,6 +436,7 @@ class QrzLoginOut(BaseModel):
 
     username: str | None
     status: str | None
+    checked: bool
     message: str
 
 
@@ -1550,9 +1551,16 @@ _LOGIN_MESSAGE: Final = {
 @api.get("/callbook/qrz")
 def get_qrz_login(who: Signed, books: Books) -> QrzLoginOut:
     """The QRZ.com username the signed-in operator saved, if any."""
-    username = books.login_name(who)
-    message = "QRZ.com is not set up." if username is None else f"Using QRZ.com as {username}."
-    return QrzLoginOut(username=username, status=None, message=message)
+    saved = books.login_name(who)
+    if saved is None:
+        return QrzLoginOut(
+            username=None, status=None, checked=False, message="QRZ.com is not set up."
+        )
+    username, checked = saved
+    message = f"Using QRZ.com as {username}."
+    if not checked:
+        message += " QRZ.com has not accepted this login yet."
+    return QrzLoginOut(username=username, status=None, checked=checked, message=message)
 
 
 @api.put("/callbook/qrz")
@@ -1562,6 +1570,7 @@ def put_qrz_login(body: QrzLoginIn, who: Signed, books: Books) -> QrzLoginOut:
     return QrzLoginOut(
         username=body.username,
         status=None if result.status is None else result.status.value,
+        checked=result.status is None,
         message=_login_message(result),
     )
 

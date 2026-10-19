@@ -142,6 +142,7 @@ class Callbook:
         try:
             entry, note = self._ask(actor, login, call)
         except QrzLoginError as error:
+            self._store.save_key(actor, SOURCE, None)  # no longer a login QRZ.com accepts
             failed = LookupStatus.LOGIN_FAILED, f"QRZ.com refused your login: {error}"
         except QrzUnreachableError:
             self._link.mark_down()
@@ -184,10 +185,13 @@ class Callbook:
             return _from_cache(call, cached, f"{message} Showing what QRZ.com said before.")
         return LookupResult(status, call, None, cached=False, fetched_at=None, message=message)
 
-    def login_name(self, actor: Actor) -> str | None:
-        """The QRZ.com username the operator saved, if any (never the password)."""
+    def login_name(self, actor: Actor) -> tuple[str, bool] | None:
+        """The QRZ.com username the operator saved, if any (never the password).
+
+        With it, whether QRZ.com accepted that login the last time it was tried.
+        """
         login = self._store.login(actor, SOURCE)
-        return None if login is None else login.username
+        return None if login is None else (login.username, login.service_key is not None)
 
     def save_login(self, actor: Actor, username: str, password: str) -> LoginCheck:
         """Save the operator's QRZ.com login and try it.

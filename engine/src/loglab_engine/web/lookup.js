@@ -83,10 +83,10 @@
 
   function problem(text) { $(".error", setup).textContent = text; }
 
-  // ``checked``: QRZ.com accepted the login just now, so it gets a green tick.
-  function showState(login, checked = false) {
+  // A green tick when QRZ.com accepted the login the last time it was tried.
+  function showState(login) {
     $("#qrz-state").textContent = login.message;
-    $("#qrz-state").classList.toggle("done", checked);
+    $("#qrz-state").classList.toggle("done", login.checked);
     remove.hidden = login.username === null;
     if (login.username) setup.username.value = login.username;
   }
@@ -112,7 +112,7 @@
         password: setup.password.value,
       });
       setup.password.value = "";
-      showState(saved, saved.status === null);
+      showState(saved);
       if (saved.status === null) {
         asked = ""; // look the current call up with the new login
         if (form.CALL.value.trim()) lookUp();

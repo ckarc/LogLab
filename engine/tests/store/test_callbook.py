@@ -142,6 +142,7 @@ def test_a_lookup_fills_in_the_call_and_is_fetched_only_once(
     assert saved == {
         "username": "K9KSU",
         "status": None,
+        "checked": True,
         "message": "Saved. QRZ.com accepted your login.",
     }
     first = _look(client, k9ksu, "w1aw")
@@ -243,6 +244,32 @@ def test_an_expired_session_logs_in_again(
     ]
 
 
+def test_the_login_shows_whether_qrz_accepted_it(
+    client: TestClient, k9ksu: dict[str, str], qrz: FakeQrz
+) -> None:
+    """Reopening the window says whether QRZ.com accepted the login last time it was tried."""
+
+    def shown() -> dict[str, Any]:
+        response = client.get("/api/v1/callbook/qrz", headers=k9ksu)
+        return dict(response.json())
+
+    assert _set_up(client, k9ksu)["checked"] is True
+    assert shown()["checked"] is True
+    assert _set_up(client, k9ksu, password="wrong")["checked"] is False  # noqa: S106
+    assert shown() == {
+        "username": "K9KSU",
+        "status": None,
+        "checked": False,
+        "message": "Using QRZ.com as K9KSU. QRZ.com has not accepted this login yet.",
+    }
+    _set_up(client, k9ksu)
+    qrz.keys.clear()  # the session ends, and the password was changed on QRZ.com
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setitem(globals(), "QRZ_PASSWORD", "changed")
+        assert _look(client, k9ksu, "W1AW")["status"] == "login_failed"
+    assert shown()["checked"] is False
+
+
 def test_the_password_is_never_returned_and_logins_are_per_operator(
     client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], qrz: FakeQrz
 ) -> None:
@@ -252,6 +279,7 @@ def test_the_password_is_never_returned_and_logins_are_per_operator(
     assert mine.json() == {
         "username": "K9KSU",
         "status": None,
+        "checked": True,
         "message": "Using QRZ.com as K9KSU.",
     }
     assert QRZ_PASSWORD not in mine.text
