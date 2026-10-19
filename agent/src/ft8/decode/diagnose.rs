@@ -9,7 +9,7 @@
 //! frequency and timing, how many symbols and bits the likelihoods got
 //! wrong, which likelihoods belief propagation and ordered-statistics
 //! decoding recover the right codeword from, and how strongly the right
-//! codeword passes the phase-coherence check. It does all of that twice:
+//! codeword passes the phase check. It does all of that twice:
 //! from the decoder's own lock, and from an *oracle* lock at the true
 //! frequency and timing, which separates losses in synchronization from
 //! losses in everything after it.
@@ -19,9 +19,9 @@ use std::fmt::Write as _;
 use rustfft::num_complex::Complex32;
 
 use super::{
-    Baseband, Candidate, GROUPS, Locked, OSD_GROUPS, OSD_MAX_DISTANCE, Options, STEP, Spectrogram,
-    TONE_SPACING_HZ, ToneMeter, candidates, coherence, data_symbols, ldpc, likelihoods, lock,
-    noise_power, row_to_hz, to_isize,
+    Baseband, Candidate, GROUPS, Locked, OSD_MAX_DISTANCE, Options, STEP, Spectrogram,
+    TONE_SPACING_HZ, ToneMeter, candidates, data_symbols, differential_coherence, ldpc,
+    likelihoods, lock, noise_power, row_to_hz, to_isize,
 };
 use crate::ft8::baseband;
 use crate::ft8::encode::{self, Tones};
@@ -93,13 +93,15 @@ pub struct Trial {
     pub bit_errors: Vec<usize>,
     /// For each group size in [`GROUPS`] order: belief propagation.
     pub bp: Vec<Outcome>,
-    /// For each group size in [`OSD_GROUPS`] order: ordered statistics,
-    /// within the distance limit.
+    /// For each group size in [`GROUPS`] order: ordered statistics within
+    /// the distance limit (the decoder itself tries only some groups).
     pub osd: Vec<Outcome>,
-    /// The right codeword's score in the phase-coherence check.
+    /// The right codeword's differential coherence, what the decoder
+    /// checks a codeword against before believing it.
     pub coherence: f32,
-    /// The same, over each third of the data symbols: a fade in one third
-    /// shows as a low score there.
+    /// The in-phase power of the right tones over runs of four symbols, in
+    /// units of the noise, over each third of the data symbols: a fade in
+    /// one third shows as a low score there.
     pub coherence_thirds: [f32; 3],
 }
 
@@ -227,9 +229,9 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
     };
     let mut bit_errors = Vec::new();
     let mut bp = Vec::new();
-    let mut osd = vec![Outcome::Nothing; OSD_GROUPS.len()];
+    let mut osd = Vec::new();
     for group in GROUPS {
-        let llr = likelihoods(locked, &data, group, noise);
+        let llr = likelihoods(&data, group, noise);
         bit_errors.push(
             llr.iter()
                 .zip(&truth.bits)
@@ -241,13 +243,11 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
                 .0
                 .map(|(b, _)| b),
         ));
-        if let Some(i) = OSD_GROUPS.iter().position(|&g| g == group) {
-            osd[i] = judge(
-                ldpc::osd(&llr, options.osd_pairs, options.osd_triples)
-                    .filter(|(_, d, _)| *d <= OSD_MAX_DISTANCE)
-                    .map(|(b, _, _)| b),
-            );
-        }
+        osd.push(judge(
+            ldpc::osd(&llr, options.osd_pairs, options.osd_triples)
+                .filter(|(_, d, _)| *d <= OSD_MAX_DISTANCE)
+                .map(|(b, _, _)| b),
+        ));
     }
     let thirds: Vec<usize> = vec![0, 19, 39, 58];
     let coherence_thirds = std::array::from_fn(|t| {
@@ -267,14 +267,15 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
         bit_errors,
         bp,
         osd,
-        coherence: coherence(&data, &truth.bits, noise),
+        coherence: differential_coherence(&data, &truth.tones, noise),
         coherence_thirds,
     }
 }
 
-/// The coherence score of a run of symbols on their own.
+/// The in-phase power of the sent tones over runs of four symbols within
+/// `symbols`, in units of the noise power.
 fn span_coherence(symbols: &[[Complex32; 8]], tones: &[usize], noise: f32) -> f32 {
-    let span = super::COHERENCE_SPAN;
+    let span = 4;
     let mut total = 0.0_f32;
     let mut runs = 0.0_f32;
     for first in 0..=symbols.len().saturating_sub(span) {
@@ -314,7 +315,7 @@ pub fn tsv_header() -> String {
 impl Diagnosis {
     /// One tab-separated line, in the columns of [`tsv_header`]. The BP
     /// and OSD columns are one mark per group (`R` right, `W` wrong, `-`
-    /// nothing), in [`GROUPS`] and [`OSD_GROUPS`] order.
+    /// nothing), in [`GROUPS`] order.
     #[must_use]
     pub fn to_tsv(&self) -> String {
         let mut out = match self.candidate {

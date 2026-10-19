@@ -41,3 +41,25 @@ On the same recordings, a LabLog decoder must:
 1. find every signal WSJT-X finds, in every strength band;
 2. report nothing that was not sent (WSJT-X reports zero false decodes);
 3. finish each 15-second recording well inside one FT8 cycle.
+
+## Propagation conditions
+
+Real HF signals fade, drift and flutter; the standard bench is a clean
+channel. `channels.txt` lists simulated conditions (Rayleigh and Rician
+fading at several Doppler spreads, deep fades, steady and curved drift,
+phase noise, a delayed second path, and combinations), and
+`run-channels.sh` sweeps decoders across them:
+
+```sh
+tools/ft8-reference/run-channels.sh 1 /tmp/sweep \
+  loglab=target/release/ft8bench wsjtx=/path/to/jt9 -- clear rayleigh-0.5 drift-0.2
+```
+
+Every condition uses the same seed's messages, placing and noise, so the
+conditions differ only in what the channel did to the signals, and every
+decoder sees the same recordings. `ft8bench generate --channel` makes one
+such set by hand, and `ft8bench diagnose DIR` reports, signal by signal,
+where the decoder lost each one it missed (no candidate, a bad lock, too
+many symbol errors, or a codeword the phase check refused), both from its
+own lock and from an oracle lock at the true frequency and timing.
+`results-fading.md` is what the sweep showed and what changed because of it.
