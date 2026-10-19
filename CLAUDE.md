@@ -1,10 +1,10 @@
-# CLAUDE.md — LogLab
+# CLAUDE.md — LabLog
 
 Read this first, every session. Then read `CONSTITUTION.md`. The constitution
 outranks this file and every other document; if anything here conflicts with
 it, the constitution wins and this file is in error.
 
-## What LogLab is
+## What LabLog is
 
 An original, open-source (AGPL-3.0) amateur radio logging system:
 
