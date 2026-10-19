@@ -83,8 +83,10 @@
 
   function problem(text) { $(".error", setup).textContent = text; }
 
-  function showState(login) {
+  // ``checked``: QRZ.com accepted the login just now, so it gets a green tick.
+  function showState(login, checked = false) {
     $("#qrz-state").textContent = login.message;
+    $("#qrz-state").classList.toggle("done", checked);
     remove.hidden = login.username === null;
     if (login.username) setup.username.value = login.username;
   }
@@ -110,7 +112,7 @@
         password: setup.password.value,
       });
       setup.password.value = "";
-      showState(saved);
+      showState(saved, saved.status === null);
       if (saved.status === null) {
         asked = ""; // look the current call up with the new login
         if (form.CALL.value.trim()) lookUp();
@@ -140,8 +142,12 @@
 
   function bookProblem(text) { $(".error", book).textContent = text; }
 
+  // A green tick when QSOs are going to the logbook with nothing wrong.
   function showBook(state) {
     const parts = [state.message];
+    const fine = state.book_call !== null && !state.problem && !state.message.includes("refused")
+      && !state.message.includes("can't be reached");
+    $("#qrz-book-state").classList.toggle("done", fine);
     if (state.problem) parts.push(state.problem);
     if (state.refused) parts.push(`${state.refused} refused by QRZ.com${state.last_refusal ? ` (latest: ${state.last_refusal})` : ""}.`);
     $("#qrz-book-state").textContent = parts.join(" ");

@@ -67,6 +67,7 @@
     const note = $("#lotw-state");
     note.textContent = state.message;
     note.classList.toggle("warn", Boolean(state.problem));
+    note.classList.toggle("done", !state.problem && Boolean(cert && state.location));
     $("#lotw-actions").hidden = !(cert && state.location);
     $("#lotw-send").textContent = state.waiting ? `Send ${plural(state.waiting, "QSO")} to LoTW` : "Send to LoTW";
     $("#lotw-fetch").disabled = !state.username;

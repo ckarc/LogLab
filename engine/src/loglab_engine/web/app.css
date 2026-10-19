@@ -278,6 +278,8 @@ button:disabled { opacity: 0.45; cursor: default; filter: none; transform: none;
 .actions input { flex: 1 1 200px; width: auto; }
 
 .error { color: var(--danger); margin: 0; font-weight: 500; }
+/* Something the operator set up was checked and works: a small green tick before the line. */
+.done::before { content: "\2713"; margin-right: 6px; color: var(--ok); font-weight: 700; }
 .notice {
   margin: 14px 0 0;
   padding: 10px 14px;
