@@ -602,6 +602,7 @@ fn costas_offset_and_drift(
     let steps = round_to_usize(reach / step);
     let drift_steps = round_to_usize(drift_reach / drift_step);
     let mut best = (f32::NEG_INFINITY, 0.0_f32, 0.0_f32);
+    let mut best_steady = (f32::NEG_INFINITY, 0.0_f32);
     for d in 0..=2 * drift_steps {
         let drift = (to_f32(d) - to_f32(drift_steps)) * drift_step;
         for i in 0..=2 * steps {
@@ -614,10 +615,26 @@ fn costas_offset_and_drift(
             if power > best.0 {
                 best = (power, f, drift);
             }
+            if d == drift_steps && power > best_steady.0 {
+                best_steady = (power, f);
+            }
         }
+    }
+    if best.0 < best_steady.0 * (1.0 + DRIFT_MARGIN) {
+        return (best_steady.1, 0.0);
     }
     (best.1, best.2)
 }
+
+/// How much more of the Costas power a drifting fit must explain than the
+/// best steady one before the drift is believed. A drift that costs the
+/// steady fit less than this costs nothing worth chasing (0.02 Hz/s loses
+/// about 4 percent of the Costas power; 0.05 Hz/s, the least the bench
+/// sweeps, loses 20 percent), while on a weak steady signal noise readily
+/// favours a small spurious drift, and dechirping by it spoils the lock
+/// that a steady fit would have found. Measured on the clean bench: with no
+/// margin, four signals in 1,800 were lost that way.
+const DRIFT_MARGIN: f32 = 0.1;
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // small, non-negative
 fn round_to_usize(x: f32) -> usize {
@@ -762,10 +779,12 @@ fn validates(data: &[[Complex32; 8]], bits: &[bool; ldpc::N], noise: f32) -> boo
     differential_coherence(data, &tones, noise) >= DIFFERENTIAL_COHERENCE_MIN
 }
 
-/// The least differential coherence of a codeword that is believed. Noise
-/// never reached 1.6 in 480,000 tries on the bench; real decodes read 2.2
-/// and up, however they drift or flutter.
-const DIFFERENTIAL_COHERENCE_MIN: f32 = 2.0;
+/// The least differential coherence of a codeword that is believed. On
+/// the bench, noise never reached 1.53 in 480,000 tries, and above 1.2 its
+/// tail thins fivefold with every 0.1 (298 above 1.2, 51 above 1.3, 10
+/// above 1.4, 2 above 1.5); the weakest real decodes read 1.9 and up,
+/// however they drift or flutter.
+const DIFFERENTIAL_COHERENCE_MIN: f32 = 1.8;
 
 /// Differential coherence: the products of each decoded tone's amplitude
 /// with the conjugate of the next symbol's, summed over the transmission,
