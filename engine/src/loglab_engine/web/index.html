@@ -87,12 +87,21 @@
         <h2>Station profile</h2>
         <p id="profile-empty" class="hint">Type a call in New QSO to see who it is and when you worked them before.</p>
         <div id="profile-body" hidden>
-          <div class="profile-who">
-            <span id="profile-call" class="profile-call"></span>
-            <span id="profile-name" class="profile-name"></span>
+          <div class="profile-top">
+            <img id="profile-photo" class="profile-photo" alt="" hidden>
+            <div class="profile-about">
+              <div class="profile-who">
+                <span id="profile-call" class="profile-call"></span>
+                <span id="profile-name" class="profile-name"></span>
+              </div>
+              <dl id="profile-facts" class="profile-facts"></dl>
+              <p class="profile-source"><span id="profile-source" class="hint" aria-live="polite"></span> <button type="button" id="profile-refresh" class="link" hidden>Refresh from QRZ.com</button></p>
+            </div>
           </div>
-          <dl id="profile-facts" class="profile-facts"></dl>
-          <p id="profile-source" class="hint" aria-live="polite"></p>
+          <details id="profile-bio-part" class="profile-bio" open hidden>
+            <summary>Biography</summary>
+            <div id="profile-bio"></div>
+          </details>
           <div class="filters">
             <span id="profile-worked" class="profile-worked" aria-live="polite"></span>
             <span id="profile-tools" class="table-tools"></span>

@@ -67,6 +67,7 @@ from loglab_engine.callbook import (
     LookupStatus,
     QrzClient,
     http_fetch,
+    http_fetch_large,
 )
 from loglab_engine.callbook.logbook_sync import LogbookSync
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
@@ -118,7 +119,7 @@ from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 if TYPE_CHECKING:
     from psycopg.rows import TupleRow
 
-    from loglab_engine.callbook.service import LookupResult
+    from loglab_engine.callbook.service import BioResult, LookupResult
 
 SOURCE: Final = "https://github.com/ckarc/loglab"
 MAX_FIELDS: Final = 500
@@ -419,7 +420,23 @@ class LookupOut(BaseModel):
     state: str | None
     country: str | None
     grid: str | None
+    photo: bool
+    bio: bool
     cached: bool
+    fetched_at: datetime | None
+    message: str
+
+
+class BioOut(BaseModel):
+    """A call's QRZ.com biography as plain text, or why there is none.
+
+    ``status`` is ``found``, ``not_found`` (no biography), ``not_set_up``,
+    ``unreachable``, or ``login_failed``.
+    """
+
+    status: str
+    call: str
+    text: str | None
     fetched_at: datetime | None
     message: str
 
@@ -1522,6 +1539,8 @@ def _lookup_out(result: LookupResult) -> LookupOut:
         state=None if entry is None else entry.state,
         country=None if entry is None else entry.country,
         grid=None if entry is None else entry.grid,
+        photo=entry is not None and entry.image is not None,
+        bio=entry is not None and entry.bio,
         cached=result.cached,
         fetched_at=result.fetched_at,
         message=result.message,
@@ -1539,6 +1558,51 @@ def lookup(
     """
     _require(conn, who, Permission.VIEW)
     return _lookup_out(books.lookup(who, query.call.upper(), refresh=query.refresh))
+
+
+def _bio_out(result: BioResult) -> BioOut:
+    return BioOut(
+        status=result.status.value,
+        call=result.call,
+        text=result.text,
+        fetched_at=result.fetched_at,
+        message=result.message,
+    )
+
+
+@api.get("/lookup/bio")
+def lookup_bio(
+    who: Signed, conn: Conn, books: Books, query: Annotated[LookupQuery, Query()]
+) -> BioOut:
+    """The biography a call wrote on QRZ.com, as plain text, once the call has been looked up.
+
+    Always answers 200. Only the words are kept, never the page's markup
+    (Principle XII). It is fetched once and kept (Principle VI); ``refresh``
+    fetches it again.
+    """
+    _require(conn, who, Permission.VIEW)
+    return _bio_out(books.biography(who, query.call.upper(), refresh=query.refresh))
+
+
+@api.get(
+    "/lookup/photo",
+    response_class=Response,
+    responses={200: {"content": {"image/jpeg": {}, "image/png": {}}}, 404: {}},
+)
+def lookup_photo(
+    who: Signed, conn: Conn, books: Books, query: Annotated[LookupQuery, Query()]
+) -> Response:
+    """The call's photo from QRZ.com, once the call has been looked up; 404 if there is none.
+
+    Only a JPEG, PNG, GIF or WebP picture is ever served. It is fetched once
+    and kept (Principle VI), so it shows with no internet; ``refresh``
+    fetches it again.
+    """
+    _require(conn, who, Permission.VIEW)
+    photo = books.photo(query.call.upper(), refresh=query.refresh)
+    if photo is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"no photo of {query.call.upper()}")
+    return Response(photo.content, media_type=photo.content_type)
 
 
 _LOGIN_MESSAGE: Final = {
@@ -1858,14 +1922,16 @@ def create_app(
     database: str,
     qrz_fetch: Callable[[str], bytes] = http_fetch,
     qrz_post: Callable[[str, bytes, str], bytes] = http_post,
+    qrz_fetch_large: Callable[[str, int], bytes] = http_fetch_large,
     lotw_transport: Transport = https,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
     ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
-    and logbook services, and ``lotw_transport`` how it reaches LoTW; tests
-    give them stand-ins. The QRZ logbook sender runs in the background once
-    ``app.state.logbook.start()`` is called.
+    and logbook services, ``qrz_fetch_large`` its biographies and photos, and
+    ``lotw_transport`` how it reaches LoTW; tests give them stand-ins. The QRZ
+    logbook sender runs in the background once ``app.state.logbook.start()``
+    is called.
     """
     app = FastAPI(
         title="LogLab Engine",
@@ -1877,7 +1943,7 @@ def create_app(
         openapi_url="/api/v1/openapi.json",
     )
     app.state.database = database
-    app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch))
+    app.state.qrz = Link(QrzClient(f"LogLab-{__version__}", qrz_fetch, qrz_fetch_large))
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LogLab/{__version__}", qrz_post))
     app.include_router(api)

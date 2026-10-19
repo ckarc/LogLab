@@ -7,6 +7,9 @@
 // every letter. Who the call is comes from the Engine's callbook (Principle I:
 // the Engine talks to QRZ.com, never the page); with no QRZ.com login or no
 // internet the box still shows the log's QSOs with the call (Principle V).
+// When QRZ.com has a photo or a biography for the call, the Engine fetches it
+// once and keeps it, so it shows again with no internet; a biography arrives
+// as plain words only, and is shown as text (Principle XII).
 // The box can be popped out to a window of its own: the windows of one
 // browser tell each other the call typed, with nothing sent over the network.
 "use strict";
@@ -48,6 +51,56 @@
     asked += 1;
     $("#profile-body").hidden = true;
     $("#profile-empty").hidden = false;
+    showPhoto(null);
+  }
+
+  function showPhoto(url) {
+    const photo = $("#profile-photo");
+    photo.hidden = !url;
+    if (url) photo.src = url;
+    else photo.removeAttribute("src");
+  }
+
+  // The photo is read with the operator's sign-in, so it comes as data the
+  // page shows itself, never as a link to QRZ.com (Principles I and V).
+  async function loadPhoto(call, question, refresh) {
+    const session = window.LogLab.session();
+    if (!session) return;
+    const query = new URLSearchParams({ call });
+    if (refresh) query.set("refresh", "true");
+    try {
+      const response = await fetch(`/api/v1/lookup/photo?${query}`, {
+        headers: { Authorization: `Bearer ${session.token}` },
+      });
+      if (!response.ok) return;
+      const picture = await response.blob();
+      if (!/^image\/(jpeg|png|gif|webp)$/.test(picture.type)) return;
+      const url = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = () => reject(reader.error);
+        reader.readAsDataURL(picture);
+      });
+      if (question === asked) showPhoto(url);
+    } catch {
+      /* no photo this time */
+    }
+  }
+
+  async function loadBio(call, question, refresh) {
+    let bio;
+    try {
+      bio = await window.LogLab.api("GET", `/lookup/bio?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
+    } catch {
+      return;
+    }
+    if (question !== asked || !bio.text) return;
+    $("#profile-bio").replaceChildren(...bio.text.split("\n").map((line) => {
+      const p = document.createElement("p");
+      p.textContent = line;
+      return p;
+    }));
+    $("#profile-bio-part").hidden = false;
   }
 
   function fact(label, value) {
@@ -72,14 +125,20 @@
     }
   }
 
-  async function lookUp(call, question) {
+  async function lookUp(call, question, refresh = false) {
     let found;
     try {
-      found = await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}`);
+      found = await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
     } catch {
       found = { status: "unreachable", message: "The Engine can't be reached right now." };
     }
-    if (question === asked) showFound(found);
+    if (question !== asked) return;
+    showFound(found);
+    $("#profile-refresh").hidden = found.status === "not_set_up" || !found.fetched_at;
+    if (found.photo) loadPhoto(call, question, refresh);
+    else showPhoto(null);
+    if (found.bio) loadBio(call, question, refresh);
+    else $("#profile-bio-part").hidden = true;
   }
 
   async function loadWorked() {
@@ -115,6 +174,10 @@
     $("#profile-facts").replaceChildren();
     $("#profile-source").textContent = "";
     $("#profile-worked").textContent = "";
+    $("#profile-refresh").hidden = true;
+    $("#profile-bio-part").hidden = true;
+    $("#profile-bio").replaceChildren();
+    showPhoto(null);
     $("#profile-empty").hidden = true;
     $("#profile-body").hidden = false;
     lookUp(call, asked);
@@ -141,6 +204,13 @@
     clearTimeout(pauseTimer);
     show(typed());
     tell({ call: typed() });
+  });
+
+  $("#profile-refresh").addEventListener("click", () => {
+    if (!shown) return;
+    asked += 1;
+    $("#profile-source").textContent = "Asking QRZ.com…";
+    lookUp(shown, asked, true);
   });
 
   // After a QSO is stored the box keeps the station just worked, now with
