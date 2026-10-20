@@ -21,9 +21,13 @@
 //!    any steady drift of it, and the timing to a sample, by making the
 //!    phase step from each Costas tone to the next what a signal at that
 //!    frequency would show; asking only neighbouring tones to agree keeps
-//!    the lock good when fading scrambles the phase over a whole array. If
-//!    the best lock does not decode, its nearest neighbours in frequency
-//!    are tried too.
+//!    the lock good when fading scrambles the phase over a whole array.
+//!    That fit is blunt about drift, though, so once the Costas tones have
+//!    said how steady the phase is ([`classify_fading`]) the frequency and
+//!    drift are fitted again with the tones asked to agree over as many
+//!    steps as that channel keeps them in phase, and the channel read
+//!    again, until the reading settles. If the best lock does not decode,
+//!    its nearest neighbours in frequency are tried too.
 //! 4. **Soft demodulation.** The Costas tones first say what the channel
 //!    is doing to the signal's phase: steady, or wandering as a Doppler
 //!    spread of about 0.5, 1, 2 or 3 Hz would make it ([`classify_fading`]).
@@ -448,10 +452,21 @@ const FINE_SAMPLES: isize = 6;
 const COHERENT_HZ: (f32, f32) = (0.6, 0.02);
 const COHERENT_HZ_AGAIN: (f32, f32) = (0.3, 0.01);
 
-/// Reach and step, in hertz, of the fully coherent refinement of a steady
-/// signal's frequency after the lag fit, whose error on a strong steady
-/// signal is within 0.1 Hz.
-const STEADY_HZ: (f32, f32) = (0.1, 0.01);
+/// Reach and step, in hertz, of the frequency fits matched to the channel
+/// after the lag fit, which search drift too ([`DRIFT_HZ_PER_S_AGAIN`]);
+/// the lag fit's error is within this reach on any signal worth decoding.
+const MATCHED_HZ: (f32, f32) = (0.3, 0.01);
+
+/// The most fits matched to the channel the lock makes; each one is
+/// followed by a fresh reading of the channel, and the lock stops early
+/// when the reading no longer changes.
+const MATCHED_FITS: usize = 3;
+
+/// The highest fading class ([`FADING_HYPOTHESES`]) that gets a matched
+/// fit: up to a 1 Hz spread, where neighbouring tones still agree over
+/// three or four steps. Faster fading is left to the lag fit, which is
+/// already matched to it.
+const MATCHED_CLASS_MAX: usize = 2;
 
 /// Baseband samples either side of the start tried by the coherent timing
 /// refinement.
@@ -566,14 +581,11 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
         costas_offset_and_drift(&symbols, COHERENT_HZ_AGAIN, DRIFT_HZ_PER_S_AGAIN);
     hz += offset;
     drift += slope;
-    // On a steady signal the fully coherent fit is the more precise, so
-    // when the channel reads steady the offset is settled once more by it,
-    // within the reach the lag fit leaves.
-    let symbols = measure(&baseband::chirp(&slice, hz, drift, middle), start);
-    if classify_fading(&symbols, noise_power(&symbols)) == 0 {
-        let (offset, _) = costas_offset(&symbols, STEADY_HZ, (0.0, 1.0), 1.0);
-        hz += offset;
-    }
+    let (hz, drift) = matched_fits(
+        |hz, drift| measure(&baseband::chirp(&slice, hz, drift, middle), start),
+        hz,
+        drift,
+    );
 
     std::iter::once((0.0, 0))
         .chain(NEIGHBOURS)
@@ -587,6 +599,44 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
             }
         })
         .collect()
+}
+
+/// The lag fit holds under fast fading but reads drift bluntly: drift
+/// shows only as a change of the lag-one phase step from one array to the
+/// next. So once the channel has been read, the frequency and drift are
+/// fitted again with the tones asked to agree over as many steps as the
+/// fading leaves in phase (every step, on a steady signal), which measures
+/// both far more sharply. A residual drift makes a steady signal read as
+/// fading, so the reading is repeated after each fit until it settles.
+/// `measure` gives the symbols at a frequency and drift; returns the
+/// frequency and drift settled on.
+fn matched_fits(
+    measure: impl Fn(f32, f32) -> Vec<[Complex32; 8]>,
+    mut hz: f32,
+    mut drift: f32,
+) -> (f32, f32) {
+    let mut symbols = measure(hz, drift);
+    let mut class = classify_fading(&symbols, noise_power(&symbols));
+    for _ in 0..MATCHED_FITS {
+        if class > MATCHED_CLASS_MAX {
+            break;
+        }
+        let (offset, slope) = costas_offset(
+            &symbols,
+            MATCHED_HZ,
+            DRIFT_HZ_PER_S_AGAIN,
+            FADING_HYPOTHESES[class],
+        );
+        hz += offset;
+        drift += slope;
+        symbols = measure(hz, drift);
+        let again = classify_fading(&symbols, noise_power(&symbols));
+        if again == class {
+            break;
+        }
+        class = again;
+    }
+    (hz, drift)
 }
 
 /// Reach and step, in hertz per second, of the drift search alongside
@@ -739,10 +789,11 @@ fn array_fit(lags: &[Complex32; 7], angle: f32, correlation: f32) -> f32 {
 /// ones not at all. On a steady signal this alone costs nothing measurable
 /// against the fully coherent fit (the clean bench decodes the same
 /// signals, with a frequency error of 0.02 Hz typical against 0.015, and
-/// the coherent refinement of [`STEADY_HZ`] recovers the rest); at a 1 to
-/// 2 Hz spread, where the phase wanders within an array and the coherent
-/// fit's error reached 0.5 to 0.8 Hz, it cuts that error by a third and
-/// recovers five or six signals in 400.
+/// the matched fits of [`MATCHED_HZ`] recover the rest); at a 1 to 2 Hz
+/// spread, where the phase wanders within an array and the coherent fit's
+/// error reached 0.5 to 0.8 Hz, it cuts that error by a third and recovers
+/// five or six signals in 400. Drift is where it is blunt: on its own it
+/// lost a signal in twenty at 0.1 Hz/s, which the matched fits win back.
 const LOCK_CORRELATION: f32 = 0.3;
 
 /// The sum of every Costas array's [`array_fit`] at its measured
@@ -1448,7 +1499,7 @@ mod tests {
 
     use super::{
         COHERENT_HZ, COSTAS, COSTAS_POSITIONS, Combiner, DIFFERENTIAL_COHERENCE_MIN,
-        DRIFT_HZ_PER_S, FADING_HYPOTHESES, MAX_GROUP, Options, STEADY_HZ, SYMBOLS, array_fit,
+        DRIFT_HZ_PER_S, FADING_HYPOTHESES, MATCHED_HZ, MAX_GROUP, Options, SYMBOLS, array_fit,
         classify_fading, costas_array, costas_lags, costas_offset, costas_offset_and_drift,
         data_symbols, decode_slot, differential_coherence, evenness, to_f32,
     };
@@ -1579,7 +1630,7 @@ mod tests {
                     tones.map(|a| a * Complex32::from_polar(1.0, turn))
                 })
                 .collect();
-            let (refined, _) = costas_offset(&dechirped, STEADY_HZ, (0.0, 1.0), 1.0);
+            let (refined, _) = costas_offset(&dechirped, MATCHED_HZ, (0.0, 1.0), 1.0);
             assert!(
                 (found_offset + refined - offset).abs() <= 0.03,
                 "offset {offset}: refined to {}",
