@@ -7,16 +7,27 @@
 //! ```text
 //! ft8bench generate DIR [--seed N] [--slots N] [--signals N]
 //!                       [--min-snr DB] [--max-snr DB] [--channel CHANNEL]
+//!                       [--scenario contest] [--own-call CALL]
+//!                       [--min-signals N] [--max-signals N]
 //!     Write slot-NNNN.wav recordings and truth.tsv into DIR. CHANNEL is a
 //!     simulated HF channel every signal passes through: a preset (quiet,
 //!     moderate, disturbed, flutter) and/or name=value settings separated by
 //!     commas (spread, k, deepfade, fadelen, drift, bend, wobble, period,
-//!     phasenoise, echo, echodb, echoshift); see `ft8::channel`.
-//! ft8bench score TRUTH DECODES-DIR [--name NAME]
-//!     Score slot-NNNN.txt decoder output against the truth file.
+//!     phasenoise, echo, echodb, echoshift); see `ft8::channel`. The
+//!     contest scenario is a crowded Field Day band (50 to 80 signals per
+//!     slot, -24 to +16 dB, a pile-up answering the own call; see
+//!     `ft8::bench::contest`).
+//! ft8bench score TRUTH DECODES-DIR [--name NAME] [--budget SECONDS]
+//!     Score slot-NNNN.txt decoder output against the truth file. For a
+//!     contest truth file, also what matters in a contest: answers to the
+//!     own call, workable signals, and decodes within the budget (default
+//!     2 s) by the slot-NNNN.when files `decode` writes beside its output.
 //! ft8bench decode DIR [--out OUT-DIR]
 //!     Decode every slot-NNNN.wav in DIR with LogLab's decoder, writing
-//!     slot-NNNN.txt decoder output (default OUT-DIR: DIR/loglab).
+//!     slot-NNNN.txt decoder output (default OUT-DIR: DIR/loglab) and
+//!     slot-NNNN.when, when each decode was made (seconds from the start
+//!     of the slot's decoding, then the message), with the whole slot's
+//!     time on its first line.
 //! ft8bench diagnose DIR [--decodes DECODES-DIR]
 //!     For every signal in DIR's truth file, how far LogLab's decoder gets
 //!     with it, step by step, as tab-separated lines (see
@@ -29,11 +40,13 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::fmt::Write as _;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use loglab_agent::ft8::bench::{self, Rng, ScenarioSpec};
+use loglab_agent::ft8::bench::contest::ContestSpec;
+use loglab_agent::ft8::bench::{self, ContestScoring, Rng, ScenarioSpec};
 use loglab_agent::ft8::channel::Channel;
 use loglab_agent::ft8::{decode, encode};
 
@@ -105,16 +118,38 @@ fn number<T: std::str::FromStr>(
 }
 
 fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, String> {
-    let standard = ScenarioSpec::standard(number(options, "seed", 1)?);
+    let seed = number(options, "seed", 1)?;
+    let base = match options.get("scenario").map(String::as_str) {
+        None | Some("standard") => ScenarioSpec::standard(seed),
+        Some("contest") => ScenarioSpec::contest(seed),
+        Some(other) => return Err(format!("unknown scenario: {other}")),
+    };
+    let contest = base.contest.clone().map(|c| -> Result<_, String> {
+        Ok(ContestSpec {
+            own_call: options
+                .get("own-call")
+                .map_or(c.own_call, |call| call.to_uppercase()),
+            min_signals: number(options, "min-signals", c.min_signals)?,
+            max_signals: number(options, "max-signals", c.max_signals)?,
+        })
+    });
+    let contest = contest.transpose()?;
+    if contest
+        .as_ref()
+        .is_some_and(|c| c.min_signals > c.max_signals || c.max_signals == 0)
+    {
+        return Err("--min-signals must not exceed --max-signals, which must be positive".into());
+    }
     let spec = ScenarioSpec {
-        slots: number(options, "slots", standard.slots)?,
-        signals_per_slot: number(options, "signals", standard.signals_per_slot)?,
-        min_snr_db: number(options, "min-snr", standard.min_snr_db)?,
-        max_snr_db: number(options, "max-snr", standard.max_snr_db)?,
+        slots: number(options, "slots", base.slots)?,
+        signals_per_slot: number(options, "signals", base.signals_per_slot)?,
+        min_snr_db: number(options, "min-snr", base.min_snr_db)?,
+        max_snr_db: number(options, "max-snr", base.max_snr_db)?,
         channel: options
             .get("channel")
             .map_or(Ok(Channel::CLEAR), |c| Channel::parse(c))?,
-        ..standard
+        contest,
+        ..base
     };
     std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
     let slots = bench::generate(&spec);
@@ -128,10 +163,11 @@ fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
         &dir.join("truth.tsv"),
         bench::truth_tsv(&spec, &slots).as_bytes(),
     )?;
+    let signals: usize = slots.iter().map(|s| s.signals.len()).sum();
     Ok(format!(
-        "wrote {} slots with {} signals each to {} (channel: {})\n",
+        "wrote {} slots with {} signals to {} (channel: {})\n",
         spec.slots,
-        spec.signals_per_slot,
+        signals,
         dir.display(),
         spec.channel
     ))
@@ -145,28 +181,74 @@ fn score(
     let text = read(truth_path)?;
     let truth = bench::parse_truth(&text)
         .map_err(|line| format!("{}: line {line} is not a truth line", truth_path.display()))?;
+    let mut contest = bench::truth_own_call(&text).map(|own_call| ContestScoring {
+        own_call,
+        budget_s: 2.0,
+        when: BTreeMap::new(),
+        took: BTreeMap::new(),
+    });
+    if let Some(c) = &mut contest {
+        c.budget_s = number(options, "budget", c.budget_s)?;
+    }
     // Every slot-NNNN.txt counts, including noise-only slots the truth
     // file has no lines for.
     let mut decoded = BTreeMap::new();
     let entries =
         std::fs::read_dir(decodes_dir).map_err(|e| format!("{}: {e}", decodes_dir.display()))?;
     for path in entries.filter_map(|e| e.ok().map(|e| e.path())) {
-        let index = path.file_name().and_then(|n| n.to_str()).and_then(|n| {
-            n.strip_prefix("slot-")?
-                .strip_suffix(".txt")?
-                .parse::<usize>()
-                .ok()
-        });
-        if let (Some(index), Ok(output)) = (index, std::fs::read_to_string(&path)) {
+        let slot_number = |suffix: &str| {
+            path.file_name().and_then(|n| n.to_str()).and_then(|n| {
+                n.strip_prefix("slot-")?
+                    .strip_suffix(suffix)?
+                    .parse::<usize>()
+                    .ok()
+            })
+        };
+        if let (Some(index), Ok(output)) = (slot_number(".txt"), std::fs::read_to_string(&path)) {
             let messages = output
                 .lines()
                 .filter_map(bench::parse_decode_line)
                 .collect();
             decoded.insert(index, messages);
         }
+        if let (Some(c), Some(index), Ok(output)) = (
+            contest.as_mut(),
+            slot_number(".when"),
+            std::fs::read_to_string(&path),
+        ) {
+            let (took, when) = parse_when(&output);
+            if let Some(took) = took {
+                c.took.insert(index, took);
+            }
+            c.when.insert(index, when);
+        }
     }
     let name = options.get("name").map_or("Decoder", String::as_str);
-    Ok(bench::report(name, &bench::score(&truth, &decoded)))
+    Ok(bench::report(
+        name,
+        &bench::score_contest(&truth, &decoded, contest.as_ref()),
+    ))
+}
+
+/// A slot's `.when` file: the slot's whole decoding time, then when each
+/// message was decoded.
+fn parse_when(text: &str) -> (Option<f64>, BTreeMap<String, f64>) {
+    let mut took = None;
+    let mut when = BTreeMap::new();
+    for line in text.lines() {
+        let Some((seconds, rest)) = line.split_once('\t') else {
+            continue;
+        };
+        let Ok(seconds) = seconds.parse::<f64>() else {
+            continue;
+        };
+        if rest.is_empty() {
+            took = Some(seconds);
+        } else {
+            when.insert(loglab_agent::ft8::message::normalize(rest), seconds);
+        }
+    }
+    (took, when)
 }
 
 fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, String> {
@@ -187,14 +269,24 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
         let audio = bench::wav_samples(&bytes)
             .ok_or_else(|| format!("{}: not a 12,000 Hz mono 16-bit WAV", wav.display()))?;
         let one = std::time::Instant::now();
-        let decodes = decode::decode_slot(&audio, &decode::Options::default());
-        slowest = slowest.max(one.elapsed());
-        let text: String = decodes.iter().map(|d| d.to_line() + "\n").collect();
+        let mut decodes: Vec<(f64, decode::Decode)> = Vec::new();
+        decode::decode_slot_each(&audio, &decode::Options::default(), &mut |d| {
+            decodes.push((one.elapsed().as_secs_f64(), d));
+        });
+        let took = one.elapsed();
+        slowest = slowest.max(took);
+        let mut when = format!("{:.3}\t\n", took.as_secs_f64());
+        for (at, d) in &decodes {
+            let _ = writeln!(when, "{at:.3}\t{}", d.message);
+        }
+        decodes.sort_by(|a, b| a.1.base_hz.total_cmp(&b.1.base_hz));
+        let text: String = decodes.iter().map(|(_, d)| d.to_line() + "\n").collect();
         let stem = wav
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_default();
         write(&out.join(format!("{stem}.txt")), text.as_bytes())?;
+        write(&out.join(format!("{stem}.when")), when.as_bytes())?;
     }
     Ok(format!(
         "decoded {} recordings into {} in {:.1} s (slowest {:.2} s); {} wrong codewords were caught by the CRC alone, so about {:.4} false decodes were to be expected\n{}\n",

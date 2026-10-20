@@ -61,7 +61,6 @@
 //! came from the signal and passed the parity checks and the CRC. Nothing
 //! is assumed about what a message probably says.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex32;
@@ -214,9 +213,19 @@ struct Candidate {
 /// Decodes one 15-second slot of 12,000-sample-per-second audio.
 #[must_use]
 pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
+    let mut decodes = Vec::new();
+    decode_slot_each(audio, options, &mut |decode| decodes.push(decode));
+    decodes.sort_by(|a, b| a.base_hz.total_cmp(&b.base_hz));
+    decodes
+}
+
+/// [`decode_slot`], handing each decode to `each` the moment it is made,
+/// so a caller can show the first ones while the search goes on. The
+/// decodes come in the order they were found, not by frequency.
+pub fn decode_slot_each(audio: &[f32], options: &Options, each: &mut dyn FnMut(Decode)) {
     let meter = ToneMeter::new();
     let mut residual = audio.to_vec();
-    let mut found: BTreeMap<String, Decode> = BTreeMap::new();
+    let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut tried = std::collections::BTreeSet::new();
     for _ in 0..options.passes {
         let timer = profile::Timer::start();
@@ -251,7 +260,7 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
         for (candidate, outcome) in fresh.into_iter().zip(quick) {
             match outcome {
                 Ok(locked) => {
-                    if let Some(hz) = record(&mut found, &mut residual, &locked, options) {
+                    if let Some(hz) = record(&mut found, &mut residual, &locked, options, each) {
                         decoded_hz.push(hz);
                     }
                 }
@@ -298,15 +307,12 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
         });
         let mut any = !decoded_hz.is_empty();
         for locked in deep.into_iter().flatten() {
-            any |= record(&mut found, &mut residual, &locked, options).is_some();
+            any |= record(&mut found, &mut residual, &locked, options, each).is_some();
         }
         if !any {
             break;
         }
     }
-    let mut decodes: Vec<Decode> = found.into_values().collect();
-    decodes.sort_by(|a, b| a.base_hz.total_cmp(&b.base_hz));
-    decodes
 }
 
 /// Candidates whose frequency is within this of a signal just removed are
@@ -315,31 +321,30 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
 const NEAR_HZ: f64 = 75.0;
 
 /// Adds the decode at `locked` (demodulating it again, which is cheap and
-/// gives the same answer) unless it is already known, and removes its
-/// signal from `residual`. Returns its frequency if it was new.
+/// gives the same answer) unless it is already known, hands it to `each`,
+/// and removes its signal from `residual`. Returns its frequency if it
+/// was new.
 fn record(
-    found: &mut BTreeMap<String, Decode>,
+    found: &mut std::collections::BTreeSet<String>,
     residual: &mut [f32],
     locked: &Locked,
     options: &Options,
+    each: &mut dyn FnMut(Decode),
 ) -> Option<f64> {
     let (payload, tones) = match demodulate(locked, options) {
         Ok(found) => found,
         Err(leftover) => deep_decode(&leftover, options)?,
     };
     let text = message::unpack(payload)?;
-    if found.contains_key(&text) {
+    if !found.insert(text.clone()) {
         return None;
     }
-    found.insert(
-        text.clone(),
-        Decode {
-            message: text,
-            snr_db: estimate_snr(locked, &tones),
-            dt_s: start_to_dt(locked.start),
-            base_hz: (locked.base_hz * 10.0).round() / 10.0,
-        },
-    );
+    each(Decode {
+        message: text,
+        snr_db: estimate_snr(locked, &tones),
+        dt_s: start_to_dt(locked.start),
+        base_hz: (locked.base_hz * 10.0).round() / 10.0,
+    });
     let audio_start = locked.start * to_isize(SAMPLE_RATE as usize / 200);
     subtract::subtract(residual, &tones, locked.base_hz, audio_start);
     Some(locked.base_hz)

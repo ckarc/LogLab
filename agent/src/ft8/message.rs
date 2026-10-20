@@ -49,6 +49,13 @@ const SECTIONS: [&str; 86] = [
     "WI", "WMA", "WNY", "WPA", "WTX", "WV", "WWA", "WY", "DX", "PE", "NB",
 ];
 
+/// The sections a Field Day exchange can carry, as the protocol lists
+/// them (for the bench and the exchange grammar).
+#[must_use]
+pub fn field_day_sections() -> &'static [&'static str] {
+    &SECTIONS
+}
+
 /// Field Day classes, by their 3-bit number.
 const CLASSES: &str = "ABCDEF";
 
