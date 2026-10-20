@@ -25,6 +25,8 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 
+pub mod contest;
+
 use super::channel::Channel;
 use super::encode;
 use super::message::normalize;
@@ -128,7 +130,7 @@ impl Slot {
 }
 
 /// How a scenario is generated.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ScenarioSpec {
     /// Seed for every random choice.
     pub seed: u64,
@@ -142,6 +144,9 @@ pub struct ScenarioSpec {
     pub max_snr_db: f64,
     /// What propagation does to every signal.
     pub channel: Channel,
+    /// A crowded contest band instead of the standard well-spaced signals;
+    /// `signals_per_slot` is then unused.
+    pub contest: Option<contest::ContestSpec>,
 }
 
 impl ScenarioSpec {
@@ -157,6 +162,22 @@ impl ScenarioSpec {
             min_snr_db: -26.0,
             max_snr_db: -4.0,
             channel: Channel::CLEAR,
+            contest: None,
+        }
+    }
+
+    /// The crowded Field Day band ([`contest::ContestSpec::field_day`]):
+    /// 40 slots of 50 to 80 signals from -24 to +16 dB.
+    #[must_use]
+    pub fn contest(seed: u64) -> Self {
+        Self {
+            seed,
+            slots: 40,
+            signals_per_slot: 0,
+            min_snr_db: -24.0,
+            max_snr_db: 16.0,
+            channel: Channel::CLEAR,
+            contest: Some(contest::ContestSpec::field_day()),
         }
     }
 }
@@ -164,6 +185,10 @@ impl ScenarioSpec {
 /// Generates a scenario's slots and signals.
 #[must_use]
 pub fn generate(spec: &ScenarioSpec) -> Vec<Slot> {
+    if let Some(contest) = &spec.contest {
+        let mut band = contest::Band::new(contest, spec.seed, spec.min_snr_db, spec.max_snr_db);
+        return (0..spec.slots).map(|index| band.slot(index)).collect();
+    }
     let mut rng = Rng::new(spec.seed);
     (0..spec.slots)
         .map(|index| {
@@ -209,7 +234,7 @@ pub fn random_message(rng: &mut Rng) -> String {
 
 /// A random standard callsign: one or two prefix characters, a digit, and
 /// one to three letters. Calls never start with Q, as none are issued.
-fn random_call(rng: &mut Rng) -> String {
+pub(super) fn random_call(rng: &mut Rng) -> String {
     const LETTERS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     const FIRST: &[u8] = b"ABCDEFGHIJKLMNOPRSTUVWXYZ";
     const DIGITS: &[u8] = b"0123456789";
@@ -371,17 +396,24 @@ pub fn wav_samples(bytes: &[u8]) -> Option<Vec<f32>> {
 #[must_use]
 pub fn truth_tsv(spec: &ScenarioSpec, slots: &[Slot]) -> String {
     let mut out = format!(
-        "# loglab ft8bench scenario seed={} slots={} signals={} snr={}..{}{}\n",
+        "# loglab ft8bench scenario seed={} slots={} signals={} snr={}..{}{}{}\n",
         spec.seed,
         spec.slots,
-        spec.signals_per_slot,
+        spec.contest.as_ref().map_or_else(
+            || spec.signals_per_slot.to_string(),
+            |c| format!("{}..{}", c.min_signals, c.max_signals)
+        ),
         spec.min_snr_db,
         spec.max_snr_db,
         if spec.channel.is_clear() {
             String::new()
         } else {
             format!(" channel={}", spec.channel)
-        }
+        },
+        spec.contest.as_ref().map_or_else(String::new, |c| format!(
+            " scenario=contest own={}",
+            c.own_call
+        ))
     );
     for slot in slots {
         for s in &slot.signals {
@@ -393,6 +425,16 @@ pub fn truth_tsv(spec: &ScenarioSpec, slots: &[Slot]) -> String {
         }
     }
     out
+}
+
+/// The operator's own callsign a contest truth file names in its header,
+/// if it is one.
+#[must_use]
+pub fn truth_own_call(text: &str) -> Option<String> {
+    text.lines()
+        .take_while(|l| l.starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .find_map(|word| word.strip_prefix("own=").map(str::to_owned))
 }
 
 /// Reads a truth file back.
@@ -468,6 +510,28 @@ pub struct Tally {
     pub found: usize,
 }
 
+/// What matters in a contest, beyond the count: the operator's own call
+/// and how long after the slot's end a decode may arrive and still count.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContestScoring {
+    /// The operator's own callsign; messages addressed to it are the
+    /// answers the operator is waiting for.
+    pub own_call: String,
+    /// Seconds after the end of the slot by which a decode must be on
+    /// screen to count as prompt.
+    pub budget_s: f64,
+    /// When each decode arrived, in seconds from the start of decoding, by
+    /// slot and message. A slot or message missing here arrived at the
+    /// end, when the decoder returned.
+    pub when: BTreeMap<usize, BTreeMap<String, f64>>,
+    /// How long decoding each slot took in all, in seconds, where known.
+    pub took: BTreeMap<usize, f64>,
+}
+
+/// Weakest signal an operator can expect to work, in decibels: the
+/// bench's "workable" line.
+pub const WORKABLE_DB: f64 = -18.0;
+
 /// How a decoder did on a whole scenario.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Score {
@@ -475,6 +539,18 @@ pub struct Score {
     pub by_snr: BTreeMap<i32, Tally>,
     /// All signals together.
     pub total: Tally,
+    /// Signals at [`WORKABLE_DB`] and above.
+    pub workable: Tally,
+    /// Messages addressed to the operator's own call (contest scoring
+    /// only).
+    pub answers: Tally,
+    /// Signals found within the budget (contest scoring only): all of
+    /// them, and the answers.
+    pub prompt: Tally,
+    /// See `prompt`.
+    pub prompt_answers: Tally,
+    /// Answers found: the slowest, in seconds (contest scoring only).
+    pub slowest_answer_s: f64,
     /// Decodes of messages that were not sent, as (slot, message).
     pub false_decodes: Vec<(usize, String)>,
     /// Signals missed, as (slot, SNR, message).
@@ -487,8 +563,22 @@ pub struct Score {
 #[must_use]
 #[allow(clippy::cast_possible_truncation)] // SNRs are small
 pub fn score(truth: &[Slot], decoded: &BTreeMap<usize, Vec<String>>) -> Score {
+    score_contest(truth, decoded, None)
+}
+
+/// [`score`] with, for a contest scenario, what matters there counted
+/// too: answers to the operator's own call, workable signals, and what
+/// arrived within the budget.
+#[must_use]
+#[allow(clippy::cast_possible_truncation)] // SNRs are small
+pub fn score_contest(
+    truth: &[Slot],
+    decoded: &BTreeMap<usize, Vec<String>>,
+    contest: Option<&ContestScoring>,
+) -> Score {
     let mut result = Score::default();
     let empty = Vec::new();
+    let none = BTreeMap::new();
     for slot in truth {
         let got: BTreeSet<String> = decoded
             .get(&slot.index)
@@ -497,12 +587,43 @@ pub fn score(truth: &[Slot], decoded: &BTreeMap<usize, Vec<String>>) -> Score {
             .map(|m| normalize(m))
             .collect();
         let sent: BTreeSet<&str> = slot.signals.iter().map(|s| s.message.as_str()).collect();
+        let when = contest
+            .and_then(|c| c.when.get(&slot.index))
+            .unwrap_or(&none);
+        let took = contest.and_then(|c| c.took.get(&slot.index).copied());
         for signal in &slot.signals {
             let band = ((signal.snr_db / 2.0).floor() * 2.0) as i32;
             let found = got.contains(&signal.message);
             for tally in [result.by_snr.entry(band).or_default(), &mut result.total] {
                 tally.sent += 1;
                 tally.found += usize::from(found);
+            }
+            if signal.snr_db >= WORKABLE_DB {
+                result.workable.sent += 1;
+                result.workable.found += usize::from(found);
+            }
+            if let Some(contest) = contest {
+                let answer = signal
+                    .message
+                    .split(' ')
+                    .next()
+                    .is_some_and(|to| to == contest.own_call);
+                // A decode with no arrival time of its own arrived when
+                // the decoder returned; with no time known at all, it
+                // counts as prompt only if the decoder was never timed.
+                let at = when.get(&signal.message).copied().or(took).unwrap_or(0.0);
+                let prompt = found && at <= contest.budget_s;
+                result.prompt.sent += 1;
+                result.prompt.found += usize::from(prompt);
+                if answer {
+                    result.answers.sent += 1;
+                    result.answers.found += usize::from(found);
+                    result.prompt_answers.sent += 1;
+                    result.prompt_answers.found += usize::from(prompt);
+                    if found {
+                        result.slowest_answer_s = result.slowest_answer_s.max(at);
+                    }
+                }
             }
             if !found {
                 result
@@ -545,12 +666,31 @@ pub fn report(name: &str, score: &Score) -> String {
     }
     let _ = writeln!(
         out,
-        "| **All** | **{}** | **{}** | **{}** |\n\nFalse decodes: {}",
+        "| **All** | **{}** | **{}** | **{}** |",
         score.total.sent,
         score.total.found,
         percent(score.total),
-        score.false_decodes.len()
     );
+    if score.answers.sent > 0 || score.prompt.sent > 0 {
+        let _ = writeln!(
+            out,
+            "| Workable ({WORKABLE_DB} dB and up) | {} | {} | {} |\n| Answers to own call | {} | {} | {} |\n| Found within the budget | {} | {} | {} |\n| Answers within the budget | {} | {} | {} |\n\nSlowest answer: {:.2} s",
+            score.workable.sent,
+            score.workable.found,
+            percent(score.workable),
+            score.answers.sent,
+            score.answers.found,
+            percent(score.answers),
+            score.prompt.sent,
+            score.prompt.found,
+            percent(score.prompt),
+            score.prompt_answers.sent,
+            score.prompt_answers.found,
+            percent(score.prompt_answers),
+            score.slowest_answer_s,
+        );
+    }
+    let _ = writeln!(out, "\nFalse decodes: {}", score.false_decodes.len());
     for (slot, message) in &score.false_decodes {
         let _ = writeln!(out, "- slot {slot}: {message}");
     }
