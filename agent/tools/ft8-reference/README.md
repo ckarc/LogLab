@@ -65,3 +65,6 @@ own lock and from an oracle lock at the true frequency and timing.
 `results-fading.md` is what the sweep showed and what changed because of it;
 `results-fast-fading.md` is the second round, on fast fading, with the
 classifier, matched combining and iterated lock that came of it.
+`results-contest.md` is the Contest profile (`ft8bench generate --scenario
+contest`, `ft8bench decode --profile contest`) on a crowded Field Day band,
+and where that work was parked.
