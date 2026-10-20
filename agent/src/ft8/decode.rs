@@ -453,20 +453,17 @@ const COHERENT_HZ: (f32, f32) = (0.6, 0.02);
 const COHERENT_HZ_AGAIN: (f32, f32) = (0.3, 0.01);
 
 /// Reach and step, in hertz, of the frequency fits matched to the channel
-/// after the lag fit, which search drift too ([`DRIFT_HZ_PER_S_AGAIN`]);
-/// the lag fit's error is within this reach on any signal worth decoding.
+/// after the lag fit; the lag fit's error is within this reach on any
+/// signal worth decoding. The first of them searches drift over the full
+/// [`DRIFT_HZ_PER_S`], since the lag fit can leave a weak signal with
+/// more drift than the fine search reaches, the rest over
+/// [`DRIFT_HZ_PER_S_AGAIN`].
 const MATCHED_HZ: (f32, f32) = (0.3, 0.01);
 
 /// The most fits matched to the channel the lock makes; each one is
 /// followed by a fresh reading of the channel, and the lock stops early
 /// when the reading no longer changes.
 const MATCHED_FITS: usize = 3;
-
-/// The highest fading class ([`FADING_HYPOTHESES`]) that gets a matched
-/// fit: up to a 1 Hz spread, where neighbouring tones still agree over
-/// three or four steps. Faster fading is left to the lag fit, which is
-/// already matched to it.
-const MATCHED_CLASS_MAX: usize = 2;
 
 /// Baseband samples either side of the start tried by the coherent timing
 /// refinement.
@@ -607,9 +604,12 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
 /// fitted again with the tones asked to agree over as many steps as the
 /// fading leaves in phase (every step, on a steady signal), which measures
 /// both far more sharply. A residual drift makes a steady signal read as
-/// fading, so the reading is repeated after each fit until it settles.
-/// `measure` gives the symbols at a frequency and drift; returns the
-/// frequency and drift settled on.
+/// fading, so the reading is repeated after each fit until it settles;
+/// every class gets the fits, because a weak drifting signal can read as
+/// fast fading until its drift is taken out (at 0.2 Hz/s, holding the
+/// fits back from the fast classes lost a signal in thirty). `measure`
+/// gives the symbols at a frequency and drift; returns the frequency and
+/// drift settled on.
 fn matched_fits(
     measure: impl Fn(f32, f32) -> Vec<[Complex32; 8]>,
     mut hz: f32,
@@ -617,16 +617,14 @@ fn matched_fits(
 ) -> (f32, f32) {
     let mut symbols = measure(hz, drift);
     let mut class = classify_fading(&symbols, noise_power(&symbols));
-    for _ in 0..MATCHED_FITS {
-        if class > MATCHED_CLASS_MAX {
-            break;
-        }
-        let (offset, slope) = costas_offset(
-            &symbols,
-            MATCHED_HZ,
-            DRIFT_HZ_PER_S_AGAIN,
-            FADING_HYPOTHESES[class],
-        );
+    for fit in 0..MATCHED_FITS {
+        let drift_reach = if fit == 0 {
+            DRIFT_HZ_PER_S
+        } else {
+            DRIFT_HZ_PER_S_AGAIN
+        };
+        let (offset, slope) =
+            costas_offset(&symbols, MATCHED_HZ, drift_reach, FADING_HYPOTHESES[class]);
         hz += offset;
         drift += slope;
         symbols = measure(hz, drift);
