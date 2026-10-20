@@ -46,11 +46,13 @@
 //!    also be borne out by the signal's phase ([`validates`]): the tones it
 //!    says were sent have to hold their phase from each symbol to the next
 //!    along the transmission, which the tones noise happens to favour never
-//!    do. The deeper decoding works on the three- and four-symbol
-//!    likelihoods, which with the combining matched to the channel are the
-//!    strongest sets whatever the channel does; and a deep decode is
-//!    believed only when it beats its runner-up clearly and the signal
-//!    arrived evenly, or both sets agree on it.
+//!    do. The deeper decoding works on two likelihood sets: the three- and
+//!    four-symbol ones, which with the combining matched to the channel
+//!    are the strongest while the phase holds over a few symbols, and the
+//!    one- and three-symbol ones when the channel reads as fast fading,
+//!    where a lock that could not settle also hurts the long sets; and a
+//!    deep decode is believed only when it beats its runner-up clearly and
+//!    the signal arrived evenly, or both sets agree on it.
 //! 6. **Subtraction.** Each decoded signal is rebuilt and removed from the
 //!    audio itself, and the search runs again, so signals hidden under it
 //!    can be found.
@@ -1136,7 +1138,7 @@ struct Leftover {
     noise: f32,
     /// How evenly the signal arrived ([`evenness`]).
     evenness: f32,
-    /// The likelihood sets of [`DEEP_GROUPS`].
+    /// The likelihood sets of [`DEEP_GROUPS`] or [`DEEP_GROUPS_FAST`].
     llrs: Vec<[f32; ldpc::N]>,
 }
 
@@ -1146,11 +1148,14 @@ fn demodulate(locked: &Locked, options: &Options) -> Result<(Payload, Tones), Le
     profile::count(profile::Count::Locks, 1);
     let data: Vec<[Complex32; 8]> = data_symbols().map(|k| locked.symbols[k]).collect();
     let noise = noise_power(&data);
-    let combiner = Combiner::new(
-        classify_fading(&locked.symbols, noise),
-        tone_snr(&locked.symbols, noise),
-    );
-    let mut llrs = Vec::with_capacity(DEEP_GROUPS.len());
+    let class = classify_fading(&locked.symbols, noise);
+    let combiner = Combiner::new(class, tone_snr(&locked.symbols, noise));
+    let deep_groups = if class >= FAST_CLASS {
+        DEEP_GROUPS_FAST
+    } else {
+        DEEP_GROUPS
+    };
+    let mut llrs = Vec::with_capacity(deep_groups.len());
     for group in GROUPS {
         let timer = profile::Timer::start();
         let llr = likelihoods(&data, group, noise, &combiner);
@@ -1166,7 +1171,7 @@ fn demodulate(locked: &Locked, options: &Options) -> Result<(Payload, Tones), Le
             profile::count(profile::Count::DecodedByBp, 1);
             return Ok(found);
         }
-        if DEEP_GROUPS.contains(&group) {
+        if deep_groups.contains(&group) {
             llrs.push(llr);
         }
     }
@@ -1347,14 +1352,27 @@ const GROUPS: [usize; 4] = [1, 3, 2, 4];
 /// The largest group, which sizes the tables of tone combinations.
 const MAX_GROUP: usize = 4;
 
-/// The likelihood sets ordered-statistics decoding works on. With the
-/// combining matched to the channel, the three- and four-symbol sets carry
-/// what the shorter ones carry and more in every condition on the bench,
-/// steady or fluttering: measured from an oracle lock over seven
-/// conditions, they are the best pair everywhere, and adding the one- and
-/// two-symbol sets would rescue at most two more signals in 400 for twice
-/// the deep-search time.
+/// The likelihood sets ordered-statistics decoding works on while the
+/// channel reads steadier than [`FAST_CLASS`]. With the combining matched
+/// to the channel, the three- and four-symbol sets carry what the shorter
+/// ones carry and more: measured from the decoder's own lock, they are the
+/// best pair on every steady, slowly fading and drifting condition on the
+/// bench, and adding the one- and two-symbol sets would rescue at most two
+/// more signals in 400 for twice the deep-search time.
 const DEEP_GROUPS: [usize; 2] = [3, 4];
+
+/// The sets for a channel that reads as fast fading ([`FAST_CLASS`] and
+/// up). There the one-symbol set is the strongest single set, because it
+/// alone shrugs off the frequency error a lock on a fluttering, drifting
+/// signal can be left with; with the three-symbol set beside it the pair
+/// is as good as the long pair at a 2 Hz spread and recovers nine more
+/// signals in 400 on the rough combination of impairments, where the
+/// long pair was the weakest, with no more near misses.
+const DEEP_GROUPS_FAST: [usize; 2] = [1, 3];
+
+/// The first of the [`FADING_HYPOTHESES`] that counts as fast fading for
+/// the deep search: a 2 Hz spread.
+const FAST_CLASS: usize = 3;
 
 /// Largest disagreement an ordered-statistics decode may have and still be
 /// accepted, tuned on the bench; [`validates`] is the stronger guard.
