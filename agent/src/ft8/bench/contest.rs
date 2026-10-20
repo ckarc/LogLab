@@ -28,6 +28,9 @@ use crate::ft8::message;
 pub struct ContestSpec {
     /// The operator's own callsign: the station the band answers.
     pub own_call: String,
+    /// The operator's own transmit frequency (lowest tone), in hertz:
+    /// where the pile-up answering it gathers.
+    pub own_hz: f64,
     /// Fewest signals in a slot.
     pub min_signals: usize,
     /// Most signals in a slot.
@@ -41,6 +44,7 @@ impl ContestSpec {
     pub fn field_day() -> Self {
         Self {
             own_call: "K9KSU".to_owned(),
+            own_hz: 1_500.0,
             min_signals: 50,
             max_signals: 80,
         }
@@ -146,15 +150,13 @@ impl<'a> Band<'a> {
     /// A band from `seed`, with strengths from `min_snr_db` to
     /// `max_snr_db`.
     pub(super) fn new(spec: &'a ContestSpec, seed: u64, min_snr_db: f64, max_snr_db: f64) -> Self {
-        let mut rng = Rng::new(seed);
-        let own_hz = rng.range(600.0, 2_400.0).round();
         let mut band = Self {
             spec,
             min_snr_db,
             max_snr_db,
-            rng,
+            rng: Rng::new(seed),
             stations: Vec::new(),
-            own_hz,
+            own_hz: spec.own_hz,
             own: Own::Cq,
             callers: Vec::new(),
         };
@@ -389,7 +391,15 @@ impl<'a> Band<'a> {
         let mut out = Vec::new();
         match self.own.clone() {
             Own::Cq => {
-                // New callers join the ones still waiting.
+                // Callers still waiting mostly try again; some give up.
+                // New ones join them.
+                let mut waiting = Vec::new();
+                for caller in self.callers.clone() {
+                    if self.rng.unit() < 0.7 {
+                        waiting.push(caller);
+                    }
+                }
+                self.callers = waiting;
                 let count = match self.rng.below(100) {
                     0..30 => 0,
                     30..60 => 1,

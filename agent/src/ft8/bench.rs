@@ -411,8 +411,8 @@ pub fn truth_tsv(spec: &ScenarioSpec, slots: &[Slot]) -> String {
             format!(" channel={}", spec.channel)
         },
         spec.contest.as_ref().map_or_else(String::new, |c| format!(
-            " scenario=contest own={}",
-            c.own_call
+            " scenario=contest own={} own_hz={}",
+            c.own_call, c.own_hz
         ))
     );
     for slot in slots {
@@ -435,6 +435,16 @@ pub fn truth_own_call(text: &str) -> Option<String> {
         .take_while(|l| l.starts_with('#'))
         .flat_map(str::split_whitespace)
         .find_map(|word| word.strip_prefix("own=").map(str::to_owned))
+}
+
+/// The operator's own frequency a contest truth file names in its header,
+/// in hertz, if it is one.
+#[must_use]
+pub fn truth_own_hz(text: &str) -> Option<f64> {
+    text.lines()
+        .take_while(|l| l.starts_with('#'))
+        .flat_map(str::split_whitespace)
+        .find_map(|word| word.strip_prefix("own_hz=")?.parse().ok())
 }
 
 /// Reads a truth file back.

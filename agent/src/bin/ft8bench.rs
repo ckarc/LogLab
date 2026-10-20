@@ -7,7 +7,7 @@
 //! ```text
 //! ft8bench generate DIR [--seed N] [--slots N] [--signals N]
 //!                       [--min-snr DB] [--max-snr DB] [--channel CHANNEL]
-//!                       [--scenario contest] [--own-call CALL]
+//!                       [--scenario contest] [--own-call CALL] [--own-hz HZ]
 //!                       [--min-signals N] [--max-signals N]
 //!     Write slot-NNNN.wav recordings and truth.tsv into DIR. CHANNEL is a
 //!     simulated HF channel every signal passes through: a preset (quiet,
@@ -22,17 +22,23 @@
 //!     contest truth file, also what matters in a contest: answers to the
 //!     own call, workable signals, and decodes within the budget (default
 //!     2 s) by the slot-NNNN.when files `decode` writes beside its output.
-//! ft8bench decode DIR [--out OUT-DIR]
-//!     Decode every slot-NNNN.wav in DIR with LogLab's decoder, writing
+//! ft8bench decode DIR [--out OUT-DIR] [--profile lablog|contest]
+//!                     [--budget S] [--limit S] [--own-hz HZ]
+//!     Decode every slot-NNNN.wav in DIR with LogLab's decoder (under the
+//!     contest profile when asked, with its time budget and limit, and
+//!     the own frequency from the truth file unless given), writing
 //!     slot-NNNN.txt decoder output (default OUT-DIR: DIR/loglab) and
 //!     slot-NNNN.when, when each decode was made (seconds from the start
 //!     of the slot's decoding, then the message), with the whole slot's
 //!     time on its first line.
-//! ft8bench diagnose DIR [--decodes DECODES-DIR]
+//! ft8bench diagnose DIR [--decodes DECODES-DIR] [--after-decode yes]
 //!     For every signal in DIR's truth file, how far LogLab's decoder gets
 //!     with it, step by step, as tab-separated lines (see
 //!     `ft8::decode::diagnose`); with DECODES-DIR, also whether the full
-//!     decoder found it there.
+//!     decoder found it there. With --after-decode, the diagnosis is made
+//!     on what the full decoder left after subtracting everything it
+//!     found: how far it would get with each signal it missed, were it to
+//!     look again.
 //! ft8bench tones MESSAGE
 //!     Print the 79 tones of a message.
 //! ft8bench messages [--seed N] [--count N]
@@ -129,6 +135,7 @@ fn generate(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
             own_call: options
                 .get("own-call")
                 .map_or(c.own_call, |call| call.to_uppercase()),
+            own_hz: number(options, "own-hz", c.own_hz)?,
             min_signals: number(options, "min-signals", c.min_signals)?,
             max_signals: number(options, "max-signals", c.max_signals)?,
         })
@@ -262,6 +269,19 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
         .filter(|p| p.extension().is_some_and(|x| x == "wav"))
         .collect();
     wavs.sort();
+    let mut decoder = match options.get("profile").map(String::as_str) {
+        None | Some("lablog") => decode::Options::default(),
+        Some("contest") => decode::Options::contest(),
+        Some(other) => return Err(format!("unknown profile: {other}")),
+    };
+    decoder.budget_s = number(options, "budget", decoder.budget_s)?;
+    decoder.limit_s = number(options, "limit", decoder.limit_s)?;
+    decoder.own_hz = match options.get("own-hz") {
+        Some(hz) => Some(hz.parse().map_err(|_| "--own-hz must be a number")?),
+        None => std::fs::read_to_string(dir.join("truth.tsv"))
+            .ok()
+            .and_then(|t| bench::truth_own_hz(&t)),
+    };
     let started = std::time::Instant::now();
     let mut slowest = std::time::Duration::ZERO;
     for wav in &wavs {
@@ -269,18 +289,18 @@ fn decode(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, Stri
         let audio = bench::wav_samples(&bytes)
             .ok_or_else(|| format!("{}: not a 12,000 Hz mono 16-bit WAV", wav.display()))?;
         let one = std::time::Instant::now();
-        let mut decodes: Vec<(f64, decode::Decode)> = Vec::new();
-        decode::decode_slot_each(&audio, &decode::Options::default(), &mut |d| {
-            decodes.push((one.elapsed().as_secs_f64(), d));
+        let mut timed: Vec<(f64, decode::Decode)> = Vec::new();
+        decode::decode_slot_each(&audio, &decoder, &mut |d| {
+            timed.push((one.elapsed().as_secs_f64(), d));
         });
         let took = one.elapsed();
         slowest = slowest.max(took);
         let mut when = format!("{:.3}\t\n", took.as_secs_f64());
-        for (at, d) in &decodes {
+        for (at, d) in &timed {
             let _ = writeln!(when, "{at:.3}\t{}", d.message);
         }
-        decodes.sort_by(|a, b| a.1.base_hz.total_cmp(&b.1.base_hz));
-        let text: String = decodes.iter().map(|(_, d)| d.to_line() + "\n").collect();
+        timed.sort_by(|a, b| a.1.base_hz.total_cmp(&b.1.base_hz));
+        let text: String = timed.iter().map(|(_, d)| d.to_line() + "\n").collect();
         let stem = wav
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
@@ -335,6 +355,11 @@ fn diagnose(dir: &Path, options: &BTreeMap<String, String>) -> Result<String, St
                             let single = decode::Options {
                                 threads: 1,
                                 ..decode::Options::default()
+                            };
+                            let audio = if options.contains_key("after-decode") {
+                                decode::decode_slot_residual(&audio, &single, &mut |_| {})
+                            } else {
+                                audio
                             };
                             let mut out = String::new();
                             for (signal, d) in slot

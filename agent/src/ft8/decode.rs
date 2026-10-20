@@ -73,6 +73,7 @@ use super::message::{self, Payload};
 use super::subtract;
 use super::{NOMINAL_START_SECONDS, SAMPLE_RATE, SAMPLES_PER_SYMBOL, SYMBOLS, TONE_SPACING_HZ};
 
+mod contest;
 pub mod diagnose;
 pub mod profile;
 
@@ -91,9 +92,36 @@ const TONE_BITS: [u8; 8] = [0, 1, 3, 2, 6, 4, 5, 7];
 /// Ratio of FT8's 2,500 Hz reference bandwidth to one tone's 6.25 Hz.
 const REFERENCE_BANDWIDTH_DB: f64 = 26.020_6;
 
+/// Which of the decoder's two profiles runs. Both share every stage and
+/// every acceptance rule; they differ in what they spend their time on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// Everyday use: sensitivity first. Every candidate gets the full
+    /// search, however long it takes.
+    #[default]
+    LabLog,
+    /// A crowded contest band: the strongest signals, and anything on the
+    /// operator's own frequency, are decoded and reported first, in
+    /// rounds of belief propagation with subtraction between them, so
+    /// they are on screen within [`Options::budget_s`]; the deeper search
+    /// then goes on, strongest first, until [`Options::limit_s`].
+    Contest,
+}
+
 /// How hard the decoder looks.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Options {
+    /// Which profile runs.
+    pub profile: Profile,
+    /// Contest profile: seconds after the start of decoding by which the
+    /// decodes that matter should have been handed out.
+    pub budget_s: f64,
+    /// Contest profile: seconds after the start of decoding when the
+    /// search stops, whatever is left.
+    pub limit_s: f64,
+    /// Contest profile: the operator's own transmit frequency (lowest
+    /// tone), in hertz, if known: candidates near it are decoded first.
+    pub own_hz: Option<f64>,
     /// Lowest base frequency searched, in hertz.
     pub low_hz: f64,
     /// Highest base frequency searched, in hertz.
@@ -118,6 +146,10 @@ pub struct Options {
 impl Default for Options {
     fn default() -> Self {
         Self {
+            profile: Profile::LabLog,
+            budget_s: 2.0,
+            limit_s: 4.0,
+            own_hz: None,
             low_hz: 100.0,
             high_hz: 3_000.0,
             max_candidates: 400,
@@ -129,6 +161,17 @@ impl Default for Options {
                 .min(8),
             osd_pairs: 91,
             osd_triples: 25,
+        }
+    }
+}
+
+impl Options {
+    /// The contest profile with its default budgets.
+    #[must_use]
+    pub fn contest() -> Self {
+        Self {
+            profile: Profile::Contest,
+            ..Self::default()
         }
     }
 }
@@ -207,7 +250,11 @@ impl Spectrogram {
 struct Candidate {
     column: isize,
     row: usize,
+    /// Power on the Costas tones over the average of all eight.
     sync: f32,
+    /// Power on the Costas tones, in the spectrogram's units: how loud
+    /// the signal is, for deciding what to decode first.
+    power: f32,
 }
 
 /// Decodes one 15-second slot of 12,000-sample-per-second audio.
@@ -223,6 +270,21 @@ pub fn decode_slot(audio: &[f32], options: &Options) -> Vec<Decode> {
 /// so a caller can show the first ones while the search goes on. The
 /// decodes come in the order they were found, not by frequency.
 pub fn decode_slot_each(audio: &[f32], options: &Options, each: &mut dyn FnMut(Decode)) {
+    let _ = decode_slot_residual(audio, options, each);
+}
+
+/// [`decode_slot_each`], returning what is left of the audio once every
+/// decoded signal has been subtracted from it: what the decoder could not
+/// read, for the bench's diagnosis.
+#[must_use]
+pub fn decode_slot_residual(
+    audio: &[f32],
+    options: &Options,
+    each: &mut dyn FnMut(Decode),
+) -> Vec<f32> {
+    if options.profile == Profile::Contest {
+        return contest::decode(audio, options, each);
+    }
     let meter = ToneMeter::new();
     let mut residual = audio.to_vec();
     let mut found: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
@@ -313,6 +375,7 @@ pub fn decode_slot_each(audio: &[f32], options: &Options, each: &mut dyn FnMut(D
             break;
         }
     }
+    residual
 }
 
 /// Candidates whose frequency is within this of a signal just removed are
@@ -388,25 +451,30 @@ fn candidates(spectrogram: &Spectrogram, options: &Options) -> Vec<Candidate> {
     if low >= high {
         return Vec::new();
     }
-    let scores: Vec<Vec<f32>> = columns
+    let scores: Vec<Vec<(f32, f32)>> = columns
         .iter()
-        .map(|&c| (low..high).map(|r| sync_score(spectrogram, c, r)).collect())
+        .map(|&c| {
+            (low..high)
+                .map(|r| sync_powers(spectrogram, c, r))
+                .collect()
+        })
         .collect();
     let mut peaks = Vec::new();
     for (ci, row_scores) in scores.iter().enumerate() {
-        for (ri, &score) in row_scores.iter().enumerate() {
+        for (ri, &(score, power)) in row_scores.iter().enumerate() {
             if score < options.min_sync {
                 continue;
             }
             let is_peak = (ci.saturating_sub(1)..=(ci + 1).min(scores.len() - 1)).all(|cj| {
                 (ri.saturating_sub(1)..=(ri + 1).min(row_scores.len() - 1))
-                    .all(|rj| (cj, rj) == (ci, ri) || scores[cj][rj] <= score)
+                    .all(|rj| (cj, rj) == (ci, ri) || scores[cj][rj].0 <= score)
             });
             if is_peak {
                 peaks.push(Candidate {
                     column: columns[ci],
                     row: low + ri,
                     sync: score,
+                    power,
                 });
             }
         }
@@ -422,6 +490,11 @@ const NOMINAL_START_SECONDS_SAMPLES: usize = (NOMINAL_START_SECONDS * SAMPLE_RAT
 
 /// Power on the Costas tones over the average power of all eight tones.
 fn sync_score(spectrogram: &Spectrogram, column: isize, row: usize) -> f32 {
+    sync_powers(spectrogram, column, row).0
+}
+
+/// The [`sync_score`], and the power on the Costas tones itself.
+fn sync_powers(spectrogram: &Spectrogram, column: isize, row: usize) -> (f32, f32) {
     let mut on = 0.0;
     let mut all = 0.0;
     for start in COSTAS_POSITIONS {
@@ -432,7 +505,7 @@ fn sync_score(spectrogram: &Spectrogram, column: isize, row: usize) -> f32 {
             }
         }
     }
-    if all > 0.0 { on / all } else { 0.0 }
+    (if all > 0.0 { on / all } else { 0.0 }, on)
 }
 
 /// A candidate after fine timing and frequency: its 79 symbols' tones.
@@ -500,6 +573,52 @@ const NEIGHBOURS: [(f32, isize); 2] = [(-0.1, 0), (0.1, 0)];
 ///
 /// Returns the best lock first, then its [`NEIGHBOURS`].
 fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Locked> {
+    let fit = fit(baseband, meter, candidate);
+    std::iter::once((0.0, 0))
+        .chain(NEIGHBOURS)
+        .map(|offset| fit.lock(baseband, meter, offset))
+        .collect()
+}
+
+/// Where the lock settled: enough to measure the signal's tones there, or
+/// a little way off ([`NEIGHBOURS`]), from any audio with the same signal
+/// in it.
+#[derive(Debug, Clone, Copy)]
+struct Fit {
+    /// The candidate's frequency, in hertz.
+    coarse_hz: f64,
+    /// The settled offset from it, in hertz, at the middle of the
+    /// transmission.
+    hz: f32,
+    /// The settled drift, in hertz per second.
+    drift: f32,
+    /// Baseband sample where symbol 0 starts.
+    start: isize,
+    /// Baseband sample at the middle of the transmission, which the drift
+    /// is reckoned from.
+    middle: isize,
+}
+
+impl Fit {
+    /// The lock `offset` (hertz, baseband samples) away from the fit.
+    fn lock(&self, baseband: &Baseband, meter: &ToneMeter, (dhz, dstart): (f32, isize)) -> Locked {
+        let slice = baseband.slice(self.coarse_hz);
+        let shifted = baseband::chirp(&slice, self.hz + dhz, self.drift, self.middle);
+        let start = self.start + dstart;
+        let sps = to_isize(baseband::SAMPLES_PER_SYMBOL);
+        Locked {
+            start,
+            base_hz: self.coarse_hz + f64::from(self.hz + dhz),
+            symbols: (0..SYMBOLS)
+                .map(|k| meter.tones(&shifted, start + sps * to_isize(k)))
+                .collect(),
+        }
+    }
+}
+
+/// The work of [`lock`]: the fit itself, without measuring the tones at
+/// it.
+fn fit(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Fit {
     let coarse_hz = row_to_hz(candidate.row);
     let slice = baseband.slice(coarse_hz);
     let coarse_start = candidate.column * to_isize(STEP / (SAMPLE_RATE as usize / 200));
@@ -590,19 +709,13 @@ fn lock(baseband: &Baseband, meter: &ToneMeter, candidate: Candidate) -> Vec<Loc
         hz,
         drift,
     );
-
-    std::iter::once((0.0, 0))
-        .chain(NEIGHBOURS)
-        .map(|(dhz, dstart)| {
-            let shifted = baseband::chirp(&slice, hz + dhz, drift, middle);
-            let start = start + dstart;
-            Locked {
-                start,
-                base_hz: coarse_hz + f64::from(hz + dhz),
-                symbols: measure(&shifted, start),
-            }
-        })
-        .collect()
+    Fit {
+        coarse_hz,
+        hz,
+        drift,
+        start,
+        middle,
+    }
 }
 
 /// The lag fit holds under fast fading but reads drift bluntly: drift
@@ -1143,25 +1256,67 @@ struct Leftover {
     noise: f32,
     /// How evenly the signal arrived ([`evenness`]).
     evenness: f32,
-    /// The likelihood sets of [`DEEP_GROUPS`] or [`DEEP_GROUPS_FAST`].
-    llrs: Vec<[f32; ldpc::N]>,
+    /// The fading class the channel read as, and the combiner for it, so
+    /// a likelihood set not yet built can be.
+    class: usize,
+    combiner: Combiner,
+    /// The likelihood sets kept for the deep search, by group size.
+    llrs: Vec<(usize, [f32; ldpc::N])>,
+}
+
+impl Leftover {
+    /// The likelihood sets the deep search works on for this channel
+    /// ([`DEEP_GROUPS`] or [`DEEP_GROUPS_FAST`]), building any the quick
+    /// pass did not keep.
+    fn deep_sets(&self) -> Vec<[f32; ldpc::N]> {
+        deep_groups(self.class)
+            .iter()
+            .map(|group| {
+                self.llrs.iter().find(|(g, _)| g == group).map_or_else(
+                    || {
+                        let timer = profile::Timer::start();
+                        let llr = likelihoods(&self.data, *group, self.noise, &self.combiner);
+                        timer.stop(profile::Stage::Likelihoods);
+                        llr
+                    },
+                    |(_, llr)| *llr,
+                )
+            })
+            .collect()
+    }
+}
+
+/// The likelihood sets the deep search works on for a fading class.
+fn deep_groups(class: usize) -> &'static [usize] {
+    if class >= FAST_CLASS {
+        &DEEP_GROUPS_FAST
+    } else {
+        &DEEP_GROUPS
+    }
 }
 
 /// Tries the soft-decision metrics in turn until one decodes by belief
 /// propagation; otherwise returns what [`deep_decode`] needs.
 fn demodulate(locked: &Locked, options: &Options) -> Result<(Payload, Tones), Leftover> {
+    demodulate_groups(locked, options, &GROUPS, deep_groups)
+}
+
+/// [`demodulate`] trying the group sizes in `groups`, keeping for the deep
+/// search the likelihood sets `keep` names for the channel's class.
+fn demodulate_groups(
+    locked: &Locked,
+    options: &Options,
+    groups: &[usize],
+    keep: impl Fn(usize) -> &'static [usize],
+) -> Result<(Payload, Tones), Leftover> {
     profile::count(profile::Count::Locks, 1);
     let data: Vec<[Complex32; 8]> = data_symbols().map(|k| locked.symbols[k]).collect();
     let noise = noise_power(&data);
     let class = classify_fading(&locked.symbols, noise);
     let combiner = Combiner::new(class, tone_snr(&locked.symbols, noise));
-    let deep_groups = if class >= FAST_CLASS {
-        DEEP_GROUPS_FAST
-    } else {
-        DEEP_GROUPS
-    };
-    let mut llrs = Vec::with_capacity(deep_groups.len());
-    for group in GROUPS {
+    let keep = keep(class);
+    let mut llrs = Vec::with_capacity(keep.len());
+    for &group in groups {
         let timer = profile::Timer::start();
         let llr = likelihoods(&data, group, noise, &combiner);
         let timer = timer.lap(profile::Stage::Likelihoods);
@@ -1176,8 +1331,8 @@ fn demodulate(locked: &Locked, options: &Options) -> Result<(Payload, Tones), Le
             profile::count(profile::Count::DecodedByBp, 1);
             return Ok(found);
         }
-        if deep_groups.contains(&group) {
-            llrs.push(llr);
+        if keep.contains(&group) {
+            llrs.push((group, llr));
         }
     }
     let evenness = evenness(&locked.symbols, noise);
@@ -1185,6 +1340,8 @@ fn demodulate(locked: &Locked, options: &Options) -> Result<(Payload, Tones), Le
         data,
         noise,
         evenness,
+        class,
+        combiner,
         llrs,
     })
 }
@@ -1196,10 +1353,10 @@ fn deep_decode(leftover: &Leftover, options: &Options) -> Option<(Payload, Tones
     if options.osd_pairs == 0 {
         return None;
     }
+    let sets = leftover.deep_sets();
     let timer = profile::Timer::start();
-    profile::count(profile::Count::DeepSearches, leftover.llrs.len());
-    let results: Vec<([bool; ldpc::N], f32, f32)> = leftover
-        .llrs
+    profile::count(profile::Count::DeepSearches, sets.len());
+    let results: Vec<([bool; ldpc::N], f32, f32)> = sets
         .iter()
         .filter_map(|llr| ldpc::osd(llr, options.osd_pairs, options.osd_triples))
         .collect();
