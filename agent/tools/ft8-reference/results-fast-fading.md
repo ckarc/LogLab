@@ -10,6 +10,50 @@ LabLog decode is *received* (Principle XX); WSJT-X's a-priori decodes (its
 The full study, with the diagnosis, the ablations and what was tried and
 dropped, is `/mnt/project-files/ft8/fast-fading/report.md` in the project.
 
+## The constraints it was built under
+
+The comparison is only fair if the ground rules are stated, because the two
+decoders were not built to the same ones.
+
+- **An original design.** LabLog's decoder may follow the published
+  description of FT8 (the QEX 2020 paper) but may not copy WSJT-X's code,
+  look or workflow (Principle XVI), and is licensed AGPL-3.0, so WSJT-X's
+  GPL source was not a resource. Every method here was derived from the
+  signal model and tested on the bench; WSJT-X has had more than twenty
+  years of such tuning by its authors.
+- **Received decodes only.** Under Principle XX a LabLog decode must come
+  entirely from the signal and pass the parity checks and the CRC; nothing
+  may be filled in from what a station probably sent. WSJT-X's a-priori
+  decoding does exactly that filling-in, and it accounts for about a third
+  of WSJT-X's edge on the hardest channels. Its "all" column includes
+  those; "received only" is the like-for-like one.
+- **No false decodes, and no loosened thresholds.** The brief required the
+  zero-false-decode record be kept and forbade weakening any acceptance
+  rule to get more decodes. Every threshold (differential and run
+  coherence, deep-search margin and evenness, the agreement rule, the CRC)
+  is as it was in #71. Variants that gained decodes at the cost of more
+  near misses were rejected, and the report lists them. WSJT-X at its
+  deepest setting accepts a small false-decode rate (nine in this sweep,
+  seven on the held-out seed).
+- **Clean sensitivity may not drop.** Any gain under fading had to come
+  with the clean-channel count within a signal or two of #71. It did.
+- **CPU only, and no more of it than necessary.** No GPU; the Field Day
+  machine decodes several radios at once. This is the one constraint the
+  result fails: the new decoder costs 24 to 31 percent more than #71.
+- **Everything offline and deterministic.** No internet (Principle V); the
+  same seed gives the same recordings on any machine, so every number here
+  can be reproduced to the decode.
+- **No tuning on the test set.** All decisions were made on seed 1; seed 9,
+  the clean seeds 9 and 10 and the noise seeds 7 and 8 were run once, at
+  the end, with the decoder frozen.
+- **Public interfaces unchanged.** The decoder's API, the bench tool and the
+  Station Agent did not change, so the work could land without touching
+  the rest of the system, and `decode.rs` stays coordinated with the thread
+  that owns it.
+- **Synthetic channels.** The conditions are LabLog's own channel models,
+  which are fair between decoders on identical recordings but are not the
+  air. Real recordings through the Flex are the next test.
+
 ## What changed
 
 - **Lock.** The Costas phases are fitted lag by lag (neighbouring symbols
