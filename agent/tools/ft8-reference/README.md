@@ -62,4 +62,6 @@ such set by hand, and `ft8bench diagnose DIR` reports, signal by signal,
 where the decoder lost each one it missed (no candidate, a bad lock, too
 many symbol errors, or a codeword the phase check refused), both from its
 own lock and from an oracle lock at the true frequency and timing.
-`results-fading.md` is what the sweep showed and what changed because of it.
+`results-fading.md` is what the sweep showed and what changed because of it;
+`results-fast-fading.md` is the second round, on fast fading, with the
+classifier, matched combining and iterated lock that came of it.

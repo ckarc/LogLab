@@ -8,8 +8,9 @@
 //! sync search put a candidate near it, how close the lock came to the true
 //! frequency and timing, how many symbols and bits the likelihoods got
 //! wrong, which likelihoods belief propagation and ordered-statistics
-//! decoding recover the right codeword from, and how strongly the right
-//! codeword passes the phase check. It does all of that twice:
+//! decoding recover the right codeword from (as the decoder combines them
+//! for the channel it classified, and as it would for a steady channel),
+//! and how strongly the right codeword passes the phase check. It does all of that twice:
 //! from the decoder's own lock, and from an *oracle* lock at the true
 //! frequency and timing, which separates losses in synchronization from
 //! losses in everything after it.
@@ -19,9 +20,9 @@ use std::fmt::Write as _;
 use rustfft::num_complex::Complex32;
 
 use super::{
-    Baseband, Candidate, GROUPS, Locked, OSD_MAX_DISTANCE, Options, STEP, Spectrogram,
-    TONE_SPACING_HZ, ToneMeter, candidates, data_symbols, differential_coherence, ldpc,
-    likelihoods, lock, noise_power, row_to_hz, to_isize,
+    Baseband, Candidate, Combiner, GROUPS, Locked, OSD_MAX_DISTANCE, Options, STEP, Spectrogram,
+    TONE_SPACING_HZ, ToneMeter, candidates, classify_fading, data_symbols, differential_coherence,
+    ldpc, likelihoods, lock, noise_power, row_to_hz, to_isize, tone_snr,
 };
 use crate::ft8::baseband;
 use crate::ft8::encode::{self, Tones};
@@ -91,11 +92,20 @@ pub struct Trial {
     /// For each group size in [`GROUPS`] order: bits whose likelihood has
     /// the wrong sign (of 174).
     pub bit_errors: Vec<usize>,
-    /// For each group size in [`GROUPS`] order: belief propagation.
+    /// For each group size in [`GROUPS`] order: belief propagation on the
+    /// likelihoods the decoder uses (combined for the channel it
+    /// classified).
     pub bp: Vec<Outcome>,
     /// For each group size in [`GROUPS`] order: ordered statistics within
     /// the distance limit (the decoder itself tries only some groups).
     pub osd: Vec<Outcome>,
+    /// The same two, on plain coherent likelihoods, as a steady channel's.
+    pub steady_bp: Vec<Outcome>,
+    /// See `steady_bp`.
+    pub steady_osd: Vec<Outcome>,
+    /// The fading hypothesis the decoder chose (an index into its
+    /// hypotheses: 0 steady, then spreads of about 0.5, 1, 2 and 3 Hz).
+    pub class: usize,
     /// The right codeword's differential coherence, what the decoder
     /// checks a codeword against before believing it.
     pub coherence: f32,
@@ -227,27 +237,36 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
         Some(_) => Outcome::Wrong,
         None => Outcome::Nothing,
     };
+    let class = classify_fading(&locked.symbols, noise);
+    let combiner = Combiner::new(class, tone_snr(&locked.symbols, noise));
+    let steady = Combiner::steady();
     let mut bit_errors = Vec::new();
-    let mut bp = Vec::new();
-    let mut osd = Vec::new();
+    let (mut bp, mut osd, mut steady_bp, mut steady_osd) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
     for group in GROUPS {
-        let llr = likelihoods(&data, group, noise);
+        let llr = likelihoods(&data, group, noise, &combiner);
         bit_errors.push(
             llr.iter()
                 .zip(&truth.bits)
                 .filter(|(l, b)| (**l < 0.0) != **b)
                 .count(),
         );
-        bp.push(judge(
-            ldpc::decode_soft(&llr, options.ldpc_iterations)
-                .0
-                .map(|(b, _)| b),
-        ));
-        osd.push(judge(
-            ldpc::osd(&llr, options.osd_pairs, options.osd_triples)
-                .filter(|(_, d, _)| *d <= OSD_MAX_DISTANCE)
-                .map(|(b, _, _)| b),
-        ));
+        let steady_llr = likelihoods(&data, group, noise, &steady);
+        for (llr, bp, osd) in [
+            (&llr, &mut bp, &mut osd),
+            (&steady_llr, &mut steady_bp, &mut steady_osd),
+        ] {
+            bp.push(judge(
+                ldpc::decode_soft(llr, options.ldpc_iterations)
+                    .0
+                    .map(|(b, _)| b),
+            ));
+            osd.push(judge(
+                ldpc::osd(llr, options.osd_pairs, options.osd_triples)
+                    .filter(|(_, d, _)| *d <= OSD_MAX_DISTANCE)
+                    .map(|(b, _, _)| b),
+            ));
+        }
     }
     let thirds: Vec<usize> = vec![0, 19, 39, 58];
     let coherence_thirds = std::array::from_fn(|t| {
@@ -267,6 +286,9 @@ fn trial(locked: &Locked, truth: &Truth, options: &Options) -> Trial {
         bit_errors,
         bp,
         osd,
+        steady_bp,
+        steady_osd,
+        class,
         coherence: differential_coherence(&data, &truth.tones, noise),
         coherence_thirds,
     }
@@ -307,7 +329,10 @@ pub fn tsv_header() -> String {
         for g in GROUPS {
             let _ = write!(out, "\t{who}_biterr{g}");
         }
-        let _ = write!(out, "\t{who}_bp\t{who}_osd\t{who}_coh\t{who}_coh3");
+        let _ = write!(
+            out,
+            "\t{who}_bp\t{who}_osd\t{who}_steadybp\t{who}_steadyosd\t{who}_class\t{who}_coh\t{who}_coh3"
+        );
     }
     out
 }
@@ -335,7 +360,7 @@ impl Diagnosis {
                 for _ in GROUPS {
                     out.push_str("\t-");
                 }
-                out.push_str("\t-\t-\t-\t-");
+                out.push_str("\t-\t-\t-\t-\t-\t-\t-");
                 continue;
             };
             let _ = write!(out, "\t{}", t.symbol_errors);
@@ -345,9 +370,12 @@ impl Diagnosis {
             let marks = |o: &[Outcome]| o.iter().map(|o| o.mark()).collect::<String>();
             let _ = write!(
                 out,
-                "\t{}\t{}\t{:.1}\t{:.0}/{:.0}/{:.0}",
+                "\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.0}/{:.0}/{:.0}",
                 marks(&t.bp),
                 marks(&t.osd),
+                marks(&t.steady_bp),
+                marks(&t.steady_osd),
+                t.class,
                 t.coherence,
                 t.coherence_thirds[0],
                 t.coherence_thirds[1],
