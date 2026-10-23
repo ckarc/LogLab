@@ -25,12 +25,13 @@
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
 
   const MODULES = {
-    entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log",
+    entry: "New QSO", profile: "Station profile", log: "Log",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
   };
-  // The journal is never hidden: the operator must always see what is not
-  // logged yet (Principle XV). A QSO's detail is not a box: it opens over the
-  // page from the pencil at the end of its Log row.
+  // Neither the journal nor a QSO's detail is a box. The journal pops up over
+  // the corner of the page whenever a QSO is not logged yet, and stays until
+  // it is (Principle XV); a QSO's detail opens over the page from the pencil
+  // at the end of its Log row.
   const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
@@ -101,7 +102,7 @@
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
   })();
-  const ALONE_WITH = new Set([SOLO, "journal"]);
+  const ALONE_WITH = new Set([SOLO]);
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -1140,12 +1141,8 @@
         hide.addEventListener("click", () => changeLayout(id, { hidden: true }));
         head.append(hide);
       }
-      const placeholder = document.createElement("p");
-      placeholder.className = "hint placeholder";
-      placeholder.textContent = "Appears here when a QSO is waiting to be logged.";
       const box = moduleEl(id);
       box.prepend(head);
-      if (id === "journal") head.after(placeholder);
       // These boxes come and go; place the rest around them each time.
       new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
       sizes.observe(box);
@@ -1968,9 +1965,27 @@
       row.addEventListener("click", () => selectQso(selected && selected.id === qso.id ? null : qso));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
+    fitLog();
     // Other modules that show the log (map.js) follow it.
     document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
+
+  // The Log shows ten rows and scrolls the rest inside the box, under a
+  // heading row that stays put. Measured from the rows themselves, so it
+  // holds at any box size and with tags like "pretend" in a row.
+  const LOG_ROWS = 10;
+  function fitLog() {
+    const wrap = $("#log-wrap");
+    const rows = [...$("#log tbody").rows].slice(0, LOG_ROWS);
+    if (!rows.length || !$("#log thead").offsetHeight) {
+      wrap.style.maxHeight = "";
+      return;
+    }
+    const height = $("#log thead").offsetHeight + rows.reduce((sum, row) => sum + row.offsetHeight, 0);
+    wrap.style.maxHeight = `${height + 2}px`;
+  }
+  // Again whenever the table changes size: a box shown again, a column added.
+  new ResizeObserver(() => fitLog()).observe($("#log"));
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 
