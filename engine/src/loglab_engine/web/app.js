@@ -75,6 +75,7 @@
     world_qsos: WORLD_QSOS,
     bio_open: false,
     stats_open: false,
+    expanded: [],
     distance_unit: "mi",
     log_mine: true,
   });
@@ -103,6 +104,8 @@
     return POPPABLE.includes(id) ? id : null;
   })();
   const ALONE_WITH = new Set([SOLO]);
+  // Boxes whose growing part folds under a bar, and may be locked open.
+  const EXPANDABLE = ["stats", "profile", "log", "onair"];
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -194,7 +197,9 @@
     lookup: (call) => lookupOnce(call),
     forgetLookups: () => lookups.clear(), // the QRZ.com login changed, or a refresh was asked for
     setDefaultLayout: (saved) => { overlayDefault = saved; },
-    scrollRows: (wrap, table, count) => scrollRows(wrap, table, count),
+    // A box's growing part, folded under a bar that opens it over the page (stats.js, profile.js, onair.js).
+    expander: (options) => expander(options),
+    rowsHeight: (table, count) => rowsHeight(table, count),
   });
 
   function describe(data) {
@@ -422,10 +427,15 @@
     const count = saved && Number(saved.world_qsos);
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
     const bio_open = Boolean(saved && saved.bio_open === true);
-    const stats_open = Boolean(saved && saved.stats_open === true);
+    // Boxes locked open; the stats box's lock was once a field of its own.
+    const expanded = [...new Set([
+      ...(saved && Array.isArray(saved.expanded) ? saved.expanded : []),
+      ...(saved && saved.stats_open === true ? ["stats"] : []),
+    ])].filter((id) => EXPANDABLE.includes(id));
+    const stats_open = false;
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
     const log_mine = !(saved && saved.log_mine === false);
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, distance_unit, log_mine };
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, expanded, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -1970,25 +1980,150 @@
     document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
 
-  // A table that shows so many rows and scrolls the rest inside its box,
-  // under a heading row that stays put: the Log shows ten, On air three
-  // (onair.js). Measured from the rows themselves, so it holds at any box
-  // size and with tags like "pretend" in a row, and measured again whenever
-  // the table changes size: new rows, a box shown again, a column added.
-  function scrollRows(wrap, table, count) {
-    wrap.classList.add("rows-wrap");
-    const fit = () => {
-      const head = table.tHead ? table.tHead.offsetHeight : 0;
-      const rows = [...table.tBodies[0].rows].slice(0, count);
-      if (!rows.length || !table.offsetHeight) {
-        wrap.style.maxHeight = "";
+  // -- Boxes that grow ----------------------------------------------------
+
+  // A box whose content grows (the stats' chart and tables, the station
+  // profile's biography and QSOs, the Log, On air) keeps a compact part in
+  // view, with a bar under it. Pointing at the bar opens the rest over the
+  // page, on top of the boxes below, so nothing on the page moves; it fades
+  // back once the pointer leaves the box. A tap or Enter opens it too, and
+  // Esc or a tap elsewhere closes it. The lock in the bar keeps it open in
+  // the box, taking its room on the page; which boxes the operator locked
+  // open is kept with their layout (`expanded`), on any workstation.
+  //
+  // `part` is what folds: `over` it for a part that folds out of sight, or
+  // under one that stays `compact()` pixels tall, scrolling there unless it
+  // should `clip`; `label()` names what the bar opens.
+  const FADE_MS = 200;
+  const expanders = new Map();
+
+  function expander({ id, box, part, label, compact = () => 0, over = false, clip = false }) {
+    // A part that folds out of sight has its bar over it; one that stays
+    // partly in view, under it.
+    const outer = document.createElement("div");
+    outer.className = "expander";
+    const pane = document.createElement("div");
+    pane.className = "expander-pane";
+    const bar = document.createElement("div");
+    bar.className = "expander-bar";
+    const opener = document.createElement("button");
+    opener.type = "button";
+    opener.className = "expander-open";
+    const lock = document.createElement("button");
+    lock.type = "button";
+    lock.className = "expander-lock";
+    bar.append(opener, lock);
+    if (part.parentNode) part.replaceWith(outer);
+    if (over) pane.append(bar, part);
+    else pane.append(part, bar);
+    outer.append(pane);
+    let peek = false;
+    let fading = 0;
+    const locked = () => layout.expanded.includes(id);
+
+    function show() {
+      const pinned = locked();
+      const open = pinned || peek;
+      const low = over ? 0 : compact() || 0;
+      const more = over ? part.textContent.trim() !== "" || part.querySelector("img, table, svg") !== null
+        : low > 0 && part.scrollHeight > low + 2;
+      outer.classList.toggle("pinned", pinned);
+      outer.classList.toggle("empty", over && !open); // folded out of sight
+      bar.hidden = !more && !open;
+      part.style.maxHeight = pinned ? "" : peek ? "70vh" : low ? `${low}px` : "";
+      part.style.overflowY = clip && !open ? "hidden" : ""; // folded, the rest waits for the bar rather than scrolling
+      opener.textContent = `${open ? "▾" : "▸"} ${label()}`;
+      opener.setAttribute("aria-expanded", String(open));
+      lock.hidden = !open;
+      lock.textContent = pinned ? "🔒" : "🔓";
+      lock.setAttribute("aria-pressed", String(pinned));
+      lock.title = pinned ? "Locked open: click to let it fold away again" : "Lock it open, taking its room in the box";
+      lock.setAttribute("aria-label", lock.title);
+    }
+
+    function setPeek(on) {
+      if (on === peek && !fading) return;
+      clearTimeout(fading);
+      fading = 0;
+      if (on && !locked()) {
+        if (!peek) outer.style.height = `${outer.offsetHeight}px`; // hold its place, so nothing below moves
+        peek = true;
+        outer.classList.remove("leaving");
+        outer.classList.add("peek");
+        box.classList.add("raised"); // above the boxes below it
+        show();
         return;
       }
-      wrap.style.maxHeight = `${head + rows.reduce((sum, row) => sum + row.offsetHeight, 0) + 2}px`;
+      if (!peek) return;
+      outer.classList.add("leaving"); // fade out, then fold back into place
+      fading = setTimeout(() => {
+        fading = 0;
+        peek = false;
+        outer.classList.remove("peek", "leaving");
+        outer.style.height = "";
+        box.classList.remove("raised");
+        show();
+      }, FADE_MS);
+    }
+
+    opener.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") setPeek(true); });
+    opener.addEventListener("click", () => { if (!locked()) setPeek(!peek || Boolean(fading)); });
+    box.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") setPeek(false); });
+    box.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && peek) {
+        setPeek(false);
+        opener.focus();
+      }
+    });
+    document.addEventListener("pointerdown", (e) => { if (peek && !box.contains(e.target)) setPeek(false); });
+    lock.addEventListener("click", () => {
+      const pin = !locked();
+      clearTimeout(fading);
+      fading = 0;
+      peek = false;
+      outer.classList.remove("peek", "leaving");
+      outer.style.height = "";
+      box.classList.remove("raised");
+      useLayout({ expanded: pin ? [...layout.expanded, id] : layout.expanded.filter((x) => x !== id) });
+      show();
+    });
+
+    // What is inside changes (new rows, a profile looked up), and so does
+    // its size: the bar and its label follow.
+    const sizes = new ResizeObserver(() => show());
+    const watch = () => {
+      sizes.disconnect();
+      sizes.observe(part);
+      for (const child of part.children) sizes.observe(child);
     };
-    new ResizeObserver(fit).observe(table);
+    new MutationObserver(() => { watch(); show(); }).observe(part, { childList: true, subtree: true, characterData: true });
+    watch();
+    const item = { outer, show };
+    expanders.set(id, item);
+    show();
+    return item;
   }
-  scrollRows($("#log-wrap"), $("#log"), 10);
+  document.addEventListener("loglab:layout-loaded", () => { for (const e of expanders.values()) e.show(); });
+
+  // How tall a table is with its heading and its first `count` rows, so it
+  // can show that many and scroll the rest under a heading that stays put.
+  // Measured from the rows, so it holds at any box size and with tags like
+  // "pretend" in a row; 0 while the table is out of sight.
+  function rowsHeight(table, count) {
+    const rows = [...table.tBodies[0].rows].slice(0, count);
+    if (!rows.length || !table.offsetHeight) return 0;
+    return (table.tHead ? table.tHead.offsetHeight : 0) + rows.reduce((sum, row) => sum + row.offsetHeight, 0) + 2;
+  }
+
+  // The Log shows ten rows; the bar opens the rest.
+  $("#log-wrap").classList.add("rows-wrap");
+  expander({
+    id: "log",
+    box: moduleEl("log"),
+    part: $("#log-wrap"),
+    label: () => `All ${$("#log tbody").rows.length} shown`,
+    compact: () => rowsHeight($("#log"), 10),
+  });
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 
@@ -2384,7 +2519,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, expanded: layout.expanded, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });

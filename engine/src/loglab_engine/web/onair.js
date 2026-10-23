@@ -15,8 +15,17 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const LogLab = window.LogLab;
-  LogLab.scrollRows($("#onair-wrap"), $("#onair-list"), 3); // three stations, then it scrolls
   const box = $("#onair");
+  // Three stations show, with no scroll bar; the bar opens the rest (app.js, expander).
+  $("#onair-wrap").classList.add("rows-wrap");
+  LogLab.expander({
+    id: "onair",
+    box,
+    part: $("#onair-wrap"),
+    label: () => `All ${$("#onair-list tbody").rows.length} stations`,
+    compact: () => LogLab.rowsHeight($("#onair-list"), 3),
+    clip: true,
+  });
   const EVERY_MS = 30000;
   let reportedTo = null; // the operation this browser last said it was in
   let ended = null; // an operation the Engine said has ended; stop reporting to it
