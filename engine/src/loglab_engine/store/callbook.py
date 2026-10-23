@@ -11,7 +11,7 @@ lets only that operator, signed in, save, change, or remove it (Principle XIII).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, LiteralString, cast
+from typing import TYPE_CHECKING, Final, LiteralString, cast
 
 from psycopg import errors
 from psycopg.types.json import Jsonb
@@ -25,6 +25,15 @@ if TYPE_CHECKING:
     from psycopg.rows import TupleRow
 
     from loglab_engine.store.log import Actor
+
+
+# Kept answers fetched over %(older_than)s ago for calls that no QSO version names.
+_UNLOGGED: Final = """
+    SELECT e.call FROM reference.callbook_entry e
+    WHERE e.source = %(source)s
+      AND e.fetched_at < transaction_timestamp() - %(older_than)s
+      AND NOT EXISTS (SELECT 1 FROM log.qso_version v WHERE v.call = e.call)
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +65,15 @@ class RefreshSetting:
     mode: str
     changed_by: str | None
     changed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnloggedCount:
+    """Kept callbook answers for calls never in the log, and their biographies and photos."""
+
+    entries: int
+    media: int
+    media_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,6 +175,43 @@ class CallbookStore:
             (source, older_than, limit),
         ).fetchall()
         return [row[0] for row in rows]
+
+    def unlogged(self, source: str, older_than: timedelta) -> UnloggedCount:
+        """How much is kept for calls never in the log, fetched over ``older_than`` ago."""
+        row = self._conn.execute(
+            f"""
+            WITH old AS ({_UNLOGGED})
+            SELECT (SELECT count(*) FROM old),
+                   count(m.call), coalesce(sum(octet_length(m.content)), 0)
+            FROM reference.callbook_media m JOIN old ON old.call = m.call
+            WHERE m.source = %(source)s
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"source": source, "older_than": older_than},
+        ).fetchone()
+        assert row is not None  # noqa: S101 - an aggregate always returns a row
+        return UnloggedCount(row[0], row[1], row[2])
+
+    def forget_unlogged(self, source: str, older_than: timedelta) -> int:
+        """Remove what is kept for calls never in the log, fetched over ``older_than`` ago.
+
+        Only reference data goes: a call in any QSO, deleted ones too, is kept,
+        and the log is never touched (Principle VI). Returns how many calls went.
+        """
+        params = {"source": source, "older_than": older_than}
+        with self._conn.transaction():
+            calls = [
+                row[0]
+                for row in self._conn.execute(f"{_UNLOGGED} FOR UPDATE OF e", params).fetchall()
+            ]
+            self._conn.execute(
+                "DELETE FROM reference.callbook_media WHERE source = %s AND call = ANY(%s)",
+                (source, calls),
+            )
+            self._conn.execute(
+                "DELETE FROM reference.callbook_entry WHERE source = %s AND call = ANY(%s)",
+                (source, calls),
+            )
+        return len(calls)
 
     def accepted_login(self, source: str) -> tuple[str, str] | None:
         """A username and password the callbook accepted when last tried: the earliest saved.

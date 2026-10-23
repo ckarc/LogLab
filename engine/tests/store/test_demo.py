@@ -14,9 +14,11 @@ import time
 from datetime import UTC, datetime, timedelta, timezone
 from typing import TYPE_CHECKING, Any
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
+from loglab_engine.adif import Record
 from loglab_engine.api import create_app
 from loglab_engine.contests.overlay import overlay
 from loglab_engine.demo import (
@@ -32,13 +34,19 @@ from loglab_engine.demo import (
 from loglab_engine.onair import OnAir
 from loglab_engine.reference import section_for
 from loglab_engine.rig import RigBoard, band_for
-from loglab_engine.store import IdentityStore, LogStore, Permission, QsoFilter
+from loglab_engine.store import (
+    IdentityStore,
+    LogStore,
+    NotAuthorizedError,
+    Permission,
+    QsoFilter,
+    StoreError,
+)
 from loglab_engine.store.operation import Operation, OperationSetup, OperationStore
 
 from .conftest import ADMIN_SECRET, VISITOR_SECRET, conninfo
 
 if TYPE_CHECKING:
-    import psycopg
     from psycopg.rows import TupleRow
 
     from loglab_engine.contests.overlay import Overlay
@@ -248,6 +256,91 @@ def test_stops_when_its_operation_ends(
     assert LogStore(conn).find(QsoFilter(operation=op.id), limit=10) == ()
 
 
+# -- Erasing pretend QSOs (Principle VII, as amended in 2.1.0) -----------------
+
+
+def _pretend_qsos(
+    database: str, conn: psycopg.Connection[TupleRow], actor: Actor, op: Operation
+) -> int:
+    demo = Demo(conninfo(database), OnAir(), RigBoard())
+    demo.start(actor, op, _arrl_fd(), seed=2, background=False)
+    demo.step(EVERY * 7)
+    demo.stop()
+    return len(LogStore(conn).find(QsoFilter(operation=op.id), limit=50))
+
+
+def test_erasing_removes_pretend_qsos_and_records_it(
+    database: str, conn: psycopg.Connection[TupleRow], shack: Actor
+) -> None:
+    """Pretend QSOs go entirely, history and all; the erasure is recorded; real QSOs stay."""
+    store = LogStore(conn)
+    typed = pretend_qso(random.Random(1), SPOTS[0], 14_030_000, datetime.now(UTC), ("W0CK", "KS"))
+    real = store.create_qso(  # a real QSO, logged outside any operation
+        Record(tuple(f for f in typed.fields if f.name != "APP_LOGLAB_PRETEND")), actor=shack
+    )
+    op = _operation(conn, shack, practice=True)
+    made = _pretend_qsos(database, conn, shack, op)
+    assert made == 3
+    assert store.erase_pretend(op.id, actor=shack) == 3
+    assert store.find(QsoFilter(operation=op.id, include_deleted=True), limit=50) == ()
+    assert store.current(real.qso_id).version == 1  # untouched
+    row = conn.execute(
+        "SELECT o.callsign, e.operation_id, e.qsos FROM log.pretend_erasure e "
+        "JOIN log.operator o ON o.id = e.operator_id"
+    ).fetchone()
+    assert row == ("K9KSU", op.id, 3)
+    assert store.erase_pretend(op.id, actor=shack) == 0
+
+
+def test_a_qso_once_real_is_never_erased(
+    database: str, conn: psycopg.Connection[TupleRow], shack: Actor
+) -> None:
+    """A QSO with any version that is not pretend keeps its history (Principle VII)."""
+    store = LogStore(conn)
+    op = _operation(conn, shack, practice=True)
+    _pretend_qsos(database, conn, shack, op)
+    first = store.find(QsoFilter(operation=op.id), limit=1)[0]
+    kept = Record(tuple(f for f in first.record.fields if f.name != "APP_LOGLAB_PRETEND"))
+    store.edit_qso(first.qso_id, kept, actor=shack, base_version=first.version)
+    assert store.erase_pretend(op.id, actor=shack) == 2
+    assert store.current(first.qso_id).version == 2
+
+
+def test_only_an_administrator_erases(
+    database: str, conn: psycopg.Connection[TupleRow], shack: Actor, visitor: Actor
+) -> None:
+    """An operator without admin is refused, and nothing is erased (Principle XIII)."""
+    op = _operation(conn, shack, practice=True)
+    made = _pretend_qsos(database, conn, shack, op)
+    with pytest.raises(NotAuthorizedError):
+        LogStore(conn).erase_pretend(op.id, actor=visitor)
+    assert len(LogStore(conn).find(QsoFilter(operation=op.id), limit=50)) == made
+
+
+def test_never_erases_from_a_real_operation(
+    conn: psycopg.Connection[TupleRow], shack: Actor
+) -> None:
+    """Only a practice operation's pretend QSOs can be erased."""
+    op = _operation(conn, shack, practice=False)
+    with pytest.raises(StoreError, match="practice"):
+        LogStore(conn).erase_pretend(op.id, actor=shack)
+
+
+def test_the_log_is_still_append_only(
+    database: str, conn: psycopg.Connection[TupleRow], shack: Actor
+) -> None:
+    """Outside the erasure, even a pretend QSO can't be deleted from the tables."""
+    op = _operation(conn, shack, practice=True)
+    _pretend_qsos(database, conn, shack, op)
+    with pytest.raises(psycopg.errors.RestrictViolation):
+        conn.execute("DELETE FROM log.qso_version")
+    with pytest.raises(psycopg.errors.RestrictViolation):
+        conn.execute(
+            "SELECT set_config('loglab.erasing_pretend', 'not-this-one', false); "
+            "DELETE FROM log.qso_version"
+        )
+
+
 # -- Through the API ------------------------------------------------------------
 
 
@@ -303,5 +396,10 @@ def test_on_sets_up_a_practice_operation_and_off_stops(client: TestClient, shack
     finally:
         off = client.put("/api/v1/demo", headers=k9ksu, json={"on": False}).json()
     assert off["on"] is False
+    assert isinstance(off["erased"], int)
+    remaining = client.get(
+        f"/api/v1/qsos?operation={state['operation']}&include_deleted=true", headers=k9ksu
+    ).json()
+    assert remaining == []
     path = f"/api/v1/operations/{state['operation']}/on-air"
     assert client.get(path, headers=k9ksu).json()["stations"] == []

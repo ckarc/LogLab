@@ -424,7 +424,8 @@ class DemoOut(BaseModel):
 
     ``operation`` is the practice operation they log in; ``qsos`` how many
     they have logged since it was turned on; ``problem`` why it stopped by
-    itself, if it did.
+    itself, if it did; ``erased`` how many pretend QSOs turning it off just
+    erased.
     """
 
     on: bool
@@ -435,6 +436,7 @@ class DemoOut(BaseModel):
     qsos: int
     stations: list[str]
     problem: str | None
+    erased: int | None = None
 
 
 class RadioOut(BaseModel):
@@ -804,6 +806,40 @@ class ProfileRefreshIn(_Strict):
     """When kept QRZ.com profiles are re-checked: ``auto`` (off Starlink), ``always``, ``off``."""
 
     mode: Literal["auto", "always", "off"]
+
+
+# At least a week, so this week's lookups are never cleared out from under an operator.
+CleanupDays = Annotated[int, Field(ge=7, le=3650)]
+
+
+class CleanupQuery(_Strict):
+    """How old a kept lookup of a never-logged call must be to count."""
+
+    model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
+
+    days: CleanupDays = 90
+
+
+class CleanupIn(_Strict):
+    """Clear kept lookups of never-logged calls older than ``days``."""
+
+    days: CleanupDays
+
+
+class CleanupOut(BaseModel):
+    """Kept lookups of calls never logged, older than ``days``: how many, and their size."""
+
+    days: int
+    calls: int
+    photos_and_bios: int
+    bytes: int
+
+
+class CleanupDone(BaseModel):
+    """How many never-logged calls' kept lookups were cleared."""
+
+    days: int
+    removed: int
 
 
 class ProfileRefreshOut(BaseModel):
@@ -1957,14 +1993,21 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
     On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
     Field Day (set up now if need be), and log pretend QSOs with real calls
-    from the license lists, each marked pretend, in this administrator's session (Principles VII,
-    XIII and XX). Off, they leave the air; their QSOs stay in the practice
-    operation, which never uploads to LoTW or QRZ.com.
+    from the license lists, each marked pretend, in this administrator's
+    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    Field Day is erased, the erasure recorded (Principle VII, as amended in
+    Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
     """
     _require(conn, who, Permission.ADMIN)
     if not body.on:
         demo.stop()
-        return _demo_out(demo)
+        store = LogStore(conn)
+        erased = sum(
+            store.erase_pretend(op.id, actor=who)
+            for op in OperationStore(conn).list(include_ended=True)
+            if op.practice and op.name == DEMO_NAME
+        )
+        return _demo_out(demo).model_copy(update={"erased": erased})
     op = _demo_operation(conn, who)
     found = _find(conn, op.overlay, include_retired=True)
     if found is None:
@@ -2752,6 +2795,33 @@ def put_profile_refresh(
     refresher: ProfileRefresher = request.app.state.profiles
     refresher.wake()
     return _profile_refresh_out(request, conn)
+
+
+@api.get("/callbook/cleanup")
+def get_callbook_cleanup(
+    who: Signed, conn: Conn, query: Annotated[CleanupQuery, Query()]
+) -> CleanupOut:
+    """How many kept QRZ.com lookups are of calls never logged, older than ``days`` (admins)."""
+    _require(conn, who, Permission.ADMIN)
+    count = CallbookStore(conn).unlogged(CALLBOOK_SOURCE, timedelta(days=query.days))
+    return CleanupOut(
+        days=query.days,
+        calls=count.entries,
+        photos_and_bios=count.media,
+        bytes=count.media_bytes,
+    )
+
+
+@api.post("/callbook/cleanup")
+def post_callbook_cleanup(body: CleanupIn, who: Signed, conn: Conn) -> CleanupDone:
+    """Clear kept QRZ.com lookups of calls never logged, older than ``days`` (admins).
+
+    Only the lookup cache goes; a call in any QSO, deleted ones too, is kept,
+    and the log is never touched. A cleared call is fetched again if typed.
+    """
+    _require(conn, who, Permission.ADMIN)
+    removed = CallbookStore(conn).forget_unlogged(CALLBOOK_SOURCE, timedelta(days=body.days))
+    return CleanupDone(days=body.days, removed=removed)
 
 
 _CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
