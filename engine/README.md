@@ -214,14 +214,23 @@ own reference is at `/api/docs`.
   with its password), their station location (grid, zones, and a state and
   county or province from LoTW's own lists), and their LoTW website login
   (`GET`/`DELETE /api/v1/lotw`, `PUT /api/v1/lotw/certificate`, `/location`,
-  `/login`; no password or key is ever sent back). **Send to LoTW**
-  (`POST /api/v1/lotw/upload`) signs every waiting QSO made as the
-  certificate's call (its `STATION_CALLSIGN`, else `OPERATOR`, else whoever
-  entered it) and sends them; the Engine signs the `.tq8` file itself, as
+  `/login`; no password or key is ever sent back). Nothing goes to LoTW
+  live: **Prepare a batch** (`POST /api/v1/lotw/batches`) gathers up to
+  1,000 waiting QSOs made as the certificate's call (its
+  `STATION_CALLSIGN`, else `OPERATOR`, else whoever entered it) into a
+  numbered batch, fixed at the version shown, and sends nothing. The
+  operator checks it, then **Sends** it (`POST /api/v1/lotw/batches/{id}/send`)
+  or **Cancels** it (`/cancel`); each operator has one batch waiting at a
+  time. Only QSOs still exactly as reviewed are sent; one edited since stays
+  for a later batch. The Engine signs the `.tq8` file itself, as
   TrustedQSL's published source does, so TrustedQSL need not be installed.
   QSOs LoTW cannot take (an unknown band, a date the certificate does not
   cover, `MY_` fields that name another place) stay waiting, each with the
-  reason. **Fetch confirmations** (`POST /api/v1/lotw/download`) asks LoTW
+  reason. LoTW numbers neither uploads nor the QSOs in them, and only queues
+  a file (it checks signatures later), so every batch is kept with its QSOs,
+  when it was sent and what LoTW said (`GET /api/v1/lotw/batches`,
+  `/batches/{id}`); the database never deletes a batch or changes a
+  finished one. **Fetch confirmations** (`POST /api/v1/lotw/download`) asks LoTW
   for QSLs recorded since the last fetch and matches each to a QSO by call,
   band and mode within 30 minutes. What happened is written to each QSO's
   own ADIF fields (`LOTW_QSL_SENT`, `LOTW_QSLSDATE`, `LOTW_QSL_RCVD`,
