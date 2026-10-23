@@ -73,6 +73,7 @@
     by_overlay: {},
     world_qsos: WORLD_QSOS,
     bio_open: false,
+    stats_open: false,
     distance_unit: "mi",
     log_mine: true,
   });
@@ -419,9 +420,10 @@
     const count = saved && Number(saved.world_qsos);
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
     const bio_open = Boolean(saved && saved.bio_open === true);
+    const stats_open = Boolean(saved && saved.stats_open === true);
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
     const log_mine = !(saved && saved.log_mine === false);
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit, log_mine };
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -2364,7 +2366,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });
