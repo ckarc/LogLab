@@ -1984,17 +1984,24 @@
 
   // A box whose content grows (the stats' chart and tables, the station
   // profile's biography and QSOs, the Log, On air) keeps a compact part in
-  // view, with a bar under it. Pointing at the bar opens the rest over the
-  // page, on top of the boxes below, so nothing on the page moves; it fades
-  // back once the pointer leaves the box. A tap or Enter opens it too, and
-  // Esc or a tap elsewhere closes it. The lock in the bar keeps it open in
+  // view, with a bar under it. Resting the pointer anywhere in the box
+  // opens the rest over the page, on top of the boxes below, so nothing on
+  // the page moves; a pointer only passing over (moving briskly, or there
+  // for less than DWELL_MS) opens nothing. Pointing at the bar opens it at
+  // once. It fades back once the pointer has been out of the box for
+  // GRACE_MS, so a slip over the edge doesn't close it. A tap or Enter
+  // opens it too, and Esc or a tap elsewhere closes it (and it stays shut
+  // until the pointer leaves the box). The lock in the bar keeps it open in
   // the box, taking its room on the page; which boxes the operator locked
   // open is kept with their layout (`expanded`), on any workstation.
   //
   // `part` is what folds: `over` it for a part that folds out of sight, or
   // under one that stays `compact()` pixels tall, scrolling there unless it
   // should `clip`; `label()` names what the bar opens.
-  const FADE_MS = 200;
+  const FADE_MS = 450; // the fade out (app.css)
+  const DWELL_MS = 500; // resting this long in a box opens it
+  const GRACE_MS = 300; // out of the box this long before it closes
+  const BRISK = 0.5; // px per ms: faster than this is passing over, and the dwell starts again
   const expanders = new Map();
 
   function expander({ id, box, part, label, compact = () => 0, over = false, clip = false }) {
@@ -2019,6 +2026,10 @@
     outer.append(pane);
     let peek = false;
     let fading = 0;
+    let dwell = 0; // waiting for the pointer to rest in the box
+    let grace = 0; // waiting before closing, after the pointer left
+    let last = null; // the pointer's last place and time, for its speed
+    let hush = false; // closed by hand: stays shut until the pointer leaves the box
     const locked = () => layout.expanded.includes(id);
 
     function show() {
@@ -2066,11 +2077,47 @@
       }, FADE_MS);
     }
 
-    opener.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") setPeek(true); });
-    opener.addEventListener("click", () => { if (!locked()) setPeek(!peek || Boolean(fading)); });
-    box.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") setPeek(false); });
+    // Only for a box with more to show, and not while boxes are being
+    // arranged or dragged.
+    const may = () => !hush && !bar.hidden && !locked()
+      && !document.body.classList.contains("arranging") && !document.body.classList.contains("moving");
+    const settle = () => {
+      clearTimeout(dwell);
+      dwell = setTimeout(() => { dwell = 0; if (may()) setPeek(true); }, DWELL_MS);
+    };
+    opener.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse" && may()) setPeek(true); });
+    opener.addEventListener("click", () => {
+      if (locked()) return;
+      const on = !peek || Boolean(fading);
+      hush = !on;
+      setPeek(on);
+    });
+    box.addEventListener("pointerenter", (e) => {
+      if (e.pointerType !== "mouse") return;
+      clearTimeout(grace);
+      grace = 0;
+      last = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+      if (peek && fading) setPeek(true); // back before it finished fading
+      else if (!peek) settle();
+    });
+    box.addEventListener("pointermove", (e) => {
+      if (e.pointerType !== "mouse" || peek) return;
+      const fast = last && Math.hypot(e.clientX - last.x, e.clientY - last.y) > BRISK * Math.max(e.timeStamp - last.t, 1);
+      last = { x: e.clientX, y: e.clientY, t: e.timeStamp };
+      if (fast || !dwell) settle();
+    });
+    box.addEventListener("pointerleave", (e) => {
+      if (e.pointerType !== "mouse") return;
+      clearTimeout(dwell);
+      dwell = 0;
+      last = null;
+      hush = false;
+      clearTimeout(grace);
+      grace = peek ? setTimeout(() => { grace = 0; setPeek(false); }, GRACE_MS) : 0;
+    });
     box.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && peek) {
+        hush = true;
         setPeek(false);
         opener.focus();
       }

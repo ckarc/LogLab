@@ -333,8 +333,8 @@ button:disabled { opacity: 0.45; cursor: default; filter: none; transform: none;
   border-radius: 14px;
   background: linear-gradient(var(--panel), var(--panel)), var(--sky-1); /* solid, so the box below doesn't show through */
   box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
-  animation: expander-in 0.2s ease;
-  transition: opacity 0.2s ease, transform 0.2s ease;
+  animation: expander-in 0.35s ease-out;
+  transition: opacity 0.45s ease-in-out, transform 0.45s ease-in-out; /* app.js FADE_MS */
 }
 .expander.peek.leaving .expander-pane { opacity: 0; transform: translateY(-4px); }
 @keyframes expander-in { from { opacity: 0; transform: translateY(-4px); } }
