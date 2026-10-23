@@ -424,7 +424,8 @@ class DemoOut(BaseModel):
 
     ``operation`` is the practice operation they log in; ``qsos`` how many
     they have logged since it was turned on; ``problem`` why it stopped by
-    itself, if it did.
+    itself, if it did; ``erased`` how many pretend QSOs turning it off just
+    erased.
     """
 
     on: bool
@@ -435,6 +436,7 @@ class DemoOut(BaseModel):
     qsos: int
     stations: list[str]
     problem: str | None
+    erased: int | None = None
 
 
 class RadioOut(BaseModel):
@@ -1957,14 +1959,21 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
     On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
     Field Day (set up now if need be), and log pretend QSOs with real calls
-    from the license lists, each marked pretend, in this administrator's session (Principles VII,
-    XIII and XX). Off, they leave the air; their QSOs stay in the practice
-    operation, which never uploads to LoTW or QRZ.com.
+    from the license lists, each marked pretend, in this administrator's
+    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    Field Day is erased, the erasure recorded (Principle VII, as amended in
+    Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
     """
     _require(conn, who, Permission.ADMIN)
     if not body.on:
         demo.stop()
-        return _demo_out(demo)
+        store = LogStore(conn)
+        erased = sum(
+            store.erase_pretend(op.id, actor=who)
+            for op in OperationStore(conn).list(include_ended=True)
+            if op.practice and op.name == DEMO_NAME
+        )
+        return _demo_out(demo).model_copy(update={"erased": erased})
     op = _demo_operation(conn, who)
     found = _find(conn, op.overlay, include_retired=True)
     if found is None:

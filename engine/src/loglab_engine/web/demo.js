@@ -30,13 +30,14 @@
     const here = state?.on && LogLab.layout().operation?.id === state.operation;
     watch.hidden = !state?.on || here;
     if (!state?.on) {
-      status.textContent = state?.problem ? `${state.problem} ${IDLE}` : IDLE;
+      const erased = state?.erased ? `Turned off: ${state.erased} pretend QSO${state.erased === 1 ? "" : "s"} erased. ` : "";
+      status.textContent = `${state?.problem ? `${state.problem} ` : ""}${erased}${IDLE}`;
       return;
     }
     const since = state.started_at.slice(11, 16).replace(":", "");
     status.textContent = `On since ${since}Z in ${state.operation_name}, a practice operation: `
       + `${state.stations.length} pretend stations, ${state.qsos} pretend QSOs so far. `
-      + "Turn it off here; it also stops if the Engine restarts or you sign out.";
+      + "Turning it off erases them. It also stops if the Engine restarts or you sign out.";
   }
 
   async function refresh() {
@@ -57,6 +58,7 @@
       state = await LogLab.api("PUT", "/demo", { on: box.checked });
       problem("");
       if (state.on) document.dispatchEvent(new CustomEvent("loglab:use-operation", { detail: { id: state.operation } }));
+      else document.dispatchEvent(new CustomEvent("loglab:log-changed")); // the erased QSOs leave the log and maps
     } catch (e) {
       problem(`Demo mode could not be turned ${box.checked ? "on" : "off"}: ${e.message}`);
     }

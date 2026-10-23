@@ -627,6 +627,30 @@ class LogStore:
         """
         return self._append(qso_id, Action.DELETE, actor, note)
 
+    def erase_pretend(self, operation_id: uuid.UUID, *, actor: Actor) -> int:
+        """Erase the pretend QSOs of a practice operation entirely; returns how many.
+
+        Only pretend QSOs (``APP_LOGLAB_PRETEND`` = Y) are erased, versions and
+        all, and only by an administrator; the erasure itself is recorded
+        (Principle VII, as amended in Constitution 2.1.0). Every other QSO is
+        kept, as always.
+
+        Raises:
+            NotAuthorizedError: ``actor`` is not a signed-in administrator.
+            StoreError: The operation is not a practice one.
+        """
+        try:
+            with self._conn.transaction():
+                row = self._conn.execute(
+                    "SELECT log.erase_pretend(%s, %s)", (operation_id, actor.session_id)
+                ).fetchone()
+        except errors.InsufficientPrivilege as error:
+            raise NotAuthorizedError(_first_line(error)) from error
+        except errors.ObjectNotInPrerequisiteState as error:
+            raise StoreError(_first_line(error)) from error
+        erased: int = row[0] if row is not None else 0
+        return erased
+
     def restore_qso(
         self,
         qso_id: uuid.UUID,
