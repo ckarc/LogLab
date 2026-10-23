@@ -76,6 +76,7 @@
     bio_open: false,
     stats_open: false,
     expanded: [],
+    auto_expand: ["stats", "profile", "onair"],
     distance_unit: "mi",
     log_mine: true,
   });
@@ -433,9 +434,14 @@
       ...(saved && saved.stats_open === true ? ["stats"] : []),
     ])].filter((id) => EXPANDABLE.includes(id));
     const stats_open = false;
+    // Boxes that open by themselves when the pointer rests in them; not the
+    // Log, until the operator ticks it.
+    const auto_expand = saved && Array.isArray(saved.auto_expand)
+      ? [...new Set(saved.auto_expand)].filter((id) => EXPANDABLE.includes(id))
+      : ["stats", "profile", "onair"];
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
     const log_mine = !(saved && saved.log_mine === false);
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, expanded, distance_unit, log_mine };
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, expanded, auto_expand, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -634,6 +640,8 @@
       if (slider && document.activeElement !== slider) slider.value = String(m.scale);
       const shownScale = el.querySelector(".module-head .scale-reset");
       if (shownScale) shownScale.textContent = `${m.scale}%`;
+      const auto = el.querySelector(".module-head .auto-expand input");
+      if (auto) auto.checked = layout.auto_expand.includes(m.id);
     });
     applyPanels();
     pack();
@@ -1143,6 +1151,21 @@
       scaleReset.addEventListener("click", () => setScale(id, 100));
       scale.append(scaleName, slider);
       head.append(scale, scaleReset);
+      // A box that grows may open by itself when the pointer rests in it,
+      // or only from its bar.
+      if (EXPANDABLE.includes(id)) {
+        const auto = document.createElement("label");
+        auto.className = "auto-expand";
+        auto.title = "Open the rest of this box when the pointer rests in it. Unticked, it opens only from its bar.";
+        const tick = document.createElement("input");
+        tick.type = "checkbox";
+        tick.setAttribute("aria-label", `${title}: open by itself when the pointer rests in it`);
+        tick.addEventListener("change", () => useLayout({
+          auto_expand: tick.checked ? [...layout.auto_expand, id] : layout.auto_expand.filter((x) => x !== id),
+        }));
+        auto.append(tick, " Auto expand");
+        head.append(auto);
+      }
       if (HIDEABLE.has(id)) {
         const hide = document.createElement("button");
         hide.type = "button";
@@ -1988,7 +2011,8 @@
   // opens the rest over the page, on top of the boxes below, so nothing on
   // the page moves; a pointer only passing over (moving briskly, or there
   // for less than DWELL_MS) opens nothing. Pointing at the bar opens it at
-  // once. It fades back once the pointer has been out of the box for
+  // once. Both only in a box the operator lets open by itself
+  // (`auto_expand`, not the Log at first); any box opens from its bar. It fades back once the pointer has been out of the box for
   // GRACE_MS, so a slip over the edge doesn't close it. A tap or Enter
   // opens it too, and Esc or a tap elsewhere closes it (and it stays shut
   // until the pointer leaves the box). The lock in the bar keeps it open in
@@ -2079,7 +2103,7 @@
 
     // Only for a box with more to show, and not while boxes are being
     // arranged or dragged.
-    const may = () => !hush && !bar.hidden && !locked()
+    const may = () => !hush && !bar.hidden && !locked() && layout.auto_expand.includes(id)
       && !document.body.classList.contains("arranging") && !document.body.classList.contains("moving");
     const settle = () => {
       clearTimeout(dwell);
@@ -2566,7 +2590,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, expanded: layout.expanded, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, expanded: layout.expanded, auto_expand: layout.auto_expand, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });
