@@ -34,6 +34,8 @@
   <script src="/static/onair.js" defer></script>
   <script src="/static/radio.js" defer></script>
   <script src="/static/agents.js" defer></script>
+  <script src="/static/cleanup.js" defer></script>
+  <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
   <script src="/static/import.js" defer></script>
 </head>
@@ -146,7 +148,12 @@
       </section>
 
       <section class="card module" data-module="log">
-        <h2>Log</h2>
+        <h2>Log
+          <span id="log-whose" class="segmented log-whose" role="group" aria-label="Whose QSOs the Log shows" hidden>
+            <button type="button" class="secondary small" data-whose="mine" aria-pressed="true">My QSOs</button>
+            <button type="button" class="secondary small" data-whose="club" aria-pressed="false" title="Every operator's QSOs in this operation">Club QSOs</button>
+          </span>
+        </h2>
         <div class="filters">
           <input id="search" type="search" placeholder="Find a call" maxlength="20" spellcheck="false">
           <label class="inline"><input id="show-deleted" type="checkbox"> Show deleted</label>
@@ -383,7 +390,14 @@
         <div class="menu-items">
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
           <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
+          <button type="button" id="cleanup-open" class="link" hidden>Clean up saved lookups</button>
         </div>
+        <div id="demo-row" class="demo-row" hidden>
+          <label class="inline"><input type="checkbox" id="demo-on"> Demo mode</label>
+          <p id="demo-status" class="hint">Pretend operators go on the air and log pretend QSOs with real calls in a practice operation, so every box has something to show. Nothing is uploaded, and turning it off erases them.</p>
+          <button type="button" id="demo-watch" class="link" hidden>Watch it here</button>
+        </div>
+        <p id="demo-error" class="error" role="alert"></p>
       </div>
     </details>
 
@@ -468,6 +482,19 @@
       </div>
       <p class="error" role="alert"></p>
     </form>
+    <form id="qrz-refresh-form" method="dialog" autocomplete="off">
+      <h3>Keeping stored profiles current</h3>
+      <p class="hint">Once a stored profile is a month old, LabLog quietly asks QRZ.com again for its small callsign record, a few seconds apart. It downloads the biography or photo again only when QRZ.com says it changed. Nothing is checked with no internet, and lookups and logging never wait on it.</p>
+      <label>Re-check stored profiles
+        <select name="mode">
+          <option value="auto">On any internet except Starlink</option>
+          <option value="always">On any internet, Starlink too</option>
+          <option value="off">Never</option>
+        </select>
+      </label>
+      <p id="qrz-refresh-state" class="hint" aria-live="polite"></p>
+      <p class="error" role="alert"></p>
+    </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
   </dialog>
 
@@ -484,6 +511,25 @@
     <div class="actions">
       <button type="button" id="agents-close" class="secondary">Close</button>
     </div>
+  </dialog>
+
+  <dialog id="cleanup-dialog" class="card qrz-dialog" aria-labelledby="cleanup-title">
+    <h2 id="cleanup-title">Clean up saved lookups</h2>
+    <p class="hint">LabLog keeps every QRZ.com answer it gets, so a call fills in again with no internet. This clears the ones for calls that were never logged. The log is never touched, and a call in any QSO keeps its lookup. A cleared call is just looked up again the next time someone types it.</p>
+    <label>Saved more than
+      <select id="cleanup-days">
+        <option value="30">30 days ago</option>
+        <option value="90" selected>90 days ago</option>
+        <option value="180">180 days ago</option>
+        <option value="365">a year ago</option>
+      </select>
+    </label>
+    <p id="cleanup-count" class="hint" aria-live="polite"></p>
+    <div class="actions">
+      <button type="button" id="cleanup-clear" class="danger" disabled>Clear them</button>
+      <button type="button" id="cleanup-close" class="secondary">Close</button>
+    </div>
+    <p class="error" role="alert"></p>
   </dialog>
 
   <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">

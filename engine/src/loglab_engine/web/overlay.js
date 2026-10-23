@@ -557,6 +557,12 @@
     useOperation(byId(operations, event.target.value), false);
   });
   $("#op-gota").addEventListener("change", (event) => useOperation(operation, event.target.checked));
+  // Another part of the page (demo mode) asks this browser to log in an operation.
+  document.addEventListener("loglab:use-operation", async (event) => {
+    await load();
+    const next = byId(operations, event.detail.id);
+    if (next) useOperation(next, false);
+  });
   $("#op-new").addEventListener("click", () => openSetup(null));
   $("#op-edit").addEventListener("click", () => openSetup(operation));
   setup.overlay.addEventListener("change", () => renderSent({}));

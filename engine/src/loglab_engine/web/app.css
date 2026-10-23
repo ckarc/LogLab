@@ -444,6 +444,10 @@ th[aria-sort] { color: var(--accent); }
 /* While a box or column is being moved, nothing on the page gets selected. */
 body.moving, .module-head, .ghost { -webkit-user-select: none; user-select: none; }
 body.moving, body.moving * { cursor: grabbing !important; }
+/* The page scrolls only when the pointer nears an edge, not to keep other
+   boxes in view as the carried one changes place. */
+html:has(body.moving) { overflow-anchor: none; }
+body.moving * { overflow-anchor: none; }
 
 .module-head { display: none; }
 .placeholder { display: none; margin: 0; }
@@ -487,6 +491,8 @@ dialog.card:modal { margin: 16px auto auto; max-height: calc(100vh - 32px); over
 .menu-body > .error:empty { display: none; }
 .menu-items { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .segmented { display: flex; gap: 6px; flex-wrap: wrap; }
+.log-whose { display: inline-flex; vertical-align: middle; margin-left: 12px; }
+.log-whose[hidden] { display: none; }
 .segmented [aria-pressed="true"] { color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
 .menu-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--glass-line); }
 .menu-foot .hint { margin: 0; font-size: 13px; }
@@ -609,3 +615,11 @@ body.arranging .module.placing { outline: 2px dashed var(--accent); background: 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* Demo mode, under Admin in the Menu (demo.js). */
+.demo-row { margin-top: 10px; }
+.demo-row .hint { margin: 4px 0; }
+
+/* A pretend QSO from demo mode says so in every table (Principle XX). */
+tr.pretend td { font-style: italic; }
+.pretend-tag { font-size: 11px; font-style: normal; color: var(--muted); border: 1px solid currentColor; border-radius: 6px; padding: 0 4px; }

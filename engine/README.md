@@ -196,6 +196,30 @@ own reference is at `/api/docs`.
   the same (Principle V); after QRZ.com cannot be reached the Engine leaves
   it alone for a minute. The Engine has to send the password to QRZ.com, so
   it is stored as typed: anyone who can read the database can read it.
+- **Kept QRZ.com profiles stay current** on their own. Once an hour,
+  `loglab-engine serve` looks up again (at most 60, three seconds apart)
+  the calls whose biography or photo it keeps and whose entry is over 30
+  days old. That is QRZ.com's small callsign answer; the biography and photo
+  are downloaded again only when it shows a newer biography date or a
+  different photo. It uses the earliest saved QRZ.com login that QRZ.com
+  accepted, with a session of its own. By default it pauses while the
+  internet comes through Starlink, told by the public address's network
+  (SpaceX's AS14593, or a `starlinkisp.net` name, asked of ipinfo.io and
+  api.ipify.org); an admin can set it to run on any internet, or never, in
+  the **QRZ.com** window (`GET`/`PUT /api/v1/callbook/refresh`,
+  `{"mode": "auto" | "always" | "off"}`). With no internet it tries nothing.
+  In FieldLab, give `loglab-engine serve --mqtt HOST[:PORT]` (or set
+  `$LOGLAB_MQTT`) to the kiosk's MQTT broker: the gateway's own word there
+  (`fieldlab/facts/host`, from github.com/ckarc/fieldlab-kiosk) decides
+  instead, and re-checking runs only on `wan1`, the shop link, never on
+  Starlink or the phone tether. The Engine only reads the bus, with an MQTT
+  client of its own; with no fresh word from it, the address check decides.
+- **Clean up saved lookups** (Menu → Admin, admins only;
+  `GET`/`POST /api/v1/callbook/cleanup`, `{"days": 90}`) clears the kept
+  QRZ.com answers, photos and biographies of calls that no QSO names (deleted
+  ones count as named) and that were fetched more than the chosen number of
+  days ago (at least 7). It shows how many first, and asks before clearing.
+  The log is never touched; a cleared call is looked up again if typed.
 - **Logbook of the World** is optional. The **LoTW** link in the Log box
   says how many QSOs wait to be sent and opens the set-up: each operator
   saves their own callsign certificate (the `.p12` file TrustedQSL saves,

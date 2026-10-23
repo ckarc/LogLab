@@ -11,7 +11,7 @@ lets only that operator, signed in, save, change, or remove it (Principle XIII).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, LiteralString, cast
+from typing import TYPE_CHECKING, Final, LiteralString, cast
 
 from psycopg import errors
 from psycopg.types.json import Jsonb
@@ -19,12 +19,21 @@ from psycopg.types.json import Jsonb
 from loglab_engine.store.log import NotAuthorizedError
 
 if TYPE_CHECKING:
-    from datetime import datetime
+    from datetime import datetime, timedelta
 
     import psycopg
     from psycopg.rows import TupleRow
 
     from loglab_engine.store.log import Actor
+
+
+# Kept answers fetched over %(older_than)s ago for calls that no QSO version names.
+_UNLOGGED: Final = """
+    SELECT e.call FROM reference.callbook_entry e
+    WHERE e.source = %(source)s
+      AND e.fetched_at < transaction_timestamp() - %(older_than)s
+      AND NOT EXISTS (SELECT 1 FROM log.qso_version v WHERE v.call = e.call)
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +56,24 @@ class CachedMedia:
     content_type: str
     origin: str | None
     fetched_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class RefreshSetting:
+    """When kept profiles are re-checked in the background, and who last said so."""
+
+    mode: str
+    changed_by: str | None
+    changed_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class UnloggedCount:
+    """Kept callbook answers for calls never in the log, and their biographies and photos."""
+
+    entries: int
+    media: int
+    media_bytes: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +156,104 @@ class CallbookStore:
             ).fetchone()
         assert row is not None  # noqa: S101 - RETURNING always returns the row
         return CachedMedia(bytes(row[0]), row[1], row[2], row[3])
+
+    def kept_profiles_due(self, source: str, older_than: timedelta, limit: int) -> list[str]:
+        """Calls with a kept biography or photo whose entry was fetched over ``older_than`` ago.
+
+        The longest-unchecked come first.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT e.call FROM reference.callbook_entry e
+            WHERE e.source = %s AND e.found
+              AND e.fetched_at < transaction_timestamp() - %s
+              AND EXISTS (SELECT 1 FROM reference.callbook_media m
+                          WHERE m.source = e.source AND m.call = e.call)
+            ORDER BY e.fetched_at, e.call
+            LIMIT %s
+            """,
+            (source, older_than, limit),
+        ).fetchall()
+        return [row[0] for row in rows]
+
+    def unlogged(self, source: str, older_than: timedelta) -> UnloggedCount:
+        """How much is kept for calls never in the log, fetched over ``older_than`` ago."""
+        row = self._conn.execute(
+            f"""
+            WITH old AS ({_UNLOGGED})
+            SELECT (SELECT count(*) FROM old),
+                   count(m.call), coalesce(sum(octet_length(m.content)), 0)
+            FROM reference.callbook_media m JOIN old ON old.call = m.call
+            WHERE m.source = %(source)s
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"source": source, "older_than": older_than},
+        ).fetchone()
+        assert row is not None  # noqa: S101 - an aggregate always returns a row
+        return UnloggedCount(row[0], row[1], row[2])
+
+    def forget_unlogged(self, source: str, older_than: timedelta) -> int:
+        """Remove what is kept for calls never in the log, fetched over ``older_than`` ago.
+
+        Only reference data goes: a call in any QSO, deleted ones too, is kept,
+        and the log is never touched (Principle VI). Returns how many calls went.
+        """
+        params = {"source": source, "older_than": older_than}
+        with self._conn.transaction():
+            calls = [
+                row[0]
+                for row in self._conn.execute(f"{_UNLOGGED} FOR UPDATE OF e", params).fetchall()
+            ]
+            self._conn.execute(
+                "DELETE FROM reference.callbook_media WHERE source = %s AND call = ANY(%s)",
+                (source, calls),
+            )
+            self._conn.execute(
+                "DELETE FROM reference.callbook_entry WHERE source = %s AND call = ANY(%s)",
+                (source, calls),
+            )
+        return len(calls)
+
+    def accepted_login(self, source: str) -> tuple[str, str] | None:
+        """A username and password the callbook accepted when last tried: the earliest saved.
+
+        For the Engine's own background work, which has no operator signed in.
+        """
+        row = self._conn.execute(
+            """
+            SELECT username, password FROM workspace.callbook_login
+            WHERE source = %s AND service_key IS NOT NULL
+            ORDER BY saved_at, operator_id LIMIT 1
+            """,
+            (source,),
+        ).fetchone()
+        return None if row is None else (row[0], row[1])
+
+    def refresh_setting(self) -> RefreshSetting:
+        """When kept profiles are re-checked; ``auto`` if no administrator has said."""
+        row = self._conn.execute(
+            """
+            SELECT r.mode, o.callsign, r.changed_at FROM workspace.callbook_refresh r
+            JOIN log.operator o ON o.id = r.operator_id
+            """
+        ).fetchone()
+        return RefreshSetting("auto", None, None) if row is None else RefreshSetting(*row)
+
+    def save_refresh_mode(self, actor: Actor, mode: str) -> None:
+        """Set when kept profiles are re-checked.
+
+        Raises:
+            NotAuthorizedError: The session is not live, or its operator is not an administrator.
+        """
+        self._write(
+            """
+            INSERT INTO workspace.callbook_refresh (mode, operator_id, session_id)
+            SELECT %(mode)s, operator_id, id FROM log.session WHERE id = %(session)s
+            ON CONFLICT (one) DO UPDATE SET
+                mode = EXCLUDED.mode, operator_id = EXCLUDED.operator_id,
+                session_id = EXCLUDED.session_id
+            """,
+            {"mode": mode, "session": actor.session_id},
+        )
 
     def login(self, actor: Actor, source: str) -> CallbookLogin | None:
         """The signed-in operator's login to ``source``, or ``None`` if they have none."""

@@ -75,6 +75,7 @@ from loglab_engine.callbook import (
     http_fetch_large,
 )
 from loglab_engine.callbook.logbook_sync import LogbookSync
+from loglab_engine.callbook.profiles import NetworkSeen, ProfileRefresher, look_at_network
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
 from loglab_engine.callbook.service import SOURCE as CALLBOOK_SOURCE
@@ -83,6 +84,8 @@ from loglab_engine.contests import check as contest_check
 from loglab_engine.contests.overlay import Band, ModeName, StatId
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.contests.stats import Logged, operation_stats
+from loglab_engine.demo import NAME as DEMO_NAME
+from loglab_engine.demo import Demo
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -105,6 +108,7 @@ from loglab_engine.reference import (
     distance_km,
     grid_place,
     record_place,
+    section_for,
     tally_sections,
     tally_zones,
 )
@@ -412,6 +416,33 @@ class OnAirOut(BaseModel):
     from_radio: bool = False
     frequency_hz: int | None = None
     transmitting: bool | None = None
+    pretend: bool = False
+
+
+class DemoIn(_Strict):
+    """Turn demo mode on or off."""
+
+    on: bool
+
+
+class DemoOut(BaseModel):
+    """Whether demo mode is on: pretend operators logging made-up QSOs (Principle XX).
+
+    ``operation`` is the practice operation they log in; ``qsos`` how many
+    they have logged since it was turned on; ``problem`` why it stopped by
+    itself, if it did; ``erased`` how many pretend QSOs turning it off just
+    erased.
+    """
+
+    on: bool
+    operation: uuid.UUID | None
+    operation_name: str | None
+    started_by: str | None
+    started_at: datetime | None
+    qsos: int
+    stations: list[str]
+    problem: str | None
+    erased: int | None = None
 
 
 class RadioOut(BaseModel):
@@ -658,6 +689,8 @@ class Layout(_Strict):
     everyday logging under their own call. ``by_overlay`` keeps how they
     arranged the page in each other overlay, to bring back when they return.
     ``world_qsos`` is how many of the latest QSOs the world map draws.
+    ``log_mine`` is whether the Log, in an operation, shows only the
+    operator's own QSOs rather than everyone's.
     ``bio_open`` is whether the station profile shows a biography opened
     (closed until the operator opens one). ``distance_unit`` is how the
     station profile gives the distance to a station, in miles or kilometres.
@@ -675,6 +708,7 @@ class Layout(_Strict):
     )
     world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
     bio_open: bool = False
+    log_mine: bool = True
     distance_unit: Literal["mi", "km"] = "mi"
 
     @model_validator(mode="after")
@@ -772,6 +806,57 @@ class QrzLoginOut(BaseModel):
     status: str | None
     checked: bool
     message: str
+
+
+class ProfileRefreshIn(_Strict):
+    """When kept QRZ.com profiles are re-checked: ``auto`` (off Starlink), ``always``, ``off``."""
+
+    mode: Literal["auto", "always", "off"]
+
+
+# At least a week, so this week's lookups are never cleared out from under an operator.
+CleanupDays = Annotated[int, Field(ge=7, le=3650)]
+
+
+class CleanupQuery(_Strict):
+    """How old a kept lookup of a never-logged call must be to count."""
+
+    model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
+
+    days: CleanupDays = 90
+
+
+class CleanupIn(_Strict):
+    """Clear kept lookups of never-logged calls older than ``days``."""
+
+    days: CleanupDays
+
+
+class CleanupOut(BaseModel):
+    """Kept lookups of calls never logged, older than ``days``: how many, and their size."""
+
+    days: int
+    calls: int
+    photos_and_bios: int
+    bytes: int
+
+
+class CleanupDone(BaseModel):
+    """How many never-logged calls' kept lookups were cleared."""
+
+    days: int
+    removed: int
+
+
+class ProfileRefreshOut(BaseModel):
+    """When kept QRZ.com profiles are re-checked, who said so, and how the last check went."""
+
+    mode: str
+    changed_by: str | None
+    changed_at: datetime | None
+    last_checked_at: datetime | None
+    network: str | None
+    message: str | None
 
 
 class QrzLogbookIn(_Strict):
@@ -1274,7 +1359,7 @@ def _session_out(conn: psycopg.Connection[TupleRow], who: Actor) -> SessionOut:
 
 
 class QsoQuery(_Strict):
-    """Which QSOs to list."""
+    """Which QSOs to list. ``mine`` keeps only those the signed-in operator made."""
 
     model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
 
@@ -1284,6 +1369,7 @@ class QsoQuery(_Strict):
     newest_first: bool = True
     sort: SortKey = "entered"
     operation: uuid.UUID | None = None
+    mine: bool = False
 
 
 # -- Operations ---------------------------------------------------------------
@@ -1385,6 +1471,7 @@ def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> l
         QsoFilter(
             call=query.call or None,
             operation=query.operation,
+            operator=who.operator if query.mine else None,
             include_deleted=query.include_deleted,
         ),
         limit=query.limit,
@@ -1829,6 +1916,7 @@ def _on_air_out(
                 from_radio=r.station in radios,
                 frequency_hz=radios[r.station].frequency_hz if r.station in radios else None,
                 transmitting=radios[r.station].ptt if r.station in radios else None,
+                pretend=r.pretend,
             )
             for r in reports
         ],
@@ -1886,6 +1974,89 @@ def leave_on_air(operation_id: uuid.UUID, who: Signed, board: Board) -> None:
     """Take this workstation off the On air list, as when it leaves the operation."""
     del operation_id  # a session is on the air in one operation at a time
     board.leave(who.session_id)
+
+
+# -- Demo mode -----------------------------------------------------------------
+
+
+def _demo(request: Request) -> Demo:
+    demo: Demo = request.app.state.demo
+    return demo
+
+
+DemoMode = Annotated[Demo, Depends(_demo)]
+
+
+def _demo_out(demo: Demo) -> DemoOut:
+    state = demo.state()
+    return DemoOut(
+        on=state.on,
+        operation=state.operation,
+        operation_name=state.operation_name,
+        started_by=state.started_by,
+        started_at=state.started_at,
+        qsos=state.qsos,
+        stations=list(state.stations),
+        problem=state.problem,
+    )
+
+
+def _demo_operation(conn: Conn, who: Actor) -> Operation:
+    """The open practice operation demo mode logs in, set up now if there is none."""
+    operations = OperationStore(conn)
+    for op in operations.list():
+        if op.practice and op.name == DEMO_NAME and op.archived_at is None:
+            return op
+    found = LicenseStore(conn).find(who.operator)
+    section = section_for(found.state) if found is not None and found.state else None
+    return operations.create(
+        who,
+        OperationSetup(
+            overlay="arrl-fd",
+            name=DEMO_NAME,
+            station_call=who.operator,
+            gota_call=None,
+            sent={"class": "3A", "section": section.code if section is not None else "DX"},
+            practice=True,
+        ),
+    )
+
+
+@api.get("/demo")
+def get_demo(who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
+    """Whether demo mode is on, and where."""
+    _require(conn, who, Permission.VIEW)
+    return _demo_out(demo)
+
+
+@api.put("/demo")
+def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
+    """Turn demo mode on or off (administrators).
+
+    On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
+    demo-1 to demo-3 with pretend radios, in the practice operation Demo
+    Field Day (set up now if need be), and log pretend QSOs with real calls
+    from the license lists, each marked pretend, in this administrator's
+    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    Field Day is erased, the erasure recorded (Principle VII, as amended in
+    Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
+    """
+    _require(conn, who, Permission.ADMIN)
+    if not body.on:
+        demo.stop()
+        store = LogStore(conn)
+        erased = sum(
+            store.erase_pretend(op.id, actor=who)
+            for op in OperationStore(conn).list(include_ended=True)
+            if op.practice and op.name == DEMO_NAME
+        )
+        return _demo_out(demo).model_copy(update={"erased": erased})
+    op = _demo_operation(conn, who)
+    found = _find(conn, op.overlay, include_retired=True)
+    if found is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the overlay {op.overlay} is missing")
+    demo.start(who, op, found)
+    return _demo_out(demo)
 
 
 # -- The station's radio, through its Station Agent ---------------------------
@@ -2764,6 +2935,66 @@ def delete_qrz_login(who: Signed, books: Books) -> None:
     books.remove_login(who)
 
 
+def _profile_refresh_out(request: Request, conn: Conn) -> ProfileRefreshOut:
+    refresher: ProfileRefresher = request.app.state.profiles
+    setting = CallbookStore(conn).refresh_setting()
+    last = refresher.last_report()
+    return ProfileRefreshOut(
+        mode=setting.mode,
+        changed_by=setting.changed_by,
+        changed_at=setting.changed_at,
+        last_checked_at=None if last is None else last.at,
+        network=None if last is None or last.network is None else last.network.value,
+        message=None if last is None else last.message,
+    )
+
+
+@api.get("/callbook/refresh")
+def get_profile_refresh(request: Request, who: Signed, conn: Conn) -> ProfileRefreshOut:
+    """When the Engine re-checks kept QRZ.com profiles in the background, and how it last went."""
+    _require(conn, who, Permission.VIEW)
+    return _profile_refresh_out(request, conn)
+
+
+@api.put("/callbook/refresh")
+def put_profile_refresh(
+    request: Request, body: ProfileRefreshIn, who: Signed, conn: Conn
+) -> ProfileRefreshOut:
+    """Set when kept QRZ.com profiles are re-checked (admins only), and check soon."""
+    _require(conn, who, Permission.ADMIN)
+    CallbookStore(conn).save_refresh_mode(who, body.mode)
+    refresher: ProfileRefresher = request.app.state.profiles
+    refresher.wake()
+    return _profile_refresh_out(request, conn)
+
+
+@api.get("/callbook/cleanup")
+def get_callbook_cleanup(
+    who: Signed, conn: Conn, query: Annotated[CleanupQuery, Query()]
+) -> CleanupOut:
+    """How many kept QRZ.com lookups are of calls never logged, older than ``days`` (admins)."""
+    _require(conn, who, Permission.ADMIN)
+    count = CallbookStore(conn).unlogged(CALLBOOK_SOURCE, timedelta(days=query.days))
+    return CleanupOut(
+        days=query.days,
+        calls=count.entries,
+        photos_and_bios=count.media,
+        bytes=count.media_bytes,
+    )
+
+
+@api.post("/callbook/cleanup")
+def post_callbook_cleanup(body: CleanupIn, who: Signed, conn: Conn) -> CleanupDone:
+    """Clear kept QRZ.com lookups of calls never logged, older than ``days`` (admins).
+
+    Only the lookup cache goes; a call in any QSO, deleted ones too, is kept,
+    and the log is never touched. A cleared call is fetched again if typed.
+    """
+    _require(conn, who, Permission.ADMIN)
+    removed = CallbookStore(conn).forget_unlogged(CALLBOOK_SOURCE, timedelta(days=body.days))
+    return CleanupDone(days=body.days, removed=removed)
+
+
 _CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
 
 
@@ -3068,16 +3299,19 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     qrz_fetch_large: Callable[[str, int], bytes] = http_fetch_large,
     lotw_transport: Transport = https,
     license_downloads: Downloads | None = None,
+    profile_network: Callable[[], NetworkSeen] = look_at_network,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
     ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
     and logbook services, ``qrz_fetch_large`` its biographies and photos,
     ``lotw_transport`` how it reaches LoTW, and ``license_downloads`` how it
-    fetches the FCC and ISED license lists; tests give them stand-ins. The QRZ
-    logbook sender runs in the background once ``app.state.logbook.start()``
-    is called, and the license lists are kept current once
-    ``app.state.licenses.start()`` is.
+    fetches the FCC and ISED license lists, and ``profile_network`` how it
+    tells which network its internet comes through; tests give them stand-ins.
+    The QRZ logbook sender runs in the background once
+    ``app.state.logbook.start()`` is called, the license lists are kept current
+    once ``app.state.licenses.start()`` is, and kept QRZ.com profiles are
+    re-checked once ``app.state.profiles.start()`` is.
     """
     app = FastAPI(
         title="LabLog Engine",
@@ -3090,6 +3324,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     )
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LabLog-{__version__}", qrz_fetch, qrz_fetch_large))
+    app.state.profiles = ProfileRefresher(database, app.state.qrz, profile_network)
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
     app.state.licenses = Refresher(
         database, license_downloads or HttpDownloads(f"LabLog/{__version__} ({SOURCE})")
@@ -3098,6 +3333,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
     app.state.pairings = PairingDesk()
+    app.state.demo = Demo(database, app.state.on_air, app.state.rig)
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)

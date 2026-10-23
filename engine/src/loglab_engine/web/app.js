@@ -74,6 +74,7 @@
     world_qsos: WORLD_QSOS,
     bio_open: false,
     distance_unit: "mi",
+    log_mine: true,
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -419,7 +420,8 @@
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
     const bio_open = Boolean(saved && saved.bio_open === true);
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit };
+    const log_mine = !(saved && saved.log_mine === false);
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -744,6 +746,41 @@
     "two-thirds:left": "Left two thirds", "two-thirds:right": "Right two thirds",
   };
 
+  // While something is carried near the top or bottom of the window, the
+  // page scrolls that way, faster the closer the pointer gets to the edge,
+  // so a box can go anywhere on a page taller than the screen. `onScroll`
+  // runs after each step so the drop place follows the page.
+  const EDGE = 64;
+  const EDGE_SPEED = 24;
+  function edgeScroll(onScroll) {
+    let y = null;
+    let frame = 0;
+    const step = () => {
+      frame = 0;
+      if (y === null) return;
+      const h = window.innerHeight;
+      const zone = Math.min(EDGE, h / 4);
+      const speed = y < zone ? -(zone - y) / zone : y > h - zone ? (y - (h - zone)) / zone : 0;
+      if (!speed) return;
+      const was = window.scrollY;
+      window.scrollBy(0, Math.round(Math.max(-1, Math.min(1, speed)) * EDGE_SPEED) || Math.sign(speed));
+      if (window.scrollY === was) return;
+      onScroll();
+      frame = requestAnimationFrame(step);
+    };
+    return {
+      move(e) {
+        y = e.clientY;
+        if (!frame) frame = requestAnimationFrame(step);
+      },
+      stop() {
+        y = null;
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+      },
+    };
+  }
+
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
   // finger. The box's place shows as an outline; a small card follows the
   // pointer like a window being carried.
@@ -756,12 +793,13 @@
     const area = $("#workspace").getBoundingClientRect();
     // Where the other boxes are, in order, with each one's index once this
     // box is lifted out of the order.
+    // Tops are kept in page coordinates, so they hold while the page scrolls.
     const rest = layout.modules.filter((m) => m.id !== id);
     const others = rest.map((m, index) => ({ m, index }))
       .filter(({ m }) => shown(m))
       .map(({ m, index }) => {
         const r = moduleEl(m.id).getBoundingClientRect();
-        return { index, top: r.top, height: r.height, left: r.left, right: r.right };
+        return { index, top: r.top + window.scrollY, height: r.height, left: r.left, right: r.right };
       });
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
@@ -784,9 +822,9 @@
     };
     follow(event);
     let last = "";
-    const onMove = (e) => {
-      follow(e);
-      const t = dropTarget(e.clientX, e.clientY, others, area, layout.modules.find((m) => m.id === id).width);
+    let at = event;
+    const aim = () => {
+      const t = dropTarget(at.clientX, at.clientY + window.scrollY, others, area, layout.modules.find((m) => m.id === id).width);
       const key = `${t.index}:${t.width}:${t.side}`;
       if (key === last) return;
       last = key;
@@ -796,7 +834,16 @@
       // puts it once it has been lifted out.
       place(id, t.index, t.width, t.side);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onCancel);
@@ -812,6 +859,7 @@
     };
     const onUp = () => finish(true);
     const onCancel = () => finish(false);
+    window.addEventListener("scroll", aim, { passive: true });
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onCancel);
@@ -915,7 +963,9 @@
     const el = panelEl(id);
     const panel = PANELS[id];
     const before = { ...layout.panels };
-    const area = el.closest(".panels").getBoundingClientRect();
+    const block = el.closest(".panels").getBoundingClientRect();
+    // In page coordinates, so it holds while the page scrolls.
+    const area = { left: block.left, width: block.width, top: block.top + window.scrollY, height: block.height };
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
     const dy = event.clientY - grab.top;
@@ -937,14 +987,23 @@
     };
     follow(event);
     const pointer = event.pointerId;
-    const onMove = (e) => {
-      if (e.pointerId !== pointer) return;
-      follow(e);
-      const place = panelTarget(e.clientX, e.clientY, area);
+    let at = event;
+    const aim = () => {
+      const place = panelTarget(at.clientX, at.clientY + window.scrollY, area);
       ghostWhere.textContent = panelWhere(place, panel);
       placePanel(id, place);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      if (e.pointerId !== pointer) return;
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
@@ -960,6 +1019,7 @@
     };
     const onUp = (e) => { if (e.pointerId === pointer) finish(true); };
     const onCancel = (e) => { if (e.pointerId === pointer) finish(false); };
+    window.addEventListener("scroll", aim, { passive: true });
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
@@ -1542,6 +1602,12 @@
           if (c.className) td.className = c.className;
           tr.append(td);
         }
+        // A pretend QSO (demo mode) always says so, whatever columns are shown (Principle XX).
+        if (row.fields && field(row, "APP_LOGLAB_PRETEND").trim().toUpperCase() === "Y" && tr.firstChild) {
+          tr.classList.add("pretend");
+          tr.title = "Pretend QSO from demo mode, not a real contact";
+          tr.firstChild.append(" ", Object.assign(document.createElement("span"), { className: "pretend-tag", textContent: "pretend" }));
+        }
         if (edit) {
           const td = document.createElement("td");
           td.className = "edit-col";
@@ -1878,6 +1944,13 @@
     if ($("#show-deleted").checked) params.set("include_deleted", "true");
     // overlay.js offers to show only one operation's QSOs, like Field Day 2027.
     if ($("#log-operation").value) params.set("operation", $("#log-operation").value);
+    // In an operation the Log shows the operator's own QSOs or the whole club's.
+    const inOperation = Boolean($("#log-operation").value);
+    $("#log-whose").hidden = !inOperation;
+    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
+      b.setAttribute("aria-pressed", String((b.dataset.whose === "mine") === layout.log_mine));
+    }
+    if (inOperation && layout.log_mine) params.set("mine", "true");
     let qsos;
     try {
       qsos = await api("GET", `/qsos?${params}`);
@@ -2291,7 +2364,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });
@@ -2329,6 +2402,13 @@
       searchTimer = setTimeout(loadLog, 250);
     });
     $("#show-deleted").addEventListener("change", loadLog);
+    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
+      b.addEventListener("click", () => {
+        layout.log_mine = b.dataset.whose === "mine";
+        saveLayout();
+        loadLog();
+      });
+    }
     $("#close-detail").addEventListener("click", closeDetail);
     $("#detail").addEventListener("close", () => { current = null; }); // Esc closes it too
     const fieldList = $("#adif-field-list");
