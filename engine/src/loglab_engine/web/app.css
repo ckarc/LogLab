@@ -493,7 +493,10 @@ dialog.card:modal { margin: 16px auto auto; max-height: calc(100vh - 32px); over
 
 .arrange-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 12px 16px; }
 .arrange-bar .spacer { flex: 1 1 auto; }
-#tray { display: flex; flex-wrap: wrap; gap: 8px; }
+#tray { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; }
+#tray .tray-title { font-size: 13px; font-weight: 600; color: var(--muted); }
+#tray label { color: var(--text); font-size: 14px; }
+#tray .hint { font-weight: 400; }
 
 /* Unlocked: every box gets a handle bar along its top, like a window's. */
 body.arranging .module { outline: 2px dashed transparent; outline-offset: -2px; }
