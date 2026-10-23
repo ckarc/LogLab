@@ -6,16 +6,20 @@
 An administrator turns it on and off from the Menu. While it is on, a few
 pretend workstations (``demo-1``, ``demo-2``, ...) each with a pretend
 operator (``Q1PRE``, ``Q2PRE``, ...) and a pretend radio are on the air in a
-practice operation, and every so often each logs a QSO with a made-up
-station, so the Operation stats, On air and map boxes have something to show.
+practice operation, and every so often each logs a pretend QSO with a real
+station taken from the local US and Canada license lists (with its real
+section), so the Operation stats, On air, map and Station profile boxes have
+something to show. With no license list loaded it makes up Q calls, which the
+ITU issues to no station.
 
-Everything it makes is unmistakably pretend (Principle XX):
+Everything it makes is marked pretend (Principle XX):
 
-* every callsign starts with ``Q``, which the ITU issues to no station;
-* every QSO carries ``APP_LOGLAB_PRETEND = Y`` and the comment "Pretend QSO";
+* every QSO carries ``APP_LOGLAB_PRETEND = Y`` and the comment "Pretend QSO",
+  and every table shows it as pretend;
 * it logs only in a practice operation, and the database refuses a pretend
   QSO anywhere else, so none can reach LoTW or QRZ.com;
-* its On air lines and radios say they are pretend.
+* its operators are Q calls, and its On air lines and radios say they are
+  pretend.
 
 Its QSOs are logged through the versioned, audited path (Principle VII), in
 the session of the administrator who turned it on (Principle XIII): when that
@@ -40,13 +44,16 @@ from typing import TYPE_CHECKING, Final
 from loglab_engine.adif import Field, Record
 from loglab_engine.contests.stamp import Station, stamp
 from loglab_engine.onair import OnAir, Report
-from loglab_engine.reference import SECTIONS
+from loglab_engine.reference import SECTIONS, section_for
 from loglab_engine.rig import Radio, RigBoard, RigMode, RigState
 from loglab_engine.store import LogStore, StoreError, connect
 from loglab_engine.store.operation import OperationStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+
+    import psycopg
+    from psycopg.rows import TupleRow
 
     from loglab_engine.contests.overlay import Overlay
     from loglab_engine.store import Actor
@@ -107,14 +114,25 @@ def pretend_call(rng: random.Random) -> str:
     return f"Q{rng.randrange(10)}{letters}"
 
 
-def pretend_qso(rng: random.Random, spot: Spot, frequency_hz: int, now: datetime) -> Record:
-    """A made-up Field Day QSO on ``spot`` at ``now`` (UTC), as an operator would type it."""
+def pretend_qso(
+    rng: random.Random,
+    spot: Spot,
+    frequency_hz: int,
+    now: datetime,
+    worked: tuple[str, str] | None = None,
+) -> Record:
+    """A made-up Field Day QSO on ``spot`` at ``now`` (UTC), as an operator would type it.
+
+    ``worked`` is the call and section of a real station to pretend to work;
+    without it the call is a made-up Q call in a random section.
+    """
     when = now.astimezone(UTC)
+    call, section = worked or (pretend_call(rng), rng.choice(SECTIONS).code)
     return Record(
         (
-            Field("CALL", pretend_call(rng)),
+            Field("CALL", call),
             Field("CLASS", rng.choices(_CLASSES, weights=_CLASS_WEIGHTS)[0]),
-            Field("ARRL_SECT", rng.choice(SECTIONS).code),
+            Field("ARRL_SECT", section),
             Field("BAND", spot.band),
             Field("MODE", spot.mode),
             Field("FREQ", f"{frequency_hz / 1e6:.6f}"),
@@ -124,6 +142,28 @@ def pretend_qso(rng: random.Random, spot: Spot, frequency_hz: int, now: datetime
             Field(PRETEND_FLAG, "Y"),
         )
     )
+
+
+def real_stations(conn: psycopg.Connection[TupleRow], limit: int = 200) -> list[tuple[str, str]]:
+    """Up to ``limit`` active US and Canadian calls from the local license list, with sections.
+
+    Only calls whose state or province is a section of its own are used, so
+    the section is the station's real one. The list is local (Principle V);
+    an empty list gives none, and demo mode makes up Q calls instead.
+    """
+    query = (
+        "SELECT call, state FROM reference.license {} "
+        "WHERE active AND state IS NOT NULL {} LIMIT %s"
+    )
+    rows = conn.execute(query.format("TABLESAMPLE BERNOULLI (0.2)", ""), (limit,)).fetchall()
+    if len(rows) < limit // 4:  # a small list: sampling finds too few
+        rows = conn.execute(query.format("", "ORDER BY random()"), (limit,)).fetchall()
+    found = []
+    for call, state in rows:
+        section = section_for(state)
+        if section is not None:
+            found.append((str(call), section.code))
+    return found
 
 
 def pause(rng: random.Random, mean_seconds: float) -> float:
@@ -171,6 +211,8 @@ class _Run:
     started_at: datetime
     stations: list[Workstation]
     rng: random.Random
+    # Real stations still to pretend to work: (call, section).
+    worked: list[tuple[str, str]] = field(default_factory=list)
     stop: threading.Event = field(default_factory=threading.Event)
     thread: threading.Thread | None = None
 
@@ -339,16 +381,20 @@ class Demo:
         else:
             s.frequency_hz = min(s.frequency_hz + 100, s.spot.high_khz * 1000)
         op = run.operation
-        record = stamp(
-            pretend_qso(rng, s.spot, s.frequency_hz, now),
-            run.overlay,
-            Station(op.station_call, s.operator, op.sent, str(op.id)),
-        )
         try:
             with connect(self._database) as conn:
                 if OperationStore(conn).get(op.id).ended:
                     self.stop(f"Demo mode stopped: {op.name} has ended.")
                     return False
+                if not run.worked:
+                    run.worked = real_stations(conn)
+                    rng.shuffle(run.worked)
+                worked = run.worked.pop() if run.worked else None
+                record = stamp(
+                    pretend_qso(rng, s.spot, s.frequency_hz, now, worked),
+                    run.overlay,
+                    Station(op.station_call, s.operator, op.sent, str(op.id)),
+                )
                 LogStore(conn).create_qso(record, actor=run.actor, note="Demo mode")
         except StoreError as error:
             self.stop(f"Demo mode stopped: {error}")

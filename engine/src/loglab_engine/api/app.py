@@ -1956,8 +1956,8 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
 
     On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
-    Field Day (set up now if need be), and log made-up QSOs with Q calls,
-    each marked pretend, in this administrator's session (Principles VII,
+    Field Day (set up now if need be), and log pretend QSOs with real calls
+    from the license lists, each marked pretend, in this administrator's session (Principles VII,
     XIII and XX). Off, they leave the air; their QSOs stay in the practice
     operation, which never uploads to LoTW or QRZ.com.
     """

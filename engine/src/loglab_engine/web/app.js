@@ -1602,6 +1602,12 @@
           if (c.className) td.className = c.className;
           tr.append(td);
         }
+        // A pretend QSO (demo mode) always says so, whatever columns are shown (Principle XX).
+        if (row.fields && field(row, "APP_LOGLAB_PRETEND").trim().toUpperCase() === "Y" && tr.firstChild) {
+          tr.classList.add("pretend");
+          tr.title = "Pretend QSO from demo mode, not a real contact";
+          tr.firstChild.append(" ", Object.assign(document.createElement("span"), { className: "pretend-tag", textContent: "pretend" }));
+        }
         if (edit) {
           const td = document.createElement("td");
           td.className = "edit-col";
