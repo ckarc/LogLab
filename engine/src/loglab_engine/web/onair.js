@@ -16,14 +16,21 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const LogLab = window.LogLab;
   const box = $("#onair");
-  // Three stations show, with no scroll bar; the bar opens the rest (app.js, expander).
+  // Folded, only this workstation's own row shows (it comes first), with no
+  // scroll bar; the bar opens the other stations (app.js, expander).
   $("#onair-wrap").classList.add("rows-wrap");
+  const ownRows = () => {
+    const table = $("#onair-list");
+    const own = [...table.tBodies[0].rows].filter((row) => row.classList.contains("you")).length;
+    // Not on the air here: just the heading, and the bar for the rest.
+    return own ? LogLab.rowsHeight(table, own) : table.offsetHeight && table.tHead ? table.tHead.offsetHeight + 2 : 0;
+  };
   LogLab.expander({
     id: "onair",
     box,
     part: $("#onair-wrap"),
     label: () => `All ${$("#onair-list tbody").rows.length} stations`,
-    compact: () => LogLab.rowsHeight($("#onair-list"), 3),
+    compact: ownRows,
     clip: true,
   });
   const EVERY_MS = 30000;
@@ -51,7 +58,9 @@
   function render(list) {
     $("#onair-scope").textContent = list.name;
     $("#onair-wrap").hidden = !list.stations.length;
-    const rows = list.stations.map((s) => {
+    // This workstation first, then the others in the Engine's order.
+    const stations = [...list.stations.filter((s) => s.you), ...list.stations.filter((s) => !s.you)];
+    const rows = stations.map((s) => {
       const row = document.createElement("tr");
       if (s.clash) row.className = "clash";
       if (s.you) row.classList.add("you");
