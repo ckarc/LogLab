@@ -10,14 +10,17 @@
 //!
 //! This version reads one radio, through Hamlib, a FlexRadio's own API or
 //! the built-in pretend radio, and streams its live state to the Engine. It never tunes the radio
-//! and never keys it.
+//! and never keys it. With `--wsjtx`, it also hears WSJT-X log QSOs on this
+//! computer and hands them to the Engine, through its journal.
 
 mod engine;
 mod flex;
 mod hamlib;
+mod journal;
 mod pairing;
 mod pretend;
 mod rig;
+mod wsjtx;
 
 use std::fs;
 use std::net::SocketAddr;
@@ -25,14 +28,17 @@ use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use engine::{RadioReport, Report, SendError, Uplink};
+use engine::{Handed, RadioReport, Report, SendError, Uplink};
 use flex::FlexRadio;
 use hamlib::{HamlibRadio, Launch, Source};
+use journal::Journal;
 use pretend::PretendRadio;
 use rig::{Radio, Reading};
+use wsjtx::Listener;
 
 /// The Agent's version, from `Cargo.toml`.
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -42,10 +48,13 @@ const POLL: Duration = Duration::from_millis(250);
 const HEARTBEAT: Duration = Duration::from_secs(5);
 /// How long to wait before trying an unreachable radio again.
 const RETRY: Duration = Duration::from_secs(3);
+/// How long QSOs wait in the journal before the Engine is tried again.
+const QSO_RETRY: Duration = Duration::from_secs(15);
 
 const USAGE: &str = "\
 Usage:
-  loglab-agent run  --engine URL --key-file FILE [--station NAME] RADIO
+  loglab-agent run  --engine URL --key-file FILE [--station NAME]
+                    [--wsjtx 127.0.0.1:2237 [--journal FILE]] RADIO
   loglab-agent read RADIO              read the radio once and print it
 
 RADIO is one of:
@@ -62,6 +71,12 @@ RADIO is one of:
 With --station, an Agent whose key file is empty or missing asks to join as
 that station, shows a code, and waits for an administrator to approve it in
 LabLog (Menu > Station Agents); the key is then saved in the key file.
+
+With --wsjtx, the Agent listens on this computer for WSJT-X (or JTDX) and
+logs each QSO it logs, as the operator signed in to LabLog at this station.
+Set WSJT-X's Settings > Reporting > UDP Server to the same address. QSOs wait
+in the journal (the key file's name plus .qsos unless --journal says) until
+the Engine has them.
 
 The Agent only reads the radio. It never tunes it and never transmits.";
 
@@ -93,8 +108,16 @@ enum Command {
         engine: String,
         key_file: String,
         station: Option<String>,
+        wsjtx: Option<Wsjtx>,
         radio: RadioChoice,
     },
+}
+
+/// Where to hear WSJT-X, and where to keep its QSOs until the Engine has them.
+#[derive(Debug, PartialEq, Eq)]
+struct Wsjtx {
+    address: SocketAddr,
+    journal: String,
 }
 
 #[derive(Default)]
@@ -109,6 +132,8 @@ struct Options {
     program: Option<String>,
     rigctld: Option<SocketAddr>,
     flex: Option<String>,
+    wsjtx: Option<SocketAddr>,
+    journal: Option<String>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -144,6 +169,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--baud" => options.baud = Some(number(flag, &value)?),
             "--rigctld-program" => options.program = Some(value),
             "--flex" => options.flex = Some(value),
+            "--journal" => options.journal = Some(value),
+            "--wsjtx" => {
+                let address: SocketAddr = value.parse().map_err(|_| {
+                    format!("--wsjtx needs an address like 127.0.0.1:2237, not {value:?}")
+                })?;
+                wsjtx::check_local(address)?;
+                options.wsjtx = Some(address);
+            }
             "--rigctld" => {
                 options.rigctld = Some(value.parse().map_err(|_| {
                     format!("--rigctld needs an address like 127.0.0.1:4532, not {value:?}")
@@ -153,18 +186,32 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
     }
     let radio = radio_choice(&mut options)?;
+    if options.journal.is_some() && options.wsjtx.is_none() {
+        return Err("--journal goes with --wsjtx".to_owned());
+    }
     match verb.as_str() {
+        "read" if options.wsjtx.is_some() => Err("--wsjtx goes with run".to_owned()),
         "read" => Ok(Command::Read(radio)),
-        "run" => Ok(Command::Run {
-            engine: options
-                .engine
-                .ok_or("run needs --engine, such as --engine http://127.0.0.1:8073")?,
-            key_file: options
+        "run" => {
+            let key_file = options
                 .key_file
-                .ok_or("run needs --key-file, the file holding this station's key")?,
-            station: options.station,
-            radio,
-        }),
+                .ok_or("run needs --key-file, the file holding this station's key")?;
+            let wsjtx = options.wsjtx.map(|address| Wsjtx {
+                address,
+                journal: options
+                    .journal
+                    .unwrap_or_else(|| format!("{key_file}.qsos")),
+            });
+            Ok(Command::Run {
+                engine: options
+                    .engine
+                    .ok_or("run needs --engine, such as --engine http://127.0.0.1:8073")?,
+                key_file,
+                station: options.station,
+                wsjtx,
+                radio,
+            })
+        }
         other => Err(format!("unknown command {other:?}")),
     }
 }
@@ -338,10 +385,116 @@ fn station_key(
     Ok(key)
 }
 
+/// What the WSJT-X listener heard, for the main loop.
+enum Heard {
+    Message(wsjtx::Message),
+    Malformed(wsjtx::Malformed),
+}
+
+/// Listen for WSJT-X on its own thread until the Agent stops.
+fn listen(address: SocketAddr, running: &Arc<AtomicBool>) -> Result<Receiver<Heard>, String> {
+    let mut listener = Listener::bind(address)?;
+    let (tx, rx) = mpsc::channel();
+    let running = Arc::clone(running);
+    thread::spawn(move || {
+        while running.load(Ordering::SeqCst) {
+            let heard = match listener.next() {
+                None => continue,
+                Some(Ok(message)) => Heard::Message(message),
+                Some(Err(malformed)) => Heard::Malformed(malformed),
+            };
+            if tx.send(heard).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(rx)
+}
+
+/// The QSOs a program logged: heard, journaled, and handed to the Engine.
+struct Qsos {
+    heard: Receiver<Heard>,
+    journal: Journal,
+    retry_at: Instant,
+    waiting_said: Option<String>,
+    malformed_said: bool,
+    talking: Option<String>,
+}
+
+impl Qsos {
+    /// Journal what WSJT-X logged since last time, then hand the Engine
+    /// whatever waits, unless it said "not yet" a moment ago.
+    fn step(&mut self, link: &mut Link) -> Result<(), String> {
+        while let Ok(heard) = self.heard.try_recv() {
+            match heard {
+                Heard::Message(wsjtx::Message::LoggedAdif { id, adif }) => {
+                    let entry = self.journal.add(&adif, &id)?;
+                    println!("{id} logged a QSO; journaled as {}", entry.id);
+                    self.retry_at = Instant::now();
+                }
+                Heard::Message(wsjtx::Message::Heartbeat { id, version }) => {
+                    if self.talking.as_deref() != Some(id.as_str()) {
+                        println!("{id} {version} is talking to the Agent");
+                        self.talking = Some(id);
+                    }
+                }
+                Heard::Message(wsjtx::Message::Close { id }) => {
+                    println!("{id} closed");
+                    self.talking = None;
+                }
+                Heard::Message(wsjtx::Message::Other) => {}
+                Heard::Malformed(why) => {
+                    if !self.malformed_said {
+                        println!("ignored a message: {why}");
+                        self.malformed_said = true;
+                    }
+                }
+            }
+        }
+        if Instant::now() < self.retry_at {
+            return Ok(());
+        }
+        for entry in self.journal.waiting() {
+            match link.uplink.log_qso(&entry) {
+                Handed::Logged(message) => {
+                    println!("{message}");
+                    self.journal.logged(&entry.id)?;
+                    self.waiting_said = None;
+                }
+                Handed::Refused(why) => {
+                    let file = self.journal.refused(&entry, &why)?;
+                    println!(
+                        "the Engine refused a QSO from {}: {why}. It is kept in {}; fix it and import that file in LabLog's Menu.",
+                        entry.program,
+                        file.display()
+                    );
+                }
+                Handed::NotYet(why) => {
+                    if self.waiting_said.as_deref() != Some(why.as_str()) {
+                        println!("QSOs wait in the journal: {why}");
+                        self.waiting_said = Some(why);
+                    }
+                    self.retry_at = Instant::now() + QSO_RETRY;
+                    return Ok(());
+                }
+                Handed::KeyRefused(code) => {
+                    println!("{}", SendError::Refused(code));
+                    link.refused = true;
+                    self.retry_at = Instant::now() + QSO_RETRY;
+                    return Ok(());
+                }
+            }
+        }
+        self.retry_at = Instant::now() + QSO_RETRY;
+        Ok(())
+    }
+}
+
 fn run(
     engine: &str,
     key_file: &str,
     station: Option<&str>,
+    wsjtx: Option<&Wsjtx>,
     choice: &RadioChoice,
 ) -> Result<(), String> {
     // Check the address before anything waits on it.
@@ -360,6 +513,26 @@ fn run(
         refused: false,
     };
     println!("{agent}: sending this station's radio to {engine}");
+    let mut qsos = match wsjtx {
+        None => None,
+        Some(wsjtx) => {
+            let journal = Journal::open(Path::new(&wsjtx.journal))?;
+            let waiting = journal.waiting().len();
+            let heard = listen(wsjtx.address, &running)?;
+            println!(
+                "listening for WSJT-X at {}; {waiting} QSO(s) waiting in {}",
+                wsjtx.address, wsjtx.journal
+            );
+            Some(Qsos {
+                heard,
+                journal,
+                retry_at: Instant::now(),
+                waiting_said: None,
+                malformed_said: false,
+                talking: None,
+            })
+        }
+    };
     let mut radio: Option<Box<dyn Radio>> = None;
     let mut sent = Sent::Nothing;
     let mut sent_at = Instant::now();
@@ -374,6 +547,9 @@ fn run(
                 refused: false,
             };
             sent = Sent::Nothing;
+        }
+        if let Some(qsos) = qsos.as_mut() {
+            qsos.step(&mut link)?;
         }
         if radio.is_none() && Instant::now() >= retry_at {
             match open(choice) {
@@ -439,8 +615,15 @@ fn main() -> ExitCode {
             engine,
             key_file,
             station,
+            wsjtx,
             radio,
-        }) => run(&engine, &key_file, station.as_deref(), &radio),
+        }) => run(
+            &engine,
+            &key_file,
+            station.as_deref(),
+            wsjtx.as_ref(),
+            &radio,
+        ),
         Err(error) => Err(format!("{error}\n\n{USAGE}")),
     };
     match outcome {
@@ -454,7 +637,7 @@ fn main() -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Command, HamlibChoice, RadioChoice, VERSION, banner, parse};
+    use super::{Command, HamlibChoice, RadioChoice, VERSION, Wsjtx, banner, parse};
     use crate::hamlib::Launch;
 
     fn args(text: &str) -> Vec<String> {
@@ -483,12 +666,30 @@ mod tests {
                 engine: "http://127.0.0.1:8073".to_owned(),
                 key_file: "key".to_owned(),
                 station: None,
+                wsjtx: None,
                 radio: RadioChoice::Hamlib(HamlibChoice::Start(Launch {
                     program: "rigctld".to_owned(),
                     model: 3073,
                     device: "/dev/ttyUSB0".to_owned(),
                     baud: Some(19200),
                 })),
+            })
+        );
+    }
+
+    #[test]
+    fn reads_a_run_that_listens_for_wsjtx() {
+        let command = parse(&args(
+            "run --engine http://127.0.0.1:8073 --key-file key --wsjtx 127.0.0.1:2237 --pretend",
+        ));
+        let Ok(Command::Run { wsjtx, .. }) = command else {
+            unreachable!("{command:?}");
+        };
+        assert_eq!(
+            wsjtx,
+            Some(Wsjtx {
+                address: "127.0.0.1:2237".parse().unwrap_or_else(|_| unreachable!()),
+                journal: "key.qsos".to_owned(),
             })
         );
     }
@@ -525,6 +726,10 @@ mod tests {
             "read --flex 10.0.0.2 --pretend",
             "read --flex 10.0.0.2 --hamlib-model 3073 --device x",
             "read --pretend --ft8",
+            "read --pretend --wsjtx 127.0.0.1:2237",
+            "run --engine http://x --key-file k --pretend --wsjtx 0.0.0.0:2237",
+            "run --engine http://x --key-file k --pretend --wsjtx 192.168.1.5:2237",
+            "run --engine http://x --key-file k --pretend --journal j",
         ] {
             assert!(parse(&args(bad)).is_err(), "{bad} should be refused");
         }
