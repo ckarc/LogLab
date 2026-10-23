@@ -806,6 +806,40 @@ class ProfileRefreshIn(_Strict):
     mode: Literal["auto", "always", "off"]
 
 
+# At least a week, so this week's lookups are never cleared out from under an operator.
+CleanupDays = Annotated[int, Field(ge=7, le=3650)]
+
+
+class CleanupQuery(_Strict):
+    """How old a kept lookup of a never-logged call must be to count."""
+
+    model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
+
+    days: CleanupDays = 90
+
+
+class CleanupIn(_Strict):
+    """Clear kept lookups of never-logged calls older than ``days``."""
+
+    days: CleanupDays
+
+
+class CleanupOut(BaseModel):
+    """Kept lookups of calls never logged, older than ``days``: how many, and their size."""
+
+    days: int
+    calls: int
+    photos_and_bios: int
+    bytes: int
+
+
+class CleanupDone(BaseModel):
+    """How many never-logged calls' kept lookups were cleared."""
+
+    days: int
+    removed: int
+
+
 class ProfileRefreshOut(BaseModel):
     """When kept QRZ.com profiles are re-checked, who said so, and how the last check went."""
 
@@ -2752,6 +2786,33 @@ def put_profile_refresh(
     refresher: ProfileRefresher = request.app.state.profiles
     refresher.wake()
     return _profile_refresh_out(request, conn)
+
+
+@api.get("/callbook/cleanup")
+def get_callbook_cleanup(
+    who: Signed, conn: Conn, query: Annotated[CleanupQuery, Query()]
+) -> CleanupOut:
+    """How many kept QRZ.com lookups are of calls never logged, older than ``days`` (admins)."""
+    _require(conn, who, Permission.ADMIN)
+    count = CallbookStore(conn).unlogged(CALLBOOK_SOURCE, timedelta(days=query.days))
+    return CleanupOut(
+        days=query.days,
+        calls=count.entries,
+        photos_and_bios=count.media,
+        bytes=count.media_bytes,
+    )
+
+
+@api.post("/callbook/cleanup")
+def post_callbook_cleanup(body: CleanupIn, who: Signed, conn: Conn) -> CleanupDone:
+    """Clear kept QRZ.com lookups of calls never logged, older than ``days`` (admins).
+
+    Only the lookup cache goes; a call in any QSO, deleted ones too, is kept,
+    and the log is never touched. A cleared call is fetched again if typed.
+    """
+    _require(conn, who, Permission.ADMIN)
+    removed = CallbookStore(conn).forget_unlogged(CALLBOOK_SOURCE, timedelta(days=body.days))
+    return CleanupDone(days=body.days, removed=removed)
 
 
 _CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
