@@ -19,7 +19,16 @@ from fastapi.testclient import TestClient
 
 from loglab_engine.api import create_app
 from loglab_engine.contests.overlay import overlay
-from loglab_engine.demo import EVERY, SPOTS, Demo, pause, pretend_call, pretend_qso, tune
+from loglab_engine.demo import (
+    EVERY,
+    SPOTS,
+    Demo,
+    pause,
+    pretend_call,
+    pretend_qso,
+    real_stations,
+    tune,
+)
 from loglab_engine.onair import OnAir
 from loglab_engine.reference import section_for
 from loglab_engine.rig import RigBoard, band_for
@@ -59,6 +68,36 @@ def test_a_qso_is_marked_pretend_and_fits_its_spot() -> None:
         assert round(float(fields["FREQ"]) * 1e6) == hz
         assert section_for(fields["ARRL_SECT"]) is not None
         assert re.fullmatch(r"[1-9][0-9]?[A-F]", fields["CLASS"])
+
+
+def test_a_real_station_keeps_its_call_and_section() -> None:
+    """Working a real station uses its call and section; the QSO is still marked pretend."""
+    record = pretend_qso(random.Random(5), SPOTS[0], 14_030_000, datetime.now(UTC), ("W0CK", "KS"))
+    fields = {f.name: f.value for f in record.fields}
+    assert (fields["CALL"], fields["ARRL_SECT"]) == ("W0CK", "KS")
+    assert fields["APP_LOGLAB_PRETEND"] == "Y"
+
+
+def _licenses(conn: psycopg.Connection[TupleRow]) -> None:
+    for call, state, active in (
+        ("W0CK", "KS", True),
+        ("K0ABC", "CO", True),
+        ("W6XYZ", "CA", True),  # California has several sections: not used
+        ("N0OLD", "KS", False),  # expired: not used
+        ("VE3AA", "QC", True),
+    ):
+        conn.execute(
+            "INSERT INTO reference.license (source, record_id, call, state, active) "
+            "VALUES ('fcc', %s, %s, %s, %s)",
+            (call, call, state, active),
+        )
+
+
+def test_real_stations_come_from_the_license_list(conn: psycopg.Connection[TupleRow]) -> None:
+    """Active calls whose state is one section are used, with that section (Principle V)."""
+    assert real_stations(conn) == []
+    _licenses(conn)
+    assert sorted(real_stations(conn)) == [("K0ABC", "CO"), ("VE3AA", "QC"), ("W0CK", "KS")]
 
 
 def test_qso_time_is_utc() -> None:
@@ -135,7 +174,7 @@ def test_pretend_stations_go_on_the_air_and_log(
     assert len(logged) == 3
     for v in logged:
         fields = {f.name: f.value for f in v.record.fields}
-        assert fields["CALL"].startswith("Q")
+        assert fields["CALL"].startswith("Q")  # no license list here: made-up calls
         assert fields["APP_LOGLAB_PRETEND"] == "Y"
         assert fields["OPERATOR"] in {"Q1PRE", "Q2PRE", "Q3PRE"}
         assert fields["STATION_CALLSIGN"] == "W0CK"
@@ -145,6 +184,24 @@ def test_pretend_stations_go_on_the_air_and_log(
     demo.stop()
     assert board.current(op.id, datetime.now(UTC)) == ()
     assert not demo.state().on
+
+
+def test_works_real_stations_when_it_has_them(
+    database: str, conn: psycopg.Connection[TupleRow], shack: Actor
+) -> None:
+    """With a license list, the pretend QSOs are with real calls in their real sections."""
+    _licenses(conn)
+    op = _operation(conn, shack, practice=True)
+    demo = Demo(conninfo(database), OnAir(), RigBoard())
+    demo.start(shack, op, _arrl_fd(), seed=3, background=False)
+    demo.step(EVERY * 7)
+    logged = LogStore(conn).find(QsoFilter(operation=op.id), limit=10)
+    worked = {(v.call, {f.name: f.value for f in v.record.fields}["ARRL_SECT"]) for v in logged}
+    assert worked == {("K0ABC", "CO"), ("VE3AA", "QC"), ("W0CK", "KS")}
+    assert all(
+        {f.name: f.value for f in v.record.fields}["APP_LOGLAB_PRETEND"] == "Y" for v in logged
+    )
+    demo.stop()
 
 
 def test_stops_when_the_session_ends(

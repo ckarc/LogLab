@@ -3,9 +3,9 @@
 
 // Demo mode, in the Menu under Admin: an administrator turns it on and off.
 // While it is on, the Engine has pretend operators (Q1PRE, Q2PRE...) on the
-// air at pretend stations with pretend radios, logging made-up QSOs with Q
-// calls in the practice operation Demo Field Day, so every box has something
-// to show. Everything it makes says it is pretend (Principle XX), and a
+// air at pretend stations with pretend radios, logging pretend QSOs with real
+// calls from the license lists in the practice operation Demo Field Day, so
+// every box has something to show. Everything it makes says it is pretend (Principle XX), and a
 // practice operation never uploads. Turning it on also switches this browser
 // to that operation; "Watch it here" does the same later.
 "use strict";

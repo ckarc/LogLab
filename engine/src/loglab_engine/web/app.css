@@ -615,3 +615,7 @@ body.arranging .module.placing { outline: 2px dashed var(--accent); background: 
 /* Demo mode, under Admin in the Menu (demo.js). */
 .demo-row { margin-top: 10px; }
 .demo-row .hint { margin: 4px 0; }
+
+/* A pretend QSO from demo mode says so in every table (Principle XX). */
+tr.pretend td { font-style: italic; }
+.pretend-tag { font-size: 11px; font-style: normal; color: var(--muted); border: 1px solid currentColor; border-radius: 6px; padding: 0 4px; }
