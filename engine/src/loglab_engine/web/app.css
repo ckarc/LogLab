@@ -444,6 +444,10 @@ th[aria-sort] { color: var(--accent); }
 /* While a box or column is being moved, nothing on the page gets selected. */
 body.moving, .module-head, .ghost { -webkit-user-select: none; user-select: none; }
 body.moving, body.moving * { cursor: grabbing !important; }
+/* The page scrolls only when the pointer nears an edge, not to keep other
+   boxes in view as the carried one changes place. */
+html:has(body.moving) { overflow-anchor: none; }
+body.moving * { overflow-anchor: none; }
 
 .module-head { display: none; }
 .placeholder { display: none; margin: 0; }
