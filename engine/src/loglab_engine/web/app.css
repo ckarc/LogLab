@@ -177,6 +177,10 @@ body {
 
 /* The page uses about nine tenths of the window's width. */
 main { width: 90%; margin: 0 auto; padding: 18px 16px; }
+/* A box popped out into a window of its own is only that box, filling the
+   window: no top bar and no Menu. */
+body.solo header.bar { display: none; }
+body.solo main { width: 100%; padding: 12px; }
 
 .card {
   border-radius: 20px;

@@ -187,6 +187,7 @@
       return p;
     }));
     $("#profile-bio-part").hidden = false;
+    more.show(); // the bar names the biography too
   }
 
   function fact(label, value) {
@@ -307,7 +308,7 @@
   // The biography and the QSOs worked before fold away under the name and
   // photo, behind a bar that says how many and opens them over the page
   // (app.js, expander).
-  window.LogLab.expander({
+  const more = window.LogLab.expander({
     id: "profile",
     box: $("#profile"),
     part: $("#profile-more"),
@@ -318,15 +319,17 @@
     },
   });
 
-  // The biography starts closed; whether the operator last left it open or
-  // closed is kept with their layout, on any workstation.
-  const bioPart = $("#profile-bio-part");
-  document.addEventListener("loglab:layout-loaded", () => {
-    bioPart.open = window.LogLab.layout().bio_open === true;
+  // The biography opens large in a window of its own, to read it easily;
+  // Esc, Close or a click outside closes it.
+  const bioDialog = $("#bio-dialog");
+  $("#profile-bio-open").addEventListener("click", () => {
+    const name = $("#profile-name").textContent.trim();
+    $("#bio-title").textContent = [$("#profile-call").textContent.trim(), name].filter(Boolean).join(" · ");
+    bioDialog.showModal();
+    bioDialog.scrollTop = 0;
   });
-  bioPart.addEventListener("toggle", () => {
-    if (bioPart.open !== (window.LogLab.layout().bio_open === true)) window.LogLab.useLayout({ bio_open: bioPart.open });
-  });
+  $("#bio-close").addEventListener("click", () => bioDialog.close());
+  bioDialog.addEventListener("click", (event) => { if (event.target === bioDialog) bioDialog.close(); }); // the backdrop
 
   $("#profile-refresh").addEventListener("click", () => {
     if (!shown) return;

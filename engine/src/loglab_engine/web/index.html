@@ -125,10 +125,7 @@
             </div>
           </div>
           <div id="profile-more">
-          <details id="profile-bio-part" class="profile-bio" hidden>
-            <summary>Biography</summary>
-            <div id="profile-bio"></div>
-          </details>
+          <p id="profile-bio-part" class="profile-bio" hidden><button type="button" id="profile-bio-open" class="link">Biography</button></p>
           <div class="filters">
             <span id="profile-worked" class="profile-worked" aria-live="polite"></span>
             <span id="profile-tools" class="table-tools"></span>
@@ -504,6 +501,14 @@
       <p class="error" role="alert"></p>
     </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
+  </dialog>
+
+  <dialog id="bio-dialog" class="card qrz-dialog bio-dialog" aria-labelledby="bio-title">
+    <h2 id="bio-title"></h2>
+    <div id="profile-bio"></div>
+    <div class="actions">
+      <button type="button" id="bio-close" class="secondary">Close</button>
+    </div>
   </dialog>
 
   <dialog id="agents-dialog" class="card qrz-dialog agents-dialog" aria-labelledby="agents-title">

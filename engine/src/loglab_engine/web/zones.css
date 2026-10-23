@@ -57,4 +57,4 @@
 .zone-other { margin: 8px 0 0; }
 
 /* On a page of its own, the map fills the window. */
-body.solo .zone-svg { max-height: calc(100vh - 230px); }
+body.solo .zone-svg { max-height: calc(100vh - 160px); }
