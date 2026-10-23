@@ -208,6 +208,12 @@ own reference is at `/api/docs`.
   api.ipify.org); an admin can set it to run on any internet, or never, in
   the **QRZ.com** window (`GET`/`PUT /api/v1/callbook/refresh`,
   `{"mode": "auto" | "always" | "off"}`). With no internet it tries nothing.
+  In FieldLab, give `loglab-engine serve --mqtt HOST[:PORT]` (or set
+  `$LOGLAB_MQTT`) to the kiosk's MQTT broker: the gateway's own word there
+  (`fieldlab/facts/host`, from github.com/ckarc/fieldlab-kiosk) decides
+  instead, and re-checking runs only on `wan1`, the shop link, never on
+  Starlink or the phone tether. The Engine only reads the bus, with an MQTT
+  client of its own; with no fresh word from it, the address check decides.
 - **Logbook of the World** is optional. The **LoTW** link in the Log box
   says how many QSOs wait to be sent and opens the set-up: each operator
   saves their own callsign certificate (the `.p12` file TrustedQSL saves,
