@@ -7,6 +7,8 @@ An original, open-source amateur radio logging system built on an API engine.
 - **Station Agent** (Rust) owns the radios and shares them with other software.
 - **Web client** served by the Engine — works on any device, with no internet connection.
 
+Trying LabLog as an operator? Read the [beta user guide](docs/user-guide.md).
+
 LabLog is in early development. Start with [`CONSTITUTION.md`](CONSTITUTION.md), the principles every contribution must uphold.
 
 A project of the Central Kansas Amateur Radio Club (W0CY). Maintained by Brian Krenzin, K9KSU.
