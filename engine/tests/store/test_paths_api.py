@@ -11,9 +11,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from loglab_engine.api import create_app
+from loglab_engine.fieldlab import FieldLabBus
 from loglab_engine.store import IdentityStore, Permission
 
 from .conftest import ADMIN_SECRET, VISITOR_SECRET, conninfo
+
+NOW = 1_792_771_200.0  # 2026-10-23 16:00 UTC
 
 if TYPE_CHECKING:
     from loglab_engine.store import Actor
@@ -86,7 +89,7 @@ def test_the_latest_qsos_by_time_with_places(client: TestClient, k9ksu: dict[str
     assert paths[0]["station"] == {"lat": 39.5, "lon": -95.0}
     assert paths[0]["other"] == {"lat": 35.5, "lon": 139.0}
     assert 10000 < paths[0]["km"] < 11000
-    assert body["home"] == {"lat": 39.5, "lon": -95.0}
+    assert body["home"] == {"lat": 39.5, "lon": -95.0, "source": "qso"}
     assert body["without_place"] == 1
     assert body["without_home"] == 1
     # Only the latest two QSOs: VK2DX (no home) and JA1XYZ.
@@ -129,3 +132,31 @@ def test_the_world_map_ships_with_the_engine(client: TestClient) -> None:
     assert client.get("/static/world.js").status_code == 200
     assert client.get("/static/world.css").status_code == 200
     assert client.get("/static/maps/world.json").status_code == 200
+
+
+def test_fieldlabs_gps_fix_is_home(database: str, shack: Actor) -> None:
+    """In FieldLab, a recent GPS fix is where the station is, and the map says it is GPS."""
+    del shack
+    fix = b'{"lat": 38.917, "lon": -97.214, "alt": 350.0, "ts": %d}' % (NOW - 20)
+    bus = FieldLabBus({"fieldlab/location": fix}.get, clock=lambda: NOW)
+    bus.read_once()
+    client = TestClient(create_app(conninfo(database), fieldlab=bus))
+    headers = _sign_in(client, "K9KSU", ADMIN_SECRET)
+    _log(client, headers, "G4ABC", "0100", GRIDSQUARE="IO91wm", MY_GRIDSQUARE="EM28")
+    body = _paths(client, headers)
+    assert body["home"] == {"lat": 38.917, "lon": -97.214, "source": "gps"}
+    paths = body["paths"]
+    assert isinstance(paths, list)
+    assert paths[0]["station"] == {"lat": 38.5, "lon": -95.0}  # the QSO's own grid stays its own
+
+
+def test_an_old_fix_is_not_home(database: str, shack: Actor) -> None:
+    """A fix over an hour old is ignored; the QSOs' own location is home again."""
+    del shack
+    old = b'{"lat": 38.917, "lon": -97.214, "ts": %d}' % (NOW - 2 * 3600)
+    bus = FieldLabBus({"fieldlab/location": old}.get, clock=lambda: NOW)
+    bus.read_once()
+    client = TestClient(create_app(conninfo(database), fieldlab=bus))
+    headers = _sign_in(client, "K9KSU", ADMIN_SECRET)
+    _log(client, headers, "G4ABC", "0100", GRIDSQUARE="IO91wm", MY_GRIDSQUARE="EM28")
+    assert _paths(client, headers)["home"] == {"lat": 38.5, "lon": -95.0, "source": "qso"}

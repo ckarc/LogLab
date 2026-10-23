@@ -86,6 +86,7 @@ from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.contests.stats import Logged, operation_stats
 from loglab_engine.demo import NAME as DEMO_NAME
 from loglab_engine.demo import Demo
+from loglab_engine.fieldlab import FieldLabBus, GpsFix
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -1010,10 +1011,22 @@ class PathOut(BaseModel):
     km: int
 
 
+class HomeOut(PlaceOut):
+    """Where the station is, and how the Engine knows.
+
+    ``gps``: FieldLab's GPS fix, measured. ``qso``: a QSO's own location.
+    ``saved``: the LoTW station location or the callbook's grid for the
+    operator's own call. Only ``gps`` is measured; a grid is a square's centre.
+    """
+
+    source: Literal["gps", "qso", "saved"]
+
+
 class PathsOut(BaseModel):
     """The latest QSOs that can be drawn on the world map.
 
-    ``home`` is where the station is: the latest of these QSOs' own location
+    ``home`` is where the station is: in FieldLab, the trailer's GPS fix when
+    a recent one has been heard; else the latest of these QSOs' own location
     (``MY_GRIDSQUARE``, or ``MY_LAT`` and ``MY_LON``), or else the grid of
     the station location saved for LoTW, or else the grid the callbook gave
     for the operator's own call when it was last looked up. ``without_place``
@@ -1022,7 +1035,7 @@ class PathsOut(BaseModel):
     those with none for the station.
     """
 
-    home: PlaceOut | None
+    home: HomeOut | None
     paths: list[PathOut]
     without_place: int
     without_home: int
@@ -1618,10 +1631,16 @@ def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
     return grid_place(grid) if isinstance(grid, str) else None
 
 
+def _gps_fix(request: Request) -> GpsFix | None:
+    bus: FieldLabBus | None = request.app.state.fieldlab
+    return None if bus is None else bus.fix()
+
+
 @api.get("/paths")
 def list_paths(
     who: Signed,
     conn: Conn,
+    gps: Annotated[GpsFix | None, Depends(_gps_fix)],
     limit: Annotated[int, Query(ge=1, le=MAX_PATHS)] = 50,
     operation: Annotated[uuid.UUID | None, Query()] = None,
 ) -> PathsOut:
@@ -1638,6 +1657,7 @@ def list_paths(
     fallback = _station_home(conn, who)
     paths: list[PathOut] = []
     home: MapPlace | None = None
+    home_source: Literal["gps", "qso", "saved"] = "qso"
     without_place = without_home = 0
     for v in latest:
         other = record_place(v.record)
@@ -1661,9 +1681,12 @@ def list_paths(
                 km=round(distance_km(station, other)),
             )
         )
-    home = home or fallback
+    if gps is not None:
+        home, home_source = MapPlace(lat=gps.lat, lon=gps.lon), "gps"
+    elif home is None:
+        home, home_source = fallback, "saved"
     return PathsOut(
-        home=None if home is None else PlaceOut(lat=home.lat, lon=home.lon),
+        home=None if home is None else HomeOut(lat=home.lat, lon=home.lon, source=home_source),
         paths=paths,
         without_place=without_place,
         without_home=without_home,
@@ -3536,6 +3559,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     lotw_transport: Transport = https,
     license_downloads: Downloads | None = None,
     profile_network: Callable[[], NetworkSeen] = look_at_network,
+    fieldlab: FieldLabBus | None = None,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
@@ -3544,6 +3568,9 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     ``lotw_transport`` how it reaches LoTW, and ``license_downloads`` how it
     fetches the FCC and ISED license lists, and ``profile_network`` how it
     tells which network its internet comes through; tests give them stand-ins.
+    ``fieldlab`` is FieldLab's MQTT bus, when the Engine runs there: its GPS
+    fix is the station's home, and its gateway holds large downloads on a
+    metered link.
     The QRZ logbook sender runs in the background once
     ``app.state.logbook.start()`` is called, the license lists are kept current
     once ``app.state.licenses.start()`` is, and kept QRZ.com profiles are
@@ -3562,8 +3589,11 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.qrz = Link(QrzClient(f"LabLog-{__version__}", qrz_fetch, qrz_fetch_large))
     app.state.profiles = ProfileRefresher(database, app.state.qrz, profile_network)
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
+    app.state.fieldlab = fieldlab
     app.state.licenses = Refresher(
-        database, license_downloads or HttpDownloads(f"LabLog/{__version__} ({SOURCE})")
+        database,
+        license_downloads or HttpDownloads(f"LabLog/{__version__} ({SOURCE})"),
+        hold=fieldlab.download_hold if fieldlab is not None else lambda: None,
     )
     app.state.logbook = LogbookSync(database, QrzLogbookClient(f"LabLog/{__version__}", qrz_post))
     app.state.on_air = OnAir()

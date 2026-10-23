@@ -49,7 +49,7 @@ from loglab_engine.callbook.qrz import (
     clean_text,
 )
 from loglab_engine.callbook.service import RECHECK_AFTER, SOURCE
-from loglab_engine.mqtt import MqttError, read_retained
+from loglab_engine.mqtt import MqttError
 from loglab_engine.store import connect
 from loglab_engine.store.callbook import CallbookStore
 
@@ -70,8 +70,8 @@ _STARLINK_AS: Final = "AS14593"
 _STARLINK_NAME: Final = ".starlinkisp.net"
 WHERE_AM_I: Final = "https://ipinfo.io/json"
 WHAT_IS_MY_ADDRESS: Final = "https://api.ipify.org"
-# FieldLab's kiosk (github.com/ckarc/fieldlab-kiosk) publishes what its gateway says.
-FACTS_TOPIC: Final = "fieldlab/facts/host"
+# FieldLab's kiosk (github.com/ckarc/fieldlab-kiosk) publishes what its gateway says,
+# on fieldlab/facts/host; loglab_engine.fieldlab reads it.
 HOME_WAN: Final = "wan1"  # the shop link, not metered
 FACTS_STALE_SECONDS: Final = 900.0
 _log = logging.getLogger(__name__)
@@ -193,15 +193,6 @@ def gateway_or_address(
         _log.info("QRZ profile re-check: FieldLab's bus: %s", error)
         seen = None
     return seen if seen is not None else (fallback or look_at_network)()
-
-
-def bus_reader(host: str, port: int) -> Callable[[], bytes | None]:
-    """Reads the kiosk's retained facts message from the broker at ``host``:``port``."""
-
-    def read() -> bytes | None:
-        return read_retained(host, port, FACTS_TOPIC, client_id="lablog-engine-network")
-
-    return read
 
 
 def look_at_network(

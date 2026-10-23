@@ -32,8 +32,9 @@ import uvicorn
 
 from loglab_engine import __version__
 from loglab_engine.api import create_app
-from loglab_engine.callbook.profiles import bus_reader, gateway_or_address
+from loglab_engine.callbook.profiles import gateway_or_address
 from loglab_engine.cli.operator import RefusedError, check_schema
+from loglab_engine.fieldlab import FieldLabBus
 from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.reference.refresh import HttpDownloads, Refresher
 from loglab_engine.store import connect, default_database
@@ -83,8 +84,8 @@ def _parser() -> argparse.ArgumentParser:
         type=_broker,
         default=os.environ.get("LOGLAB_MQTT") or None,  # argparse checks it with _broker
         metavar="HOST[:PORT]",
-        help="FieldLab's MQTT broker, to read which internet link the gateway uses"
-        " (default: $LOGLAB_MQTT, else none)",
+        help="FieldLab's MQTT broker, to read the trailer's GPS fix and which internet"
+        " link the gateway uses (default: $LOGLAB_MQTT, else none)",
     )
     serve.add_argument(
         "--no-license-refresh",
@@ -198,9 +199,11 @@ def main(
     if args.mqtt is None:
         app = create_app(database)
     else:
-        # In FieldLab, the gateway's word on its MQTT bus says which link is in use.
-        network = partial(gateway_or_address, bus_reader(*args.mqtt))
-        app = create_app(database, profile_network=network)
+        # In FieldLab, the bus gives the GPS fix and the gateway's word on which link is in use.
+        bus = FieldLabBus.at(*args.mqtt)
+        bus.start()
+        network = partial(gateway_or_address, bus.facts)
+        app = create_app(database, profile_network=network, fieldlab=bus)
     app.state.logbook.start()  # sends QSOs to QRZ logbooks, when operators set that up
     app.state.profiles.start()  # re-checks kept QRZ.com profiles, off Starlink
     if not args.no_license_refresh:

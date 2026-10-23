@@ -165,7 +165,10 @@ own reference is at `/api/docs`.
   six hours, by HEAD request, whether the FCC's weekly `l_amat.zip`, its
   daily change files `l_am_<day>.zip`, or ISED's `amateur_delim.zip` are
   newer than what is loaded, and loads only those (`--no-license-refresh`
-  turns this off). Each load happens in one transaction, so lookups see the
+  turns this off). In FieldLab (`serve --mqtt`), nothing is fetched while the
+  gateway says the internet is Starlink or the phone tether: the full US list
+  is about 143 MB, and Starlink has a data budget. `licenses refresh` by hand
+  still fetches on any link. Each load happens in one transaction, so lookups see the
   old list until the new one is complete, and a file that is mostly
   unreadable is refused (Principles XII and XIV). For a station that is never
   online, download the files elsewhere and load them by hand:
@@ -214,6 +217,11 @@ own reference is at `/api/docs`.
   instead, and re-checking runs only on `wan1`, the shop link, never on
   Starlink or the phone tether. The Engine only reads the bus, with an MQTT
   client of its own; with no fresh word from it, the address check decides.
+  The same reader, every 30 seconds, takes the trailer's GPS fix
+  (`fieldlab/location`): while it is under an hour old it is the station's
+  home on the world map and for the Station profile's distance and heading
+  (`GET /api/v1/paths` gives `home.source` `"gps"`), and the box says
+  "from GPS to their grid square".
 - **Clean up saved lookups** (Menu → Admin, admins only;
   `GET`/`POST /api/v1/callbook/cleanup`, `{"days": 90}`) clears the kept
   QRZ.com answers, photos and biographies of calls that no QSO names (deleted

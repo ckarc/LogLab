@@ -13,7 +13,9 @@ what it already has (Principle V: fetch each thing once):
 * ISED's list, ``amateur_delim.zip``, replacing the Canadian list.
 
 With no internet the check simply fails and is tried again later; lookups
-keep using the list already loaded. A station that is never online loads the
+keep using the list already loaded. In FieldLab, nothing is fetched while the
+gateway says the internet is Starlink or another metered link: the full US
+list alone is about 143 MB, and Starlink has a data budget. A station that is never online loads the
 files by hand with ``loglab-engine licenses import``.
 """
 
@@ -166,11 +168,17 @@ class Refresher:
         database: str,
         downloads: Downloads,
         today: Callable[[], date] = lambda: datetime.now(UTC).date(),
+        hold: Callable[[], str | None] = lambda: None,
     ) -> None:
-        """Use the database ``database``, reaching the agencies through ``downloads``."""
+        """Use the database ``database``, reaching the agencies through ``downloads``.
+
+        ``hold`` says why nothing should be fetched right now (a metered
+        link, say), or ``None`` when fetching may go ahead.
+        """
         self._database = database
         self.downloads = downloads
         self._today = today
+        self._hold = hold
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
         self._lock = threading.Lock()
@@ -209,6 +217,10 @@ class Refresher:
     def run_once(self) -> RefreshReport:
         """Fetch and load whatever is newer than what is loaded."""
         report = RefreshReport([], [])
+        held = self._hold()
+        if held is not None:
+            report.problems.append(held)
+            return report
         with connect(self._database) as conn:
             locked = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)).fetchone()
             if locked is None or locked[0] is not True:
