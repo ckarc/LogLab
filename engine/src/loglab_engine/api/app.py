@@ -74,6 +74,7 @@ from loglab_engine.callbook import (
     http_fetch_large,
 )
 from loglab_engine.callbook.logbook_sync import LogbookSync
+from loglab_engine.callbook.profiles import NetworkSeen, ProfileRefresher, look_at_network
 from loglab_engine.callbook.qrz import QrzReplyError, QrzUnreachableError
 from loglab_engine.callbook.qrz_logbook import QrzKeyError, QrzLogbookClient, http_post
 from loglab_engine.callbook.service import SOURCE as CALLBOOK_SOURCE
@@ -761,6 +762,23 @@ class QrzLoginOut(BaseModel):
     status: str | None
     checked: bool
     message: str
+
+
+class ProfileRefreshIn(_Strict):
+    """When kept QRZ.com profiles are re-checked: ``auto`` (off Starlink), ``always``, ``off``."""
+
+    mode: Literal["auto", "always", "off"]
+
+
+class ProfileRefreshOut(BaseModel):
+    """When kept QRZ.com profiles are re-checked, who said so, and how the last check went."""
+
+    mode: str
+    changed_by: str | None
+    changed_at: datetime | None
+    last_checked_at: datetime | None
+    network: str | None
+    message: str | None
 
 
 class QrzLogbookIn(_Strict):
@@ -2588,6 +2606,39 @@ def delete_qrz_login(who: Signed, books: Books) -> None:
     books.remove_login(who)
 
 
+def _profile_refresh_out(request: Request, conn: Conn) -> ProfileRefreshOut:
+    refresher: ProfileRefresher = request.app.state.profiles
+    setting = CallbookStore(conn).refresh_setting()
+    last = refresher.last_report()
+    return ProfileRefreshOut(
+        mode=setting.mode,
+        changed_by=setting.changed_by,
+        changed_at=setting.changed_at,
+        last_checked_at=None if last is None else last.at,
+        network=None if last is None or last.network is None else last.network.value,
+        message=None if last is None else last.message,
+    )
+
+
+@api.get("/callbook/refresh")
+def get_profile_refresh(request: Request, who: Signed, conn: Conn) -> ProfileRefreshOut:
+    """When the Engine re-checks kept QRZ.com profiles in the background, and how it last went."""
+    _require(conn, who, Permission.VIEW)
+    return _profile_refresh_out(request, conn)
+
+
+@api.put("/callbook/refresh")
+def put_profile_refresh(
+    request: Request, body: ProfileRefreshIn, who: Signed, conn: Conn
+) -> ProfileRefreshOut:
+    """Set when kept QRZ.com profiles are re-checked (admins only), and check soon."""
+    _require(conn, who, Permission.ADMIN)
+    CallbookStore(conn).save_refresh_mode(who, body.mode)
+    refresher: ProfileRefresher = request.app.state.profiles
+    refresher.wake()
+    return _profile_refresh_out(request, conn)
+
+
 _CREDIT: Final = {Source.FCC: FCC_CREDIT, Source.ISED: ISED_CREDIT}
 
 
@@ -2892,16 +2943,19 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     qrz_fetch_large: Callable[[str, int], bytes] = http_fetch_large,
     lotw_transport: Transport = https,
     license_downloads: Downloads | None = None,
+    profile_network: Callable[[], NetworkSeen] = look_at_network,
 ) -> FastAPI:
     """The Engine's API and web client, using the PostgreSQL database ``database``.
 
     ``qrz_fetch`` and ``qrz_post`` are how the Engine reaches QRZ.com's lookup
     and logbook services, ``qrz_fetch_large`` its biographies and photos,
     ``lotw_transport`` how it reaches LoTW, and ``license_downloads`` how it
-    fetches the FCC and ISED license lists; tests give them stand-ins. The QRZ
-    logbook sender runs in the background once ``app.state.logbook.start()``
-    is called, and the license lists are kept current once
-    ``app.state.licenses.start()`` is.
+    fetches the FCC and ISED license lists, and ``profile_network`` how it
+    tells which network its internet comes through; tests give them stand-ins.
+    The QRZ logbook sender runs in the background once
+    ``app.state.logbook.start()`` is called, the license lists are kept current
+    once ``app.state.licenses.start()`` is, and kept QRZ.com profiles are
+    re-checked once ``app.state.profiles.start()`` is.
     """
     app = FastAPI(
         title="LabLog Engine",
@@ -2914,6 +2968,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     )
     app.state.database = database
     app.state.qrz = Link(QrzClient(f"LabLog-{__version__}", qrz_fetch, qrz_fetch_large))
+    app.state.profiles = ProfileRefresher(database, app.state.qrz, profile_network)
     app.state.lotw = LotwLink(LotwClient(lotw_transport))
     app.state.licenses = Refresher(
         database, license_downloads or HttpDownloads(f"LabLog/{__version__} ({SOURCE})")
