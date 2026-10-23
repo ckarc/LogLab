@@ -18,15 +18,55 @@
   const GROUPS = ["CW", "Digital", "Phone"];
   let asking = null;
 
-  // The hourly chart and the tables fold away under the tiles. They start
-  // folded; whether the operator last left them open is kept with their
-  // layout, on any workstation. The same element is kept across refreshes so
-  // a refresh never folds or unfolds it.
-  const more = el("details", { className: "stat-more" }, el("summary", { textContent: "Each hour, bands and modes, operators" }));
-  more.addEventListener("toggle", () => {
-    if (more.open !== (LogLab.layout().stats_open === true)) LogLab.useLayout({ stats_open: more.open });
+  // The hourly chart and the tables fold away under the tiles. Pointing at
+  // the folded line opens them over the page, on top of the boxes below, so
+  // nothing moves; they fade away again once the pointer leaves the box. A
+  // tap or Enter opens them too, for tablets and the keyboard. The lock in
+  // the opened part keeps them open in the box itself, taking their room on
+  // the page; whether the operator locked them is kept with their layout
+  // (stats_open), on any workstation. The same elements are kept across
+  // refreshes, so a refresh never opens or closes them.
+  const more = el("div", { className: "stat-more" });
+  const opener = el("button", { type: "button", className: "stat-more-head" });
+  const lock = el("button", { type: "button", className: "stat-lock" });
+  const inside = el("div", { className: "stat-more-body" });
+  more.append(el("div", { className: "stat-more-row" }, opener, lock), inside);
+  let peek = false;
+  const locked = () => LogLab.layout().stats_open === true;
+
+  function showMore() {
+    const pinned = locked();
+    const open = pinned || peek;
+    more.classList.toggle("pinned", pinned);
+    more.classList.toggle("peek", peek && !pinned);
+    box.classList.toggle("raised", peek && !pinned); // above the boxes below it
+    opener.textContent = `${open ? "▾" : "▸"} Each hour, bands and modes, operators`;
+    opener.setAttribute("aria-expanded", String(open));
+    lock.hidden = !open;
+    lock.textContent = pinned ? "🔒" : "🔓";
+    lock.setAttribute("aria-pressed", String(pinned));
+    lock.title = pinned ? "Locked open: click to let it fold away again" : "Lock it open, taking its room in the box";
+    lock.setAttribute("aria-label", lock.title);
+  }
+  const setPeek = (on) => {
+    if (peek === on) return;
+    peek = on;
+    showMore();
+  };
+
+  opener.addEventListener("pointerenter", (e) => { if (e.pointerType === "mouse") setPeek(true); });
+  opener.addEventListener("click", () => { if (!locked()) setPeek(!peek); });
+  box.addEventListener("pointerleave", (e) => { if (e.pointerType === "mouse") setPeek(false); });
+  box.addEventListener("keydown", (e) => { if (e.key === "Escape" && peek) { setPeek(false); opener.focus(); } });
+  document.addEventListener("pointerdown", (e) => { if (peek && !box.contains(e.target)) setPeek(false); });
+  lock.addEventListener("click", () => {
+    const pin = !locked();
+    peek = false;
+    LogLab.useLayout({ stats_open: pin });
+    showMore();
   });
-  document.addEventListener("loglab:layout-loaded", () => { more.open = LogLab.layout().stats_open === true; });
+  document.addEventListener("loglab:layout-loaded", () => { peek = false; showMore(); });
+  showMore();
 
   const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const hhmm = (iso) => `${iso.slice(11, 13)}${iso.slice(14, 16)}Z`;
@@ -128,7 +168,7 @@
       if (part) panels.append(part);
     }
     if (panels.children.length) {
-      more.replaceChildren(more.firstChild, panels);
+      inside.replaceChildren(panels);
       parts.push(more);
     }
     const notes = [];
