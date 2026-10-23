@@ -1980,8 +1980,9 @@
     // In an operation the Log shows the operator's own QSOs or the whole club's.
     const inOperation = Boolean($("#log-operation").value);
     $("#log-whose").hidden = !inOperation;
-    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
-      b.setAttribute("aria-pressed", String((b.dataset.whose === "mine") === layout.log_mine));
+    $("#log-club").setAttribute("aria-checked", String(!layout.log_mine));
+    for (const side of document.querySelectorAll("#log-whose [data-whose]")) {
+      side.classList.toggle("on", (side.dataset.whose === "mine") === layout.log_mine);
     }
     if (inOperation && layout.log_mine) params.set("mine", "true");
     let qsos;
@@ -2628,12 +2629,15 @@
       searchTimer = setTimeout(loadLog, 250);
     });
     $("#show-deleted").addEventListener("change", loadLog);
-    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
-      b.addEventListener("click", () => {
-        layout.log_mine = b.dataset.whose === "mine";
-        saveLayout();
-        loadLog();
-      });
+    // A slide between My QSOs and Club QSOs; either name moves it there.
+    const showMine = (mine) => {
+      layout.log_mine = mine;
+      saveLayout();
+      loadLog();
+    };
+    $("#log-club").addEventListener("click", () => showMine(!layout.log_mine));
+    for (const side of document.querySelectorAll("#log-whose [data-whose]")) {
+      side.addEventListener("click", () => showMine(side.dataset.whose === "mine"));
     }
     $("#close-detail").addEventListener("click", closeDetail);
     $("#detail").addEventListener("close", () => { current = null; }); // Esc closes it too
