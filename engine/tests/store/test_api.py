@@ -280,6 +280,7 @@ LAYOUT = {
     "world_qsos": 120,
     "bio_open": True,
     "distance_unit": "km",
+    "log_mine": False,
 }
 
 
@@ -303,7 +304,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
         "layout": {**changed, "tables": {}, "panels": {}, "detail": None, "theme": "auto"}
         | {"operation": None, "by_overlay": {}, "world_qsos": 50}
-        | {"bio_open": False, "distance_unit": "mi"}
+        | {"bio_open": False, "distance_unit": "mi", "log_mine": True}
     }
 
 
