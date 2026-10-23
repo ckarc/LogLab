@@ -305,6 +305,29 @@ class IdentityStore:
         session_id, callsign, station = row
         return Actor(callsign, station, session_id)
 
+    def at_station(self, station: str) -> Actor | None:
+        """Who is signed in at ``station`` now: the latest live session there, if any.
+
+        A program on the station's computer (WSJT-X, through the Station
+        Agent) logs as this operator, as if they had typed the QSO there.
+        """
+        row = self._conn.execute(
+            """
+            SELECT s.id, o.callsign, st.name
+            FROM log.session s
+            JOIN log.operator o ON o.id = s.operator_id
+            JOIN log.station st ON st.id = s.station_id
+            WHERE st.name = %s AND log.session_live(s.id)
+            ORDER BY s.started_at DESC
+            LIMIT 1
+            """,
+            (station,),
+        ).fetchone()
+        if row is None:
+            return None
+        session_id, callsign, name = row
+        return Actor(callsign, name, session_id)
+
     def sign_out(self, token: str) -> None:
         """End the token's session. Signing out of an ended session does nothing."""
         self._conn.execute(

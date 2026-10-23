@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import time
 import uuid
 from collections import Counter
@@ -62,7 +63,7 @@ from pydantic import (
 from starlette.concurrency import run_in_threadpool
 
 from loglab_engine import __version__
-from loglab_engine.adif import AdifModelError, Record
+from loglab_engine.adif import AdifDocument, AdifModelError, AdiParseError, Record, parse_adi
 from loglab_engine.adif import Field as AdifField
 from loglab_engine.callbook import (
     Callbook,
@@ -93,6 +94,7 @@ from loglab_engine.lotw import (
     LotwClient,
     Place,
     Setup,
+    Skipped,
     Transport,
     https,
 )
@@ -120,6 +122,7 @@ from loglab_engine.rig import Radio, RigBoard, RigMode, RigState, adif_mode, ban
 from loglab_engine.store import (
     Actor,
     ArchivedError,
+    DuplicateImportError,
     IdentityStore,
     LogStore,
     NotAuthorizedError,
@@ -138,7 +141,7 @@ from loglab_engine.store import (
 from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
 from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
-from loglab_engine.store.lotw import LotwAccountStore
+from loglab_engine.store.lotw import BatchQso, LotwAccountStore, LotwBatch
 from loglab_engine.store.operation import (
     Operation,
     OperationNotFoundError,
@@ -160,6 +163,10 @@ MAX_NAME: Final = 64
 MAX_NOTE: Final = 1000
 MAX_LIST: Final = 500
 MAX_P12_BASE64: Final = 96 * 1024
+# An ADIF file the web client takes in, in base64: about 30 MB of ADIF, or
+# some 100,000 QSOs. Bigger logs go in with ``loglab-log import``.
+MAX_IMPORT_BASE64: Final = 40 * 1024 * 1024
+MAX_IMPORT_WARNINGS: Final = 20
 # The web client loads nothing from anywhere else, so it works offline (Principle V).
 _CSP: Final = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -425,7 +432,8 @@ class DemoOut(BaseModel):
 
     ``operation`` is the practice operation they log in; ``qsos`` how many
     they have logged since it was turned on; ``problem`` why it stopped by
-    itself, if it did.
+    itself, if it did; ``erased`` how many pretend QSOs turning it off just
+    erased.
     """
 
     on: bool
@@ -436,6 +444,7 @@ class DemoOut(BaseModel):
     qsos: int
     stations: list[str]
     problem: str | None
+    erased: int | None = None
 
 
 class RadioOut(BaseModel):
@@ -685,7 +694,9 @@ class Layout(_Strict):
     ``log_mine`` is whether the Log, in an operation, shows only the
     operator's own QSOs rather than everyone's.
     ``bio_open`` is whether the station profile shows a biography opened
-    (closed until the operator opens one). ``distance_unit`` is how the
+    (closed until the operator opens one). ``stats_open`` is whether the
+    Operation stats box shows its hourly chart and tables unfolded (folded
+    until the operator opens them). ``distance_unit`` is how the
     station profile gives the distance to a station, in miles or kilometres.
     """
 
@@ -701,6 +712,7 @@ class Layout(_Strict):
     )
     world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
     bio_open: bool = False
+    stats_open: bool = False
     log_mine: bool = True
     distance_unit: Literal["mi", "km"] = "mi"
 
@@ -1170,6 +1182,65 @@ def _record(fields: list[AdifFieldModel]) -> Record:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
 
 
+class AdifImportIn(_Strict):
+    """An ADIF file to take into the log, in base64, and the operation to log it in.
+
+    With ``operation``, each QSO gets the operation's fields as if it had
+    been typed there (see :class:`OperationRef`), and QSOs made outside the
+    operation's hours are left out.
+    """
+
+    file_name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    data_base64: Annotated[str, StringConstraints(min_length=1, max_length=MAX_IMPORT_BASE64)]
+    operation: OperationRef | None = None
+    note: Annotated[str, StringConstraints(max_length=MAX_NOTE)] | None = None
+
+
+class AdifImportOut(BaseModel):
+    """What happened to each QSO in an imported file.
+
+    Every record is counted once: ``added``, ``already_logged``,
+    ``already_deleted``, ``repeated`` (the same contact earlier in the same
+    file), ``outside_hours`` or ``no_time``. ``already_imported`` names the
+    earlier import when this exact file was taken in before, and then
+    nothing is added.
+    """
+
+    file_name: str
+    records: int
+    import_id: int | None
+    added: int
+    already_logged: int
+    already_deleted: int
+    repeated: int
+    outside_hours: int
+    no_time: int
+    already_imported: int | None
+    warnings: list[str]
+
+
+class AgentQsoIn(_Strict):
+    """A QSO a program on the station's computer logged, sent by its Station Agent.
+
+    ``adif`` is the program's own ADIF for the one QSO, exactly as it sent
+    it (WSJT-X's "Logged ADIF" message, say); ``id`` is the one the Agent
+    gave it in its journal, so a re-send never logs it twice (Principle XV).
+    """
+
+    id: Annotated[uuid.UUID, Field(strict=False)]
+    adif: Annotated[str, StringConstraints(min_length=1, max_length=MAX_VALUE)]
+    program: Annotated[str, StringConstraints(min_length=1, max_length=MAX_NAME)]
+
+
+class AgentQsoOut(BaseModel):
+    """What became of a QSO an Agent sent."""
+
+    qso_id: uuid.UUID
+    created: bool
+    operator: str
+    message: str
+
+
 class LotwCertificateIn(_Strict):
     """A LoTW callsign certificate: TrustedQSL's ``.p12`` file, in base64, and its password."""
 
@@ -1210,8 +1281,39 @@ class LotwCertificateOut(BaseModel):
     expires: datetime
 
 
+class LotwBatchQsoOut(BaseModel):
+    """A QSO in a LoTW batch, as it was when the batch was prepared."""
+
+    id: uuid.UUID
+    version: int
+    call: str | None
+    qso_start: datetime | None
+    band: str | None
+    mode: str | None
+    sent: bool
+
+
+class LotwBatchOut(BaseModel):
+    """A batch of QSOs for LoTW.
+
+    ``state`` is ``ready`` (waiting for the operator's review), ``sent`` or
+    ``cancelled``. LoTW numbers neither uploads nor QSOs, so ``id`` is
+    LabLog's own batch number. ``qsos`` is listed only for one batch.
+    """
+
+    id: int
+    station_call: str
+    state: str
+    prepared_at: datetime
+    finished_at: datetime | None
+    answer: str | None
+    count: int
+    sent: int
+    qsos: list[LotwBatchQsoOut] | None = None
+
+
 class LotwSetupOut(BaseModel):
-    """The operator's LoTW set-up, and how many of their QSOs wait to be sent.
+    """The operator's LoTW set-up, how many of their QSOs wait, and any batch to review.
 
     ``problem`` says what stops sending, if anything is set up wrongly.
     """
@@ -1223,6 +1325,7 @@ class LotwSetupOut(BaseModel):
     qsl_since: str | None
     problem: str | None
     message: str
+    batch: LotwBatchOut | None
 
 
 class LotwSkippedOut(BaseModel):
@@ -1233,8 +1336,22 @@ class LotwSkippedOut(BaseModel):
     reason: str
 
 
+class LotwPrepareOut(BaseModel):
+    """What preparing a batch did; nothing is sent until the batch is.
+
+    ``status`` is ``done``, ``nothing``, ``not_set_up`` or
+    ``certificate_problem``.
+    """
+
+    status: str
+    batch: LotwBatchOut | None
+    skipped: list[LotwSkippedOut]
+    remaining: int
+    message: str
+
+
 class LotwUploadOut(BaseModel):
-    """What sending did.
+    """What sending a batch did.
 
     ``status`` is ``done``, ``nothing``, ``not_set_up``, ``unreachable``,
     ``rejected`` or ``certificate_problem``.
@@ -2014,14 +2131,21 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
     On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
     Field Day (set up now if need be), and log pretend QSOs with real calls
-    from the license lists, each marked pretend, in this administrator's session (Principles VII,
-    XIII and XX). Off, they leave the air; their QSOs stay in the practice
-    operation, which never uploads to LoTW or QRZ.com.
+    from the license lists, each marked pretend, in this administrator's
+    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    Field Day is erased, the erasure recorded (Principle VII, as amended in
+    Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
     """
     _require(conn, who, Permission.ADMIN)
     if not body.on:
         demo.stop()
-        return _demo_out(demo)
+        store = LogStore(conn)
+        erased = sum(
+            store.erase_pretend(op.id, actor=who)
+            for op in OperationStore(conn).list(include_ended=True)
+            if op.practice and op.name == DEMO_NAME
+        )
+        return _demo_out(demo).model_copy(update={"erased": erased})
     op = _demo_operation(conn, who)
     found = _find(conn, op.overlay, include_retired=True)
     if found is None:
@@ -2124,6 +2248,82 @@ def report_rig(body: AgentReportIn, station: AgentStation, rigs: Rigs) -> None:
             problem=body.problem if radio is None else None,
             heard_at=datetime.now(UTC),
         )
+    )
+
+
+def _chosen_operation(conn: Conn, who: Actor) -> OperationRef | None:
+    """The operation the operator is logging in now, as their saved layout says."""
+    layout = WorkspaceStore(conn).layout(who) or {}
+    chosen = layout.get("operation")
+    if not isinstance(chosen, dict):
+        return None
+    try:
+        return OperationRef.model_validate(chosen)
+    except ValidationError:
+        return None
+
+
+@api.post("/agent/qsos", status_code=status.HTTP_201_CREATED)
+def agent_log_qso(
+    body: AgentQsoIn, station: AgentStation, conn: Conn, response: Response, sync: Sync
+) -> AgentQsoOut:
+    """Log a QSO a program at the Agent's station logged, as the operator signed in there.
+
+    The QSO is logged exactly as if that operator had typed it at that
+    station: in the operation they chose, with its fields and its hours
+    (Principle XIII). With nobody signed in at the station, it is refused
+    with 503, and the Agent keeps it in its journal until someone signs in
+    (Principle XV). A QSO already in the log, the same call, band and mode
+    in the same UTC minute, is answered with that QSO, never logged twice.
+    """
+    who = IdentityStore(conn).at_station(station)
+    if who is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"nobody is signed in to LabLog at {station}",
+        )
+    if not IdentityStore(conn).may(who, Permission.LOG):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"{who.operator}, signed in at {station}, may not log"
+        )
+    try:
+        parsed = parse_adi(body.adif.encode())
+    except AdiParseError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.program} sent ADIF LabLog can't read: {error}",
+        ) from error
+    if len(parsed.document.records) != 1:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.program} sent {len(parsed.document.records)} QSOs; one at a time, please",
+        )
+    record = parsed.document.records[0]
+    ref = _chosen_operation(conn, who)
+    if ref is not None:
+        made = _made({f.name.upper(): f.value for f in reversed(record.fields)})
+        found, station_fields, _ = _station(conn, who, ref, made)
+        record = stamp(record, found, station_fields)
+    store = LogStore(conn)
+    match = store.already_logged([record])[0]
+    if match is not None and match.qso_id != body.id:
+        response.status_code = status.HTTP_200_OK
+        return AgentQsoOut(
+            qso_id=match.qso_id,
+            created=False,
+            operator=who.operator,
+            message=f"{record.get('CALL') or 'That QSO'} is already in the log; nothing was added.",
+        )
+    note = f"Logged in {body.program} at {station}; sent by its Station Agent."
+    version, created = store.enter_qso(record, actor=who, qso_id=body.id, note=note)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    sync.wake()
+    return AgentQsoOut(
+        qso_id=version.qso_id,
+        created=created,
+        operator=who.operator,
+        message=_written(version, created=created).message,
     )
 
 
@@ -2598,6 +2798,134 @@ def create_qso(
     return _written(version, created=created)
 
 
+def _contact(record: Record) -> tuple[str, datetime, str, str] | None:
+    """What makes two records the same contact (as :meth:`LogStore.already_logged` decides)."""
+    fields = {f.name.upper(): f.value for f in reversed(record.fields)}
+    call = fields.get("CALL", "").strip().upper()
+    made = _made(fields)
+    if not call or made is None:
+        return None
+    return (
+        call,
+        made,
+        fields.get("BAND", "").strip().lower(),
+        fields.get("MODE", "").strip().upper(),
+    )
+
+
+def _in_operation(
+    conn: Conn, who: Actor, ref: OperationRef, records: list[Record], out: AdifImportOut
+) -> list[Record]:
+    """The records made during the operation's hours, each with the operation's fields added."""
+    found, station, op = _station(conn, who, ref, hours=False)
+    kept: list[Record] = []
+    for record in records:
+        made = _made({f.name.upper(): f.value for f in reversed(record.fields)})
+        if made is None:
+            out.no_time += 1
+        elif not op.open_at(made):
+            out.outside_hours += 1
+        else:
+            kept.append(stamp(record, found, station))
+    return kept
+
+
+def _not_yet_logged(store: LogStore, records: list[Record], out: AdifImportOut) -> list[Record]:
+    """The records that are not in the log yet, each contact once."""
+    new: list[Record] = []
+    seen: set[tuple[str, datetime, str, str]] = set()
+    for record, match in zip(records, store.already_logged(records), strict=True):
+        if match is not None:
+            if match.deleted:
+                out.already_deleted += 1
+            else:
+                out.already_logged += 1
+            continue
+        contact = _contact(record)
+        if contact is not None:
+            if contact in seen:
+                out.repeated += 1
+                continue
+            seen.add(contact)
+        new.append(record)
+    return new
+
+
+@api.post("/imports", status_code=status.HTTP_201_CREATED)
+def import_adif(
+    body: AdifImportIn, who: Signed, conn: Conn, response: Response, sync: Sync
+) -> AdifImportOut:
+    """Take in the QSOs of an ADIF file that the log does not already have.
+
+    A QSO already in the log (the same call, band and mode in the same UTC
+    minute) is left alone, so a program's log file can be taken in again and
+    again and only its new QSOs are added (Principle XV). One that was
+    deleted stays deleted (Principle VII). Every field of every QSO taken in
+    is kept as the file has it (Principle IV); the import as a whole is one
+    audited change (Principle VII), all or nothing (Principle XIV).
+    """
+    _require(conn, who, Permission.LOG)
+    try:
+        data = base64.b64decode(body.data_base64, validate=True)
+    except binascii.Error as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not base64"
+        ) from error
+    try:
+        parsed = parse_adi(data)
+    except AdiParseError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.file_name} is not an ADIF file LabLog can read: {error}",
+        ) from error
+    warnings = [
+        f"{'header' if w.record is None else f'QSO {w.record}'}"
+        f"{f' {w.field}' if w.field else ''}: {w.message}"
+        for w in parsed.warnings[:MAX_IMPORT_WARNINGS]
+    ]
+    records = list(parsed.document.records)
+    out = AdifImportOut(
+        file_name=body.file_name,
+        records=len(records),
+        import_id=None,
+        added=0,
+        already_logged=0,
+        already_deleted=0,
+        repeated=0,
+        outside_hours=0,
+        no_time=0,
+        already_imported=None,
+        warnings=warnings,
+    )
+    sha256 = hashlib.sha256(data).hexdigest()
+    store = LogStore(conn)
+    with conn.transaction():
+        out.already_imported = store.import_of_file(sha256)
+        if out.already_imported is not None:
+            response.status_code = status.HTTP_200_OK
+            return out
+        if body.operation is not None:
+            records = _in_operation(conn, who, body.operation, records, out)
+        new = _not_yet_logged(store, records, out)
+        if new:
+            try:
+                summary = store.import_document(
+                    AdifDocument(parsed.document.header, tuple(new)),
+                    file_name=body.file_name,
+                    file_sha256=sha256,
+                    actor=who,
+                    note=body.note,
+                )
+            except DuplicateImportError as error:  # imported meanwhile, from another workstation
+                raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+            out.import_id = summary.import_id
+            out.added = len(summary.qso_ids)
+    if not new:
+        response.status_code = status.HTTP_200_OK
+    sync.wake()
+    return out
+
+
 @api.put("/qsos/{qso_id}")
 def edit_qso(qso_id: uuid.UUID, body: QsoEdit, who: Signed, conn: Conn, sync: Sync) -> QsoWritten:
     """Replace a QSO's fields as a new version; refused if it changed since ``base_version``."""
@@ -2889,6 +3217,11 @@ def _setup_out(setup: Setup) -> LotwSetupOut:
         message = "LoTW is not set up."
     elif location is None:
         message = f"Certificate for {cert.call} saved. Add your station location to send QSOs."
+    elif setup.batch is not None:
+        n = setup.batch.count
+        message = (
+            f"Batch {setup.batch.id} ({n} QSO{'' if n == 1 else 's'}) is waiting for your review."
+        )
     else:
         waiting = setup.waiting
         message = (
@@ -2922,7 +3255,39 @@ def _setup_out(setup: Setup) -> LotwSetupOut:
         qsl_since=setup.qsl_since,
         problem=setup.problem,
         message=setup.problem or message,
+        batch=None if setup.batch is None else _batch_out(setup.batch),
     )
+
+
+def _batch_out(batch: LotwBatch, qsos: tuple[BatchQso, ...] | None = None) -> LotwBatchOut:
+    return LotwBatchOut(
+        id=batch.id,
+        station_call=batch.station_call,
+        state=batch.state,
+        prepared_at=batch.prepared_at,
+        finished_at=batch.finished_at,
+        answer=batch.answer,
+        count=batch.count,
+        sent=batch.sent,
+        qsos=None
+        if qsos is None
+        else [
+            LotwBatchQsoOut(
+                id=q.qso_id,
+                version=q.version,
+                call=q.call,
+                qso_start=q.qso_start,
+                band=q.band,
+                mode=q.mode,
+                sent=q.sent,
+            )
+            for q in qsos
+        ],
+    )
+
+
+def _skipped_out(skipped: tuple[Skipped, ...]) -> list[LotwSkippedOut]:
+    return [LotwSkippedOut(id=s.qso_id, call=s.call, reason=s.reason) for s in skipped]
 
 
 @api.get("/lotw")
@@ -2991,22 +3356,73 @@ def delete_lotw(who: Signed, lotw: LotwService) -> None:
     lotw.remove(who)
 
 
-@api.post("/lotw/upload")
-def lotw_upload(who: Signed, conn: Conn, lotw: LotwService) -> LotwUploadOut:
-    """Sign the operator's waiting QSOs with their certificate and send them to LoTW.
+@api.post("/lotw/batches")
+def lotw_prepare(who: Signed, conn: Conn, lotw: LotwService) -> LotwPrepareOut:
+    """Gather the operator's waiting QSOs into a batch for review. Nothing is sent.
 
-    Always answers 200; ``status`` says what happened. QSOs LoTW accepted get
-    ``LOTW_QSL_SENT`` ``Y``, as a new audited version (Principle VII).
+    Always answers 200; ``status`` says what happened. While a batch waits for
+    review, this answers with it rather than making another.
     """
     _require(conn, who, Permission.LOG)
-    result = lotw.upload(who)
-    return LotwUploadOut(
+    result = lotw.prepare(who)
+    batch = None
+    if result.batch is not None:
+        found = lotw.batch(who, result.batch.id)
+        batch = None if found is None else _batch_out(*found)
+    return LotwPrepareOut(
         status=result.outcome.value,
-        sent=result.sent,
-        skipped=[LotwSkippedOut(id=s.qso_id, call=s.call, reason=s.reason) for s in result.skipped],
+        batch=batch,
+        skipped=_skipped_out(result.skipped),
         remaining=result.remaining,
         message=result.message,
     )
+
+
+@api.get("/lotw/batches")
+def lotw_batches(who: Signed, lotw: LotwService) -> list[LotwBatchOut]:
+    """The operator's latest LoTW batches, newest first."""
+    return [_batch_out(b) for b in lotw.batches(who)]
+
+
+@api.get("/lotw/batches/{batch_id}")
+def lotw_batch(batch_id: int, who: Signed, lotw: LotwService) -> LotwBatchOut:
+    """One of the operator's LoTW batches, with its QSOs as they were when prepared."""
+    found = lotw.batch(who, batch_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"you have no LoTW batch {batch_id}")
+    return _batch_out(*found)
+
+
+@api.post("/lotw/batches/{batch_id}/send")
+def lotw_send(batch_id: int, who: Signed, conn: Conn, lotw: LotwService) -> LotwUploadOut:
+    """Sign the QSOs in the operator's reviewed batch and send them to LoTW.
+
+    Always answers 200; ``status`` says what happened. QSOs LoTW took get
+    ``LOTW_QSL_SENT`` ``Y``, as a new audited version (Principle VII). A QSO
+    changed since the batch was prepared is not sent.
+    """
+    _require(conn, who, Permission.LOG)
+    result = lotw.release(who, batch_id)
+    return LotwUploadOut(
+        status=result.outcome.value,
+        sent=result.sent,
+        skipped=_skipped_out(result.skipped),
+        remaining=result.remaining,
+        message=result.message,
+    )
+
+
+@api.post("/lotw/batches/{batch_id}/cancel")
+def lotw_cancel(batch_id: int, who: Signed, conn: Conn, lotw: LotwService) -> LotwBatchOut:
+    """Cancel the operator's batch waiting for review; its QSOs keep waiting. Nothing is sent."""
+    _require(conn, who, Permission.LOG)
+    if not lotw.cancel(who, batch_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"LoTW batch {batch_id} is not waiting for review"
+        )
+    found = lotw.batch(who, batch_id)
+    assert found is not None  # noqa: S101 - it was just cancelled
+    return _batch_out(*found)
 
 
 @api.post("/lotw/download")

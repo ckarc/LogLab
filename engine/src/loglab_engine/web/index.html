@@ -19,6 +19,7 @@
   <link rel="stylesheet" href="/static/licenses.css">
   <link rel="stylesheet" href="/static/radio.css">
   <link rel="stylesheet" href="/static/agents.css">
+  <link rel="stylesheet" href="/static/import.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
@@ -36,6 +37,7 @@
   <script src="/static/cleanup.js" defer></script>
   <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
+  <script src="/static/import.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -139,12 +141,6 @@
         </div>
       </section>
 
-      <section id="journal" class="card module" data-module="journal" hidden>
-        <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
-        <ul id="journal-list"></ul>
-        <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
-      </section>
-
       <section class="card module" data-module="log">
         <h2>Log
           <span id="log-whose" class="segmented log-whose" role="group" aria-label="Whose QSOs the Log shows" hidden>
@@ -161,7 +157,7 @@
           <button type="button" id="lotw-open" class="link lotw-open">LoTW</button>
         </div>
         <div id="op-tally" class="op-tally" hidden></div>
-        <div class="table-wrap">
+        <div id="log-wrap" class="table-wrap log-wrap">
           <table id="log">
             <thead><tr></tr></thead>
             <tbody></tbody>
@@ -296,6 +292,17 @@
       </section>
 
       </div>
+
+      <!-- QSOs this browser holds that the Engine has not logged yet. Not a
+           box: it pops up over the corner of the page whenever one is
+           waiting and stays until every one is logged (Principle XV). It
+           never blocks the page, so logging goes on while the Engine is out
+           of reach. -->
+      <section id="journal" class="card journal-pop" role="status" aria-live="polite" hidden>
+        <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
+        <ul id="journal-list"></ul>
+        <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
+      </section>
     </div>
   </main>
 
@@ -349,6 +356,7 @@
         <div class="menu-items">
           <button type="button" id="op-new" class="link">Set up an operation</button>
           <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
+          <button type="button" id="import-open" class="link">Import an ADIF file</button>
         </div>
         <p id="op-error" class="error" role="alert"></p>
       </div>
@@ -391,7 +399,7 @@
         </div>
         <div id="demo-row" class="demo-row" hidden>
           <label class="inline"><input type="checkbox" id="demo-on"> Demo mode</label>
-          <p id="demo-status" class="hint">Pretend operators go on the air and log made-up QSOs in a practice operation, so every box has something to show. Nothing is uploaded.</p>
+          <p id="demo-status" class="hint">Pretend operators go on the air and log pretend QSOs with real calls in a practice operation, so every box has something to show. Nothing is uploaded, and turning it off erases them.</p>
           <button type="button" id="demo-watch" class="link" hidden>Watch it here</button>
         </div>
         <p id="demo-error" class="error" role="alert"></p>
@@ -428,6 +436,27 @@
         <button type="button" id="op-archive" class="danger" hidden>Archive</button>
         <button type="button" id="op-cancel" class="secondary">Cancel</button>
       </div>
+      <p class="error" role="alert"></p>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog" class="card qrz-dialog import-dialog" aria-labelledby="import-title">
+    <h2 id="import-title">Import an ADIF file</h2>
+    <p class="hint">Bring in the QSOs from another program's log, such as WSJT-X's wsjtx_log.adi. QSOs LabLog already has (the same call, band and mode in the same UTC minute) are left alone, so you can import the same program's log again later and only its new QSOs come in. A QSO you deleted stays deleted. Every field in the file is kept as it is.</p>
+    <form id="import-form" autocomplete="off">
+      <label>ADIF file <input name="file" type="file" accept=".adi,.adif,.txt" required></label>
+      <fieldset id="import-where" class="import-where" hidden>
+        <legend>Log them in</legend>
+        <label class="inline"><input type="radio" name="where" value="operation" checked> <span id="import-op-name"></span>: only QSOs made during its hours, logged as if typed there</label>
+        <label class="inline"><input type="radio" name="where" value="none"> No operation: older QSOs, kept just as the file has them</label>
+      </fieldset>
+      <p class="hint">If your QRZ.com logbook is set up, new QSOs are copied there like typed ones. Nothing goes to LoTW until you press Send there.</p>
+      <div class="actions">
+        <button type="submit">Import</button>
+        <button type="button" id="import-close" class="secondary">Close</button>
+      </div>
+      <p id="import-result" class="notice" aria-live="polite"></p>
+      <ul id="import-warnings" class="import-warnings"></ul>
       <p class="error" role="alert"></p>
     </form>
   </dialog>
@@ -526,17 +555,32 @@
       <h2>Logbook of the World</h2>
       <button type="button" id="lotw-close" class="secondary small">Close</button>
     </div>
-    <p class="hint">LabLog signs your QSOs with your own LoTW callsign certificate and sends them when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here until you send them.</p>
+    <p class="hint">Nothing goes to LoTW as you log. When you're ready, LabLog gathers your waiting QSOs into a numbered batch for you to check, and sends that batch, signed with your own LoTW callsign certificate, only when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here.</p>
     <p id="lotw-state" class="notice" aria-live="polite"></p>
 
     <section id="lotw-actions" class="lotw-part" hidden>
       <div class="actions">
-        <button type="button" id="lotw-send">Send to LoTW</button>
+        <button type="button" id="lotw-prepare">Prepare a batch</button>
         <button type="button" id="lotw-fetch" class="secondary">Fetch confirmations</button>
+      </div>
+      <div id="lotw-batch" class="lotw-batch" hidden>
+        <h3 id="lotw-batch-title"></h3>
+        <p class="hint">Check these QSOs. Nothing has gone to LoTW yet. A QSO you edit before sending stays behind for a later batch.</p>
+        <div class="lotw-batch-table"><table class="lotw-qsos"><thead><tr><th>Date (UTC)</th><th>Time</th><th>Call</th><th>Band</th><th>Mode</th></tr></thead><tbody></tbody></table></div>
+        <div class="actions">
+          <button type="button" id="lotw-send">Send this batch to LoTW</button>
+          <button type="button" id="lotw-cancel" class="secondary">Cancel batch</button>
+        </div>
       </div>
       <p id="lotw-result" class="hint" aria-live="polite"></p>
       <ul id="lotw-skipped" class="lotw-skipped"></ul>
     </section>
+
+    <details id="lotw-history-part" class="lotw-part" hidden>
+      <summary>Past batches</summary>
+      <p class="hint">LoTW doesn't number uploads or QSOs, so LabLog numbers its batches. Open one to see exactly what went in it.</p>
+      <div id="lotw-history"></div>
+    </details>
 
     <details id="lotw-cert-part" class="lotw-part">
       <summary>Callsign certificate</summary>

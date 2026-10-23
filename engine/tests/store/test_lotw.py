@@ -8,6 +8,7 @@ from __future__ import annotations
 import base64
 from typing import TYPE_CHECKING, Any
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
 
@@ -20,7 +21,6 @@ from .conftest import ADMIN_SECRET, VISITOR_SECRET, conninfo
 from .test_qrz_logbook import KEY, FakeLogbook
 
 if TYPE_CHECKING:
-    import psycopg
     from psycopg.rows import TupleRow
 
     from loglab_engine.callbook.logbook_sync import LogbookSync
@@ -88,6 +88,15 @@ def _post(client: TestClient, headers: dict[str, str], path: str) -> dict[str, A
     return response.json()  # type: ignore[no-any-return]
 
 
+def _send(client: TestClient, headers: dict[str, str]) -> dict[str, Any]:
+    """Prepare a batch of the waiting QSOs, then send it, as the operator does."""
+    prepared = _post(client, headers, "batches")
+    if prepared["batch"] is None:
+        return {**prepared, "sent": 0}
+    sent = _post(client, headers, f"batches/{prepared['batch']['id']}/send")
+    return {**sent, "skipped": prepared["skipped"] + sent["skipped"]}
+
+
 def _set_up(
     client: TestClient, headers: dict[str, str], p12: bytes | None = None
 ) -> dict[str, Any]:
@@ -122,7 +131,7 @@ def test_with_nothing_set_up_lotw_says_so_and_logging_is_unchanged(
     assert setup["certificate"] is None
     assert setup["message"] == "LoTW is not set up."
     _log(client, k9ksu, qso())
-    assert _post(client, k9ksu, "upload")["status"] == "not_set_up"
+    assert _send(client, k9ksu)["status"] == "not_set_up"
     assert _post(client, k9ksu, "download")["status"] == "not_set_up"
     assert lotw.uploads == []
     assert lotw.queries == []
@@ -178,10 +187,10 @@ def test_waiting_qsos_are_signed_sent_and_marked_as_a_new_audited_version(
     first = _log(client, k9ksu, qso("W1AW", FREQ="14.205"))
     second = _log(client, k9ksu, qso("N0OY", MODE="MFSK", SUBMODE="FT4", BAND="40m"))
     assert client.get("/api/v1/lotw", headers=k9ksu).json()["waiting"] == 2
-    sent = _post(client, k9ksu, "upload")
+    sent = _send(client, k9ksu)
     assert sent["status"] == "done"
     assert sent["sent"] == 2
-    assert sent["message"].startswith("LoTW accepted 2 QSOs.")
+    assert sent["message"].startswith("Batch 1 sent. LoTW queued 2 QSOs.")
     [upload] = lotw.uploads
     assert [c["SIGNDATA"] for c in upload] == [
         "4EM187ELLISKS20MW1AW14.205SSB2026-10-1718:05:00Z",
@@ -196,10 +205,10 @@ def test_waiting_qsos_are_signed_sent_and_marked_as_a_new_audited_version(
             (1, "create", "K9KSU"),
             (2, "edit", "K9KSU"),
         ]
-        assert history[1]["note"] == "Sent to LoTW"
+        assert history[1]["note"] == "Sent to LoTW in batch 1"
     # Nothing is sent twice.
     assert client.get("/api/v1/lotw", headers=k9ksu).json()["waiting"] == 0
-    again = _post(client, k9ksu, "upload")
+    again = _send(client, k9ksu)
     assert again["status"] == "nothing"
     assert len(lotw.uploads) == 1
 
@@ -211,12 +220,12 @@ def test_with_no_internet_nothing_changes_and_lotw_is_left_alone_for_a_minute(
     _set_up(client, k9ksu)
     qso_id = _log(client, k9ksu, qso())
     lotw.online = False
-    result = _post(client, k9ksu, "upload")
+    result = _send(client, k9ksu)
     assert result["status"] == "unreachable"
     assert "can't be reached" in result["message"]
     assert "LOTW_QSL_SENT" not in _fields(client, k9ksu, qso_id)
     lotw.online = True
-    assert _post(client, k9ksu, "upload")["status"] == "unreachable"  # not tried again yet
+    assert _send(client, k9ksu)["status"] == "unreachable"  # not tried again yet
     assert _post(client, k9ksu, "download")["status"] == "unreachable"
     assert lotw.uploads == []
     assert lotw.queries == []
@@ -229,7 +238,7 @@ def test_a_refused_upload_changes_nothing(
     _set_up(client, k9ksu)
     qso_id = _log(client, k9ksu, qso())
     lotw.refuse = "Certificate not issued by LoTW"
-    result = _post(client, k9ksu, "upload")
+    result = _send(client, k9ksu)
     assert result["status"] == "rejected"
     assert result["message"] == "LoTW refused the upload: Certificate not issued by LoTW"
     assert "LOTW_QSL_SENT" not in _fields(client, k9ksu, qso_id)
@@ -248,7 +257,7 @@ def test_only_the_certificate_s_own_signable_qsos_are_sent(
     bad_band = _log(client, k9ksu, qso("K0ABC", BAND="21m"))
     elsewhere = _log(client, k9ksu, qso("K0DEF", MY_GRIDSQUARE="DM79"))
     early = _log(client, k9ksu, qso("K0GHI", QSO_DATE="19850101"))
-    result = _post(client, k9ksu, "upload")
+    result = _send(client, k9ksu)
     assert result["status"] == "done"
     assert result["sent"] == 1
     assert [c["CALL"] for c in lotw.uploads[0]] == ["N0OY"]
@@ -350,7 +359,7 @@ def test_a_set_up_belongs_to_its_operator(
     _set_up(client, k9ksu)
     _log(client, k9ksu, qso())
     assert client.get("/api/v1/lotw", headers=w0xyz).json()["certificate"] is None
-    assert _post(client, w0xyz, "upload")["status"] == "not_set_up"
+    assert _send(client, w0xyz)["status"] == "not_set_up"
     assert lotw.uploads == []
     assert client.delete("/api/v1/lotw", headers=w0xyz).status_code == 204
     assert client.get("/api/v1/lotw", headers=k9ksu).json()["certificate"] is not None
@@ -364,7 +373,7 @@ def test_sending_and_fetching_need_the_log_permission(
     """They change QSOs, so a view-only operator can't (Principle XIII)."""
     identity.add_operator(shack, "KD0VUE", VISITOR_SECRET, [Permission.VIEW])
     viewer = _sign_in(client, "KD0VUE", VISITOR_SECRET, "fd-3")
-    assert client.post("/api/v1/lotw/upload", headers=viewer).status_code == 403
+    assert client.post("/api/v1/lotw/batches", headers=viewer).status_code == 403
     assert client.post("/api/v1/lotw/download", headers=viewer).status_code == 403
     for path in ("", "/places"):
         assert client.get(f"/api/v1/lotw{path}").status_code == 401
@@ -434,7 +443,7 @@ def test_lotw_marks_never_send_a_qso_to_qrz_again(
             "QSL_RCVD": "Y",
         }
     )
-    assert _post(client, k9ksu, "upload")["sent"] == 1
+    assert _send(client, k9ksu)["sent"] == 1
     assert _post(client, k9ksu, "download")["confirmed"] == 1
     sync.run_once()
     assert [a for a in qrz.asked if a["ACTION"] in {"INSERT", "DELETE"}] == inserts
@@ -451,3 +460,145 @@ def test_lotw_marks_never_send_a_qso_to_qrz_again(
     sync.run_once()
     (copy,) = qrz.books[KEY].values()
     assert copy["NAME"] == "Hiram"
+
+
+def test_nothing_goes_to_lotw_until_a_reviewed_batch_is_sent(
+    client: TestClient, k9ksu: dict[str, str], lotw: FakeLotw
+) -> None:
+    """Preparing a batch fixes its QSOs and sends nothing; sending it is a separate act (XIII)."""
+    _set_up(client, k9ksu)
+    w1aw = _log(client, k9ksu, qso("W1AW"))
+    n0oy = _log(client, k9ksu, qso("N0OY", TIME_ON="1830"))
+    prepared = _post(client, k9ksu, "batches")
+    assert prepared["status"] == "done"
+    assert "Nothing has been sent yet" in prepared["message"]
+    batch = prepared["batch"]
+    assert (batch["state"], batch["count"], batch["sent"]) == ("ready", 2, 0)
+    assert [(q["id"], q["call"], q["band"], q["mode"]) for q in batch["qsos"]] == [
+        (w1aw, "W1AW", "20m", "SSB"),
+        (n0oy, "N0OY", "20m", "SSB"),
+    ]
+    assert lotw.uploads == []
+    assert "LOTW_QSL_SENT" not in _fields(client, k9ksu, w1aw)
+    setup = client.get("/api/v1/lotw", headers=k9ksu).json()
+    assert setup["batch"]["id"] == batch["id"]
+    assert setup["message"] == f"Batch {batch['id']} (2 QSOs) is waiting for your review."
+    # A QSO logged after the batch was prepared is not in it, and asking
+    # again answers with the batch already waiting.
+    later = _log(client, k9ksu, qso("K0ABC", TIME_ON="1900"))
+    again = _post(client, k9ksu, "batches")
+    assert again["batch"]["id"] == batch["id"]
+    assert "still waiting for your review" in again["message"]
+    assert lotw.uploads == []
+    sent = _post(client, k9ksu, f"batches/{batch['id']}/send")
+    assert (sent["status"], sent["sent"]) == ("done", 2)
+    assert [c["CALL"] for c in lotw.uploads[0]] == ["W1AW", "N0OY"]
+    assert "LOTW_QSL_SENT" not in _fields(client, k9ksu, later)
+    # The batch is kept, with what LoTW said and which QSOs went.
+    kept = client.get(f"/api/v1/lotw/batches/{batch['id']}", headers=k9ksu).json()
+    assert (kept["state"], kept["sent"]) == ("sent", 2)
+    assert kept["answer"].startswith("LoTW queued 2 QSOs.")
+    assert all(q["sent"] for q in kept["qsos"])
+    listed = client.get("/api/v1/lotw/batches", headers=k9ksu).json()
+    assert [(b["id"], b["state"], b["qsos"]) for b in listed] == [(batch["id"], "sent", None)]
+    # A sent batch is never sent again.
+    assert _post(client, k9ksu, f"batches/{batch['id']}/send")["status"] == "nothing"
+    assert len(lotw.uploads) == 1
+
+
+def test_a_qso_edited_after_review_is_held_back_for_a_later_batch(
+    client: TestClient, k9ksu: dict[str, str], lotw: FakeLotw
+) -> None:
+    """Only what the operator reviewed is sent; the edited QSO keeps waiting."""
+    _set_up(client, k9ksu)
+    kept = _log(client, k9ksu, qso("W1AW"))
+    edited = _log(client, k9ksu, qso("N0OY", TIME_ON="1830"))
+    batch = _post(client, k9ksu, "batches")["batch"]
+    fields = [{"name": k, "value": v} for k, v in _fields(client, k9ksu, edited).items()]
+    changed = client.put(
+        f"/api/v1/qsos/{edited}",
+        headers=k9ksu,
+        json={"base_version": 1, "fields": [*fields, {"name": "NAME", "value": "Hiram"}]},
+    )
+    assert changed.status_code == 200, changed.text
+    sent = _post(client, k9ksu, f"batches/{batch['id']}/send")
+    assert sent["sent"] == 1
+    assert [c["CALL"] for c in lotw.uploads[0]] == ["W1AW"]
+    assert [(s["id"], s["reason"]) for s in sent["skipped"]] == [
+        (
+            edited,
+            "Not sent: it changed after the batch was prepared; it goes in a later batch.",
+        )
+    ]
+    assert _fields(client, k9ksu, kept)["LOTW_QSL_SENT"] == "Y"
+    assert "LOTW_QSL_SENT" not in _fields(client, k9ksu, edited)
+    assert client.get("/api/v1/lotw", headers=k9ksu).json()["waiting"] == 1
+
+
+def test_a_cancelled_batch_sends_nothing_and_its_qsos_keep_waiting(
+    client: TestClient, k9ksu: dict[str, str], lotw: FakeLotw
+) -> None:
+    """Cancelling is final; a new batch picks the QSOs up again."""
+    _set_up(client, k9ksu)
+    _log(client, k9ksu, qso())
+    batch = _post(client, k9ksu, "batches")["batch"]
+    cancelled = client.post(f"/api/v1/lotw/batches/{batch['id']}/cancel", headers=k9ksu)
+    assert cancelled.status_code == 200, cancelled.text
+    assert cancelled.json()["state"] == "cancelled"
+    again = client.post(f"/api/v1/lotw/batches/{batch['id']}/cancel", headers=k9ksu)
+    assert again.status_code == 409
+    assert _post(client, k9ksu, f"batches/{batch['id']}/send")["status"] == "nothing"
+    assert lotw.uploads == []
+    setup = client.get("/api/v1/lotw", headers=k9ksu).json()
+    assert (setup["waiting"], setup["batch"]) == (1, None)
+    assert _post(client, k9ksu, "batches")["batch"]["id"] != batch["id"]
+
+
+def test_a_refused_batch_keeps_waiting_with_lotw_s_reason(
+    client: TestClient, k9ksu: dict[str, str], lotw: FakeLotw
+) -> None:
+    """So it can be sent again once the problem is fixed."""
+    _set_up(client, k9ksu)
+    _log(client, k9ksu, qso())
+    batch = _post(client, k9ksu, "batches")["batch"]
+    lotw.refuse = "Certificate not issued by LoTW"
+    assert _post(client, k9ksu, f"batches/{batch['id']}/send")["status"] == "rejected"
+    kept = client.get(f"/api/v1/lotw/batches/{batch['id']}", headers=k9ksu).json()
+    assert kept["state"] == "ready"
+    assert kept["answer"] == "LoTW refused the upload: Certificate not issued by LoTW"
+    lotw.refuse = None
+    assert _post(client, k9ksu, f"batches/{batch['id']}/send")["sent"] == 1
+
+
+def test_a_batch_belongs_to_its_operator(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], lotw: FakeLotw
+) -> None:
+    """W0XYZ can't see, send or cancel K9KSU's batch (Principle XIII)."""
+    _set_up(client, k9ksu)
+    _log(client, k9ksu, qso())
+    batch = _post(client, k9ksu, "batches")["batch"]
+    assert client.get(f"/api/v1/lotw/batches/{batch['id']}", headers=w0xyz).status_code == 404
+    assert client.get("/api/v1/lotw/batches", headers=w0xyz).json() == []
+    assert _post(client, w0xyz, f"batches/{batch['id']}/send")["status"] == "nothing"
+    cancel = client.post(f"/api/v1/lotw/batches/{batch['id']}/cancel", headers=w0xyz)
+    assert cancel.status_code == 409
+    assert lotw.uploads == []
+    assert client.get("/api/v1/lotw", headers=k9ksu).json()["batch"]["id"] == batch["id"]
+
+
+def test_the_database_keeps_every_batch_as_it_was(
+    client: TestClient, k9ksu: dict[str, str], conn: psycopg.Connection[TupleRow]
+) -> None:
+    """A batch is never deleted, and a finished one never changes."""
+    _set_up(client, k9ksu)
+    _log(client, k9ksu, qso())
+    batch = _post(client, k9ksu, "batches")["batch"]
+    _post(client, k9ksu, f"batches/{batch['id']}/send")
+    for statement in (
+        "DELETE FROM workspace.lotw_batch_qso",
+        "UPDATE workspace.lotw_batch_qso SET sent = false",
+        "DELETE FROM workspace.lotw_batch",
+        "UPDATE workspace.lotw_batch SET state = 'ready', finished_at = NULL",
+    ):
+        with pytest.raises(psycopg.Error):
+            conn.execute(statement)

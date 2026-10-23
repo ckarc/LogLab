@@ -9,18 +9,25 @@
 //!
 //! The Agent signs in as a registered station with the station key an
 //! administrator gave it (Principle XIII).
+//!
+//! It also hands the Engine the QSOs a program on this computer logged
+//! (WSJT-X, say). The Engine logs each as the operator signed in at this
+//! station, and the Agent keeps it in its journal until then (Principle XV).
 
 use std::fmt;
 use std::time::Duration;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
+use crate::journal::Entry;
 use crate::rig::{RadioIdentity, Reading};
 
 /// How long one send may take.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 /// The longest station key the Agent accepts.
 const MAX_KEY: usize = 128;
+/// The most of an Engine answer the Agent reads.
+const MAX_ANSWER: u64 = 64 * 1024;
 
 /// What the Agent sends: the radio's state, or why it has none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -65,9 +72,41 @@ impl fmt::Display for SendError {
     }
 }
 
+/// What became of a QSO sent to the Engine.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Handed {
+    /// The Engine has it: logged now, or already in the log. Says which.
+    Logged(String),
+    /// Not yet: the Engine can't be reached, or nobody is signed in at this
+    /// station. The QSO stays in the journal and is sent again.
+    NotYet(String),
+    /// The Engine refused it for good, and says why.
+    Refused(String),
+    /// The Engine refused this station key.
+    KeyRefused(u16),
+}
+
+/// A QSO as the Engine takes it.
+#[derive(Serialize)]
+struct QsoBody<'a> {
+    id: &'a str,
+    adif: &'a str,
+    program: &'a str,
+}
+
+/// The parts of the Engine's answer the Agent shows.
+#[derive(Deserialize)]
+struct Answer {
+    #[serde(default)]
+    message: Option<String>,
+    #[serde(default)]
+    detail: Option<serde_json::Value>,
+}
+
 /// The Agent's link to the Engine.
 pub struct Uplink {
     url: String,
+    qsos_url: String,
     authorization: String,
     http: ureq::Agent,
 }
@@ -98,6 +137,7 @@ impl Uplink {
             .into();
         Ok(Self {
             url: format!("{base}/api/v1/agent/rig"),
+            qsos_url: format!("{base}/api/v1/agent/qsos"),
             authorization: format!("Bearer {key}"),
             http,
         })
@@ -110,6 +150,49 @@ impl Uplink {
     /// The Engine refused the key, or could not be reached.
     pub fn send(&self, report: &Report<'_>) -> Result<(), SendError> {
         self.put(&self.url, report)
+    }
+
+    /// Hand the Engine one QSO from the journal.
+    pub fn log_qso(&self, entry: &Entry) -> Handed {
+        let body = QsoBody {
+            id: &entry.id,
+            adif: &entry.adif,
+            program: &entry.program,
+        };
+        let sent = self
+            .http
+            .post(&self.qsos_url)
+            .config()
+            .http_status_as_error(false)
+            .build()
+            .header("Authorization", &self.authorization)
+            .send_json(&body);
+        let mut response = match sent {
+            Ok(response) => response,
+            Err(error) => return Handed::NotYet(format!("could not reach the Engine: {error}")),
+        };
+        let code = response.status().as_u16();
+        let answer: Option<Answer> = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_ANSWER)
+            .read_json()
+            .ok();
+        let said = answer
+            .and_then(|a| {
+                a.message.or(match a.detail {
+                    Some(serde_json::Value::String(text)) => Some(text),
+                    Some(other) => Some(other.to_string()),
+                    None => None,
+                })
+            })
+            .unwrap_or_else(|| format!("the Engine answered HTTP {code}"));
+        match code {
+            200..=299 => Handed::Logged(said),
+            401 | 403 => Handed::KeyRefused(code),
+            400..=499 => Handed::Refused(said),
+            _ => Handed::NotYet(said),
+        }
     }
 
     fn put(&self, url: &str, body: &impl Serialize) -> Result<(), SendError> {

@@ -4,10 +4,11 @@
 """Sending QSOs to Logbook of the World and bringing its confirmations back.
 
 LoTW is an enhancement (Principle V). Logging never waits for it: a QSO is
-logged when the Engine commits it, and simply waits to be sent. When the
-operator asks, the Engine signs the waiting QSOs with the operator's own
-callsign certificate and sends them; when LoTW accepts the file, each QSO's
-``LOTW_QSL_SENT`` becomes ``Y``. Fetching confirmations sets
+logged when the Engine commits it, and simply waits to be sent. Nothing goes
+to LoTW live: the operator first gathers waiting QSOs into a numbered batch
+and looks it over, and only when they release it does the Engine sign those
+QSOs with their own callsign certificate and send them (Principle XIII).
+When LoTW takes the file, each QSO's ``LOTW_QSL_SENT`` becomes ``Y``. Fetching confirmations sets
 ``LOTW_QSL_RCVD`` to ``Y`` on each QSO LoTW confirmed. Both are changes to
 the QSOs' own ADIF fields (Principle IV), made through the audited path by
 the operator who asked (Principles VII and XIII), and a QSO an operator has
@@ -46,7 +47,13 @@ from loglab_engine.lotw.gabbi import (
 )
 from loglab_engine.lotw.tables import tables
 from loglab_engine.store.log import LogStore
-from loglab_engine.store.lotw import LotwAccount, LotwAccountStore
+from loglab_engine.store.lotw import (
+    BatchQso,
+    LotwAccount,
+    LotwAccountStore,
+    LotwBatch,
+    LotwBatchStore,
+)
 
 if TYPE_CHECKING:
     import uuid
@@ -100,6 +107,7 @@ class Setup:
     location: StationLocation | None
     waiting: int
     qsl_since: str | None
+    batch: LotwBatch | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,10 +121,21 @@ class Skipped:
 
 @dataclass(frozen=True, slots=True)
 class UploadResult:
-    """What sending waiting QSOs did."""
+    """What sending a batch did."""
 
     outcome: Outcome
     sent: int
+    skipped: tuple[Skipped, ...]
+    remaining: int
+    message: str
+
+
+@dataclass(frozen=True, slots=True)
+class PrepareResult:
+    """What preparing a batch did: the batch waiting for review, if any."""
+
+    outcome: Outcome
+    batch: LotwBatch | None
     skipped: tuple[Skipped, ...]
     remaining: int
     message: str
@@ -257,6 +276,7 @@ class Lotw:
     def __init__(self, conn: psycopg.Connection[TupleRow], link: Link, writer: str) -> None:
         """Use ``conn`` (autocommit), the Engine's ``link`` to LoTW; sign files as ``writer``."""
         self._accounts = LotwAccountStore(conn)
+        self._batches = LotwBatchStore(conn)
         self._log = LogStore(conn)
         self._link = link
         self._writer = writer
@@ -283,7 +303,15 @@ class Lotw:
                 except LocationError as error:
                     problem = f"Your station location needs fixing: {error}."
         waiting = 0 if cert is None else self._log.qsl_waiting(SERVICE, cert.call)
-        return Setup(summary, problem, account.username, location, waiting, account.qsl_since)
+        return Setup(
+            summary,
+            problem,
+            account.username,
+            location,
+            waiting,
+            account.qsl_since,
+            self._batches.ready(actor),
+        )
 
     def save_certificate(self, actor: Actor, p12: bytes, password: str) -> CertificateSummary:
         """Check and keep the operator's callsign certificate.
@@ -329,8 +357,10 @@ class Lotw:
 
     # -- Sending ----------------------------------------------------------------
 
-    def upload(self, actor: Actor) -> UploadResult:  # noqa: PLR0911 - one answer per outcome
-        """Sign the operator's waiting QSOs and send them to LoTW."""
+    def _ready_to_sign(
+        self, actor: Actor
+    ) -> tuple[CallsignCertificate, StationLocation] | UploadResult:
+        """The operator's certificate and location, or why QSOs can't be signed."""
         account = self._accounts.get(actor)
         try:
             cert = None if account is None else self._certificate(account)
@@ -348,6 +378,28 @@ class Lotw:
             location = make_location(cert, account.location)
         except LocationError as error:
             return UploadResult(Outcome.NOT_SET_UP, 0, (), 0, f"Your station location: {error}.")
+        return cert, location
+
+    def prepare(self, actor: Actor) -> PrepareResult:
+        """Gather the operator's waiting QSOs into a batch for them to review.
+
+        Nothing is sent: the batch waits until the operator releases it. An
+        operator has one batch waiting at a time; while one waits, this
+        answers with it.
+        """
+        ready_to_sign = self._ready_to_sign(actor)
+        if isinstance(ready_to_sign, UploadResult):
+            return PrepareResult(ready_to_sign.outcome, None, (), 0, ready_to_sign.message)
+        cert, location = ready_to_sign
+        waiting = self._batches.ready(actor)
+        if waiting is not None:
+            return PrepareResult(
+                Outcome.DONE,
+                waiting,
+                (),
+                0,
+                f"Batch {waiting.id} is still waiting for your review: send it or cancel it first.",
+            )
         queue = self._log.qsl_queue(SERVICE, cert.call, MAX_PER_UPLOAD + 1)
         remaining = max(len(queue) - MAX_PER_UPLOAD, 0)
         ready, skipped = self._sign_ready(cert, location, queue[:MAX_PER_UPLOAD])
@@ -357,20 +409,97 @@ class Lotw:
                 if not skipped
                 else f"None of the {len(skipped)} waiting QSOs can be sent yet; see why below."
             )
-            return UploadResult(Outcome.NOTHING, 0, tuple(skipped), remaining, message)
+            return PrepareResult(Outcome.NOTHING, None, tuple(skipped), remaining, message)
+        batch_id = self._batches.create(actor, cert.call, [(v.qso_id, v.version) for v, _ in ready])
+        batch = self._batches.get(actor, batch_id)
+        count = len(ready)
+        message = (
+            f"Batch {batch_id} holds {count} QSO{'' if count == 1 else 's'}. Check them, then send"
+            " the batch to LoTW. Nothing has been sent yet."
+        )
+        if remaining:
+            message += f" {remaining} more are waiting for a later batch."
+        return PrepareResult(Outcome.DONE, batch, tuple(skipped), remaining, message)
+
+    def batch(self, actor: Actor, batch_id: int) -> tuple[LotwBatch, tuple[BatchQso, ...]] | None:
+        """The operator's batch ``batch_id`` and its QSOs; ``None`` if they have no such batch."""
+        batch = self._batches.get(actor, batch_id)
+        return None if batch is None else (batch, self._batches.qsos(batch_id))
+
+    def batches(self, actor: Actor, limit: int = 20) -> tuple[LotwBatch, ...]:
+        """The operator's latest batches, newest first."""
+        return self._batches.recent(actor, limit)
+
+    def cancel(self, actor: Actor, batch_id: int) -> bool:
+        """Cancel the operator's waiting batch, sending nothing; ``False`` if it isn't waiting."""
+        return self._batches.cancel(actor, batch_id)
+
+    def release(self, actor: Actor, batch_id: int) -> UploadResult:  # noqa: PLR0911 - one answer per outcome
+        """Sign the QSOs in the operator's reviewed batch and send them to LoTW.
+
+        Only QSOs still exactly as they were when the batch was prepared, and
+        still waiting, are sent; any other stays behind for a later batch.
+        """
+        batch = self._batches.get(actor, batch_id)
+        if batch is None or batch.state != "ready":
+            return UploadResult(
+                Outcome.NOTHING, 0, (), 0, f"Batch {batch_id} is not waiting to be sent."
+            )
+        ready_to_sign = self._ready_to_sign(actor)
+        if isinstance(ready_to_sign, UploadResult):
+            return ready_to_sign
+        cert, location = ready_to_sign
+        if cert.call != batch.station_call:
+            self._batches.cancel(actor, batch_id, f"Cancelled: the certificate is now {cert.call}.")
+            return UploadResult(
+                Outcome.NOTHING,
+                0,
+                (),
+                0,
+                f"Batch {batch_id} was for {batch.station_call}, but your certificate is now for"
+                f" {cert.call}. It was cancelled; prepare a new batch.",
+            )
+        queue: list[QsoVersion] = []
+        changed: list[Skipped] = []
+        for item in self._batches.qsos(batch_id):
+            now = self._log.current(item.qso_id)
+            sent_mark = (now.record.get(f"{SERVICE}_QSL_SENT") or "").strip().upper()
+            if now.version != item.version or now.deleted or sent_mark in {"Y", "N", "I"}:
+                changed.append(
+                    Skipped(
+                        item.qso_id,
+                        item.call,
+                        "Not sent: it changed after the batch was prepared; it goes in a later"
+                        " batch.",
+                    )
+                )
+                continue
+            queue.append(now)
+        ready, skipped = self._sign_ready(cert, location, tuple(queue))
+        skipped = changed + skipped
+        if not ready:
+            self._batches.cancel(actor, batch_id, "Cancelled: none of its QSOs could be sent.")
+            return UploadResult(
+                Outcome.NOTHING,
+                0,
+                tuple(skipped),
+                0,
+                f"None of the QSOs in batch {batch_id} can be sent now, so it was cancelled;"
+                " see why below.",
+            )
         if self._link.down():
-            return UploadResult(Outcome.UNREACHABLE, 0, tuple(skipped), remaining, _UNREACHABLE)
+            return UploadResult(Outcome.UNREACHABLE, 0, tuple(skipped), 0, _UNREACHABLE)
         tq8 = build_tq8(cert, location, [c for _, c in ready], self._writer)
         try:
             reply = self._link.client.upload(tq8)
         except LotwRejectedError as error:
             self._link.mark(reachable=True)
-            return UploadResult(
-                Outcome.REJECTED, 0, tuple(skipped), remaining, f"LoTW refused the upload: {error}"
-            )
+            message = f"LoTW refused the upload: {error}"
+            self._batches.note(actor, batch_id, message[:1000])
+            return UploadResult(Outcome.REJECTED, 0, tuple(skipped), 0, message)
         except (LotwUnreachableError, LotwReplyError):
             self._link.mark(reachable=False)
-            return UploadResult(Outcome.UNREACHABLE, 0, tuple(skipped), remaining, _UNREACHABLE)
+            return UploadResult(Outcome.UNREACHABLE, 0, tuple(skipped), 0, _UNREACHABLE)
         self._link.mark(reachable=True)
         today = datetime.now(UTC).strftime("%Y%m%d")
         self._log.edit_many(
@@ -383,15 +512,18 @@ class Lotw:
                 for v, _ in ready
             ],
             actor=actor,
-            note="Sent to LoTW",
+            note=f"Sent to LoTW in batch {batch_id}",
         )
         count = len(ready)
-        message = f"LoTW accepted {count} QSO{'' if count == 1 else 's'}."
+        answer = f"LoTW queued {count} QSO{'' if count == 1 else 's'}."
         if reply:
-            message += f" LoTW says: {reply}"
-        if remaining:
-            message += f" {remaining} more are waiting; send again to go on."
-        return UploadResult(Outcome.DONE, count, tuple(skipped), remaining, message)
+            answer += f" LoTW says: {reply.rstrip('.')}."
+        self._batches.mark_sent(actor, batch_id, answer[:1000], [v.qso_id for v, _ in ready])
+        message = (
+            f"Batch {batch_id} sent. {answer} LoTW checks them over the next while; confirmations"
+            " come back with Fetch confirmations."
+        )
+        return UploadResult(Outcome.DONE, count, tuple(skipped), 0, message)
 
     @staticmethod
     def _sign_ready(

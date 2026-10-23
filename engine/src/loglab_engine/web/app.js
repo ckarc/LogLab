@@ -25,12 +25,13 @@
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
 
   const MODULES = {
-    entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log",
+    entry: "New QSO", profile: "Station profile", log: "Log",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
   };
-  // The journal is never hidden: the operator must always see what is not
-  // logged yet (Principle XV). A QSO's detail is not a box: it opens over the
-  // page from the pencil at the end of its Log row.
+  // Neither the journal nor a QSO's detail is a box. The journal pops up over
+  // the corner of the page whenever a QSO is not logged yet, and stays until
+  // it is (Principle XV); a QSO's detail opens over the page from the pencil
+  // at the end of its Log row.
   const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
@@ -73,6 +74,7 @@
     by_overlay: {},
     world_qsos: WORLD_QSOS,
     bio_open: false,
+    stats_open: false,
     distance_unit: "mi",
     log_mine: true,
   });
@@ -100,7 +102,7 @@
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
   })();
-  const ALONE_WITH = new Set([SOLO, "journal"]);
+  const ALONE_WITH = new Set([SOLO]);
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -419,9 +421,10 @@
     const count = saved && Number(saved.world_qsos);
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
     const bio_open = Boolean(saved && saved.bio_open === true);
+    const stats_open = Boolean(saved && saved.stats_open === true);
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
     const log_mine = !(saved && saved.log_mine === false);
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit, log_mine };
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, stats_open, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -746,6 +749,41 @@
     "two-thirds:left": "Left two thirds", "two-thirds:right": "Right two thirds",
   };
 
+  // While something is carried near the top or bottom of the window, the
+  // page scrolls that way, faster the closer the pointer gets to the edge,
+  // so a box can go anywhere on a page taller than the screen. `onScroll`
+  // runs after each step so the drop place follows the page.
+  const EDGE = 64;
+  const EDGE_SPEED = 24;
+  function edgeScroll(onScroll) {
+    let y = null;
+    let frame = 0;
+    const step = () => {
+      frame = 0;
+      if (y === null) return;
+      const h = window.innerHeight;
+      const zone = Math.min(EDGE, h / 4);
+      const speed = y < zone ? -(zone - y) / zone : y > h - zone ? (y - (h - zone)) / zone : 0;
+      if (!speed) return;
+      const was = window.scrollY;
+      window.scrollBy(0, Math.round(Math.max(-1, Math.min(1, speed)) * EDGE_SPEED) || Math.sign(speed));
+      if (window.scrollY === was) return;
+      onScroll();
+      frame = requestAnimationFrame(step);
+    };
+    return {
+      move(e) {
+        y = e.clientY;
+        if (!frame) frame = requestAnimationFrame(step);
+      },
+      stop() {
+        y = null;
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+      },
+    };
+  }
+
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
   // finger. The box's place shows as an outline; a small card follows the
   // pointer like a window being carried.
@@ -758,12 +796,13 @@
     const area = $("#workspace").getBoundingClientRect();
     // Where the other boxes are, in order, with each one's index once this
     // box is lifted out of the order.
+    // Tops are kept in page coordinates, so they hold while the page scrolls.
     const rest = layout.modules.filter((m) => m.id !== id);
     const others = rest.map((m, index) => ({ m, index }))
       .filter(({ m }) => shown(m))
       .map(({ m, index }) => {
         const r = moduleEl(m.id).getBoundingClientRect();
-        return { index, top: r.top, height: r.height, left: r.left, right: r.right };
+        return { index, top: r.top + window.scrollY, height: r.height, left: r.left, right: r.right };
       });
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
@@ -786,9 +825,9 @@
     };
     follow(event);
     let last = "";
-    const onMove = (e) => {
-      follow(e);
-      const t = dropTarget(e.clientX, e.clientY, others, area, layout.modules.find((m) => m.id === id).width);
+    let at = event;
+    const aim = () => {
+      const t = dropTarget(at.clientX, at.clientY + window.scrollY, others, area, layout.modules.find((m) => m.id === id).width);
       const key = `${t.index}:${t.width}:${t.side}`;
       if (key === last) return;
       last = key;
@@ -798,7 +837,16 @@
       // puts it once it has been lifted out.
       place(id, t.index, t.width, t.side);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onCancel);
@@ -814,6 +862,7 @@
     };
     const onUp = () => finish(true);
     const onCancel = () => finish(false);
+    window.addEventListener("scroll", aim, { passive: true });
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onCancel);
@@ -917,7 +966,9 @@
     const el = panelEl(id);
     const panel = PANELS[id];
     const before = { ...layout.panels };
-    const area = el.closest(".panels").getBoundingClientRect();
+    const block = el.closest(".panels").getBoundingClientRect();
+    // In page coordinates, so it holds while the page scrolls.
+    const area = { left: block.left, width: block.width, top: block.top + window.scrollY, height: block.height };
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
     const dy = event.clientY - grab.top;
@@ -939,14 +990,23 @@
     };
     follow(event);
     const pointer = event.pointerId;
-    const onMove = (e) => {
-      if (e.pointerId !== pointer) return;
-      follow(e);
-      const place = panelTarget(e.clientX, e.clientY, area);
+    let at = event;
+    const aim = () => {
+      const place = panelTarget(at.clientX, at.clientY + window.scrollY, area);
       ghostWhere.textContent = panelWhere(place, panel);
       placePanel(id, place);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      if (e.pointerId !== pointer) return;
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
@@ -962,6 +1022,7 @@
     };
     const onUp = (e) => { if (e.pointerId === pointer) finish(true); };
     const onCancel = (e) => { if (e.pointerId === pointer) finish(false); };
+    window.addEventListener("scroll", aim, { passive: true });
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
@@ -1080,12 +1141,8 @@
         hide.addEventListener("click", () => changeLayout(id, { hidden: true }));
         head.append(hide);
       }
-      const placeholder = document.createElement("p");
-      placeholder.className = "hint placeholder";
-      placeholder.textContent = "Appears here when a QSO is waiting to be logged.";
       const box = moduleEl(id);
       box.prepend(head);
-      if (id === "journal") head.after(placeholder);
       // These boxes come and go; place the rest around them each time.
       new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
       sizes.observe(box);
@@ -1908,9 +1965,27 @@
       row.addEventListener("click", () => selectQso(selected && selected.id === qso.id ? null : qso));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
+    fitLog();
     // Other modules that show the log (map.js) follow it.
     document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
+
+  // The Log shows ten rows and scrolls the rest inside the box, under a
+  // heading row that stays put. Measured from the rows themselves, so it
+  // holds at any box size and with tags like "pretend" in a row.
+  const LOG_ROWS = 10;
+  function fitLog() {
+    const wrap = $("#log-wrap");
+    const rows = [...$("#log tbody").rows].slice(0, LOG_ROWS);
+    if (!rows.length || !$("#log thead").offsetHeight) {
+      wrap.style.maxHeight = "";
+      return;
+    }
+    const height = $("#log thead").offsetHeight + rows.reduce((sum, row) => sum + row.offsetHeight, 0);
+    wrap.style.maxHeight = `${height + 2}px`;
+  }
+  // Again whenever the table changes size: a box shown again, a column added.
+  new ResizeObserver(() => fitLog()).observe($("#log"));
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 
@@ -2306,7 +2381,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, stats_open: layout.stats_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });
