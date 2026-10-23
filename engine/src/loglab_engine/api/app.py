@@ -652,6 +652,9 @@ class Layout(_Strict):
     everyday logging under their own call. ``by_overlay`` keeps how they
     arranged the page in each other overlay, to bring back when they return.
     ``world_qsos`` is how many of the latest QSOs the world map draws.
+    ``bio_open`` is whether the station profile shows a biography opened
+    (closed until the operator opens one). ``distance_unit`` is how the
+    station profile gives the distance to a station, in miles or kilometres.
     """
 
     version: Literal[1] = 1
@@ -665,6 +668,8 @@ class Layout(_Strict):
         default_factory=dict
     )
     world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
+    bio_open: bool = False
+    distance_unit: Literal["mi", "km"] = "mi"
 
     @model_validator(mode="after")
     def _each_module_once(self) -> Self:
