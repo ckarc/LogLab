@@ -74,6 +74,7 @@
     world_qsos: WORLD_QSOS,
     bio_open: false,
     distance_unit: "mi",
+    log_mine: true,
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -419,7 +420,8 @@
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
     const bio_open = Boolean(saved && saved.bio_open === true);
     const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit };
+    const log_mine = !(saved && saved.log_mine === false);
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit, log_mine };
   }
 
   function applyTheme(theme) {
@@ -1878,6 +1880,13 @@
     if ($("#show-deleted").checked) params.set("include_deleted", "true");
     // overlay.js offers to show only one operation's QSOs, like Field Day 2027.
     if ($("#log-operation").value) params.set("operation", $("#log-operation").value);
+    // In an operation the Log shows the operator's own QSOs or the whole club's.
+    const inOperation = Boolean($("#log-operation").value);
+    $("#log-whose").hidden = !inOperation;
+    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
+      b.setAttribute("aria-pressed", String((b.dataset.whose === "mine") === layout.log_mine));
+    }
+    if (inOperation && layout.log_mine) params.set("mine", "true");
     let qsos;
     try {
       qsos = await api("GET", `/qsos?${params}`);
@@ -2291,7 +2300,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit, log_mine: layout.log_mine };
       applyLayout();
       saveLayout();
     });
@@ -2329,6 +2338,13 @@
       searchTimer = setTimeout(loadLog, 250);
     });
     $("#show-deleted").addEventListener("change", loadLog);
+    for (const b of document.querySelectorAll("#log-whose [data-whose]")) {
+      b.addEventListener("click", () => {
+        layout.log_mine = b.dataset.whose === "mine";
+        saveLayout();
+        loadLog();
+      });
+    }
     $("#close-detail").addEventListener("click", closeDetail);
     $("#detail").addEventListener("close", () => { current = null; }); // Esc closes it too
     const fieldList = $("#adif-field-list");

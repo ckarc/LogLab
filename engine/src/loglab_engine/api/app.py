@@ -653,6 +653,8 @@ class Layout(_Strict):
     everyday logging under their own call. ``by_overlay`` keeps how they
     arranged the page in each other overlay, to bring back when they return.
     ``world_qsos`` is how many of the latest QSOs the world map draws.
+    ``log_mine`` is whether the Log, in an operation, shows only the
+    operator's own QSOs rather than everyone's.
     ``bio_open`` is whether the station profile shows a biography opened
     (closed until the operator opens one). ``distance_unit`` is how the
     station profile gives the distance to a station, in miles or kilometres.
@@ -670,6 +672,7 @@ class Layout(_Strict):
     )
     world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
     bio_open: bool = False
+    log_mine: bool = True
     distance_unit: Literal["mi", "km"] = "mi"
 
     @model_validator(mode="after")
@@ -1249,7 +1252,7 @@ def _session_out(conn: psycopg.Connection[TupleRow], who: Actor) -> SessionOut:
 
 
 class QsoQuery(_Strict):
-    """Which QSOs to list."""
+    """Which QSOs to list. ``mine`` keeps only those the signed-in operator made."""
 
     model_config = ConfigDict(extra="forbid", strict=False, frozen=True)
 
@@ -1259,6 +1262,7 @@ class QsoQuery(_Strict):
     newest_first: bool = True
     sort: SortKey = "entered"
     operation: uuid.UUID | None = None
+    mine: bool = False
 
 
 # -- Operations ---------------------------------------------------------------
@@ -1360,6 +1364,7 @@ def list_qsos(who: Signed, conn: Conn, query: Annotated[QsoQuery, Query()]) -> l
         QsoFilter(
             call=query.call or None,
             operation=query.operation,
+            operator=who.operator if query.mine else None,
             include_deleted=query.include_deleted,
         ),
         limit=query.limit,

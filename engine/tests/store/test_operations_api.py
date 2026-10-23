@@ -293,6 +293,19 @@ def test_after_its_end_an_operation_takes_only_qsos_made_during_it(
     assert "outside" in response.json()["detail"]
 
 
+def test_the_log_shows_my_qsos_or_the_clubs(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], field_day: dict[str, Any]
+) -> None:
+    """Brian: in Field Day the Log switches between my QSOs and the whole club's."""
+    mine = _log(client, k9ksu, field_day)
+    theirs = _log(client, w0xyz, field_day)
+    url = f"/api/v1/qsos?operation={field_day['id']}"
+    club = client.get(url, headers=k9ksu).json()
+    assert {q["id"] for q in club} == {mine["id"], theirs["id"]}
+    assert [q["id"] for q in client.get(f"{url}&mine=true", headers=k9ksu).json()] == [mine["id"]]
+    assert [q["id"] for q in client.get(f"{url}&mine=true", headers=w0xyz).json()] == [theirs["id"]]
+
+
 def test_the_summary_counts_by_band_mode_and_operator(
     client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str]
 ) -> None:

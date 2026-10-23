@@ -144,7 +144,12 @@
       </section>
 
       <section class="card module" data-module="log">
-        <h2>Log</h2>
+        <h2>Log
+          <span id="log-whose" class="segmented log-whose" role="group" aria-label="Whose QSOs the Log shows" hidden>
+            <button type="button" class="secondary small" data-whose="mine" aria-pressed="true">My QSOs</button>
+            <button type="button" class="secondary small" data-whose="club" aria-pressed="false" title="Every operator's QSOs in this operation">Club QSOs</button>
+          </span>
+        </h2>
         <div class="filters">
           <input id="search" type="search" placeholder="Find a call" maxlength="20" spellcheck="false">
           <label class="inline"><input id="show-deleted" type="checkbox"> Show deleted</label>
