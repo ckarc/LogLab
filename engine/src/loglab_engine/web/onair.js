@@ -51,6 +51,11 @@
       const who = document.createDocumentFragment();
       who.append(LogLab.callsign(s.operator));
       if (s.you) who.append(Object.assign(document.createElement("span"), { className: "hint", textContent: " (you)" }));
+      if (s.pretend) {
+        who.append(Object.assign(document.createElement("span"), {
+          className: "hint onair-pretend", textContent: " (pretend)", title: "A pretend operator from demo mode, not a real station",
+        }));
+      }
       const mode = document.createDocumentFragment();
       mode.append(s.mode || "—");
       if (s.clash) {

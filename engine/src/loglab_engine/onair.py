@@ -43,6 +43,8 @@ class Report:
     mode: str | None
     submode: str | None
     seen_at: datetime
+    # A pretend workstation's line, from demo mode (Principle XX).
+    pretend: bool = False
 
 
 class OnAir:
