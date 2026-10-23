@@ -686,6 +686,11 @@ class OverlayArrangement(_Strict):
 ExpandableId = Literal["stats", "profile", "log", "onair"]
 
 
+def _auto_expand() -> list[ExpandableId]:
+    """The boxes that open by themselves when the pointer rests in them, until the operator says."""
+    return ["stats", "profile", "onair"]
+
+
 class Layout(_Strict):
     """An operator's workspace: its modules in order, its tables, panels, and a QSO's fields.
 
@@ -702,7 +707,9 @@ class Layout(_Strict):
     Operation stats box shows its hourly chart and tables unfolded (folded
     until the operator opens them); the page now keeps that in ``expanded``,
     the boxes whose growing part the operator locked open, and reads this
-    only from layouts saved before. ``distance_unit`` is how the
+    only from layouts saved before. ``auto_expand`` is the boxes that open
+    by themselves when the pointer rests in them (the others open from
+    their bar). ``distance_unit`` is how the
     station profile gives the distance to a station, in miles or kilometres.
     """
 
@@ -720,6 +727,9 @@ class Layout(_Strict):
     bio_open: bool = False
     stats_open: bool = False
     expanded: Annotated[list[ExpandableId], Field(max_length=8)] = Field(default_factory=list)
+    auto_expand: Annotated[list[ExpandableId], Field(max_length=8)] = Field(
+        default_factory=_auto_expand
+    )
     log_mine: bool = True
     distance_unit: Literal["mi", "km"] = "mi"
 
