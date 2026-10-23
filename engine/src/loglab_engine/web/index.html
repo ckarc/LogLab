@@ -281,8 +281,13 @@
         <p id="onair-error" class="error" role="alert"></p>
       </section>
 
-      <section id="detail" class="card module" data-module="detail" hidden>
-        <h2><span id="detail-title"></span> <button id="close-detail" class="link" type="button">Close</button></h2>
+      </div>
+    </div>
+  </main>
+
+  <!-- One QSO, opened over the page from the pencil at the end of its Log row. -->
+  <dialog id="detail" class="card detail-dialog" aria-labelledby="detail-title">
+        <h2><span id="detail-title"></span> <button id="close-detail" class="secondary small" type="button">Close</button></h2>
         <div class="detail-bar">
           <p id="detail-meta" class="hint"></p>
           <div class="table-tools">
@@ -294,7 +299,7 @@
           </div>
         </div>
         <form id="edit">
-          <table class="fields"><thead><tr><th>Field</th><th>Value</th><th></th></tr></thead><tbody></tbody></table>
+          <div id="edit-fields" class="grid field-grid"></div>
           <div class="actions">
             <input id="edit-note" placeholder="Why (recorded with the change)" maxlength="1000">
             <button type="submit">Save as new version</button>
@@ -307,10 +312,7 @@
         </form>
         <h3>History</h3>
         <ol id="history"></ol>
-      </section>
-      </div>
-    </div>
-  </main>
+  </dialog>
 
   <datalist id="adif-field-list"></datalist>
 

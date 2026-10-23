@@ -25,11 +25,12 @@
   const SUBMODE_OF = { FT4: "MFSK", JS8: "MFSK" };
 
   const MODULES = {
-    entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log", detail: "QSO detail",
+    entry: "New QSO", profile: "Station profile", journal: "Not logged yet", log: "Log",
     map: "Section map", world: "World map", cqzones: "CQ zone map", ituzones: "ITU zone map", stats: "Operation stats", onair: "On air",
   };
   // The journal is never hidden: the operator must always see what is not
-  // logged yet (Principle XV). The detail panel opens from the log.
+  // logged yet (Principle XV). A QSO's detail is not a box: it opens over the
+  // page from the pencil at the end of its Log row.
   const HIDEABLE = new Set(["entry", "profile", "log", "map", "world", "cqzones", "ituzones", "stats", "onair"]);
   // Boxes each operator turns on for themselves, from the "Show" buttons:
   // they start out hidden unless an overlay's layout shows them.
@@ -96,7 +97,7 @@
     const id = new URLSearchParams(location.search).get("module");
     return POPPABLE.includes(id) ? id : null;
   })();
-  const ALONE_WITH = new Set([SOLO, "journal", "detail"]);
+  const ALONE_WITH = new Set([SOLO, "journal"]);
   // The same checks the Engine makes on a saved table (Principle XII).
   const COLUMN_ID = /^(date|time|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
   const SORT_KEY = /^(entered|qso_start|call|band|mode|operator|station|version|changed_at|field:[A-Za-z][A-Za-z0-9_]{0,63})$/;
@@ -113,7 +114,8 @@
 
   const $ = (selector, root = document) => root.querySelector(selector);
   let session = null;
-  let current = null; // the QSO open in the detail panel
+  let current = null; // the QSO open in the detail window
+  let selected = null; // the QSO selected (highlighted) in the Log
 
   // -- API ---------------------------------------------------------------
 
@@ -1077,12 +1079,10 @@
       }
       const placeholder = document.createElement("p");
       placeholder.className = "hint placeholder";
-      placeholder.textContent = id === "journal"
-        ? "Appears here when a QSO is waiting to be logged."
-        : "Appears here when you open a QSO from the log.";
+      placeholder.textContent = "Appears here when a QSO is waiting to be logged.";
       const box = moduleEl(id);
       box.prepend(head);
-      if (id === "journal" || id === "detail") head.after(placeholder);
+      if (id === "journal") head.after(placeholder);
       // These boxes come and go; place the rest around them each time.
       new MutationObserver(() => applyLayout()).observe(box, { attributes: true, attributeFilter: ["hidden"] });
       sizes.observe(box);
@@ -1237,7 +1237,7 @@
   // sorts it by (or null), and how to show a row in it. `suggested` lists
   // columns offered in the chooser; any ADIF field can be added by name.
   // `load()` fetches rows again, sorted as `state()` says.
-  function makeTable({ id, table, toolbar, column, suggested, defaults, load, entered = ["newest entered first", "oldest entered first"] }) {
+  function makeTable({ id, table, toolbar, column, suggested, defaults, load, edit = null, entered = ["newest entered first", "oldest entered first"] }) {
     const head = table.tHead.rows[0];
     const chooserButton = document.createElement("button");
     chooserButton.type = "button";
@@ -1309,7 +1309,7 @@
         clear();
         th.classList.add("dragging");
         target = null;
-        for (const [i, cell] of [...head.cells].entries()) {
+        for (const [i, cell] of [...head.cells].filter((c) => c.dataset.column).entries()) {
           const box = cell.getBoundingClientRect();
           if (e.clientX >= box.left && e.clientX <= box.right) {
             const after = e.clientX > box.left + box.width / 2;
@@ -1368,6 +1368,13 @@
         });
         return th;
       });
+      // With `edit`, each row ends in a pencil that opens it (the Log).
+      if (edit) {
+        const th = document.createElement("th");
+        th.className = "edit-col";
+        th.setAttribute("aria-label", "Edit");
+        cells.push(th);
+      }
       head.replaceChildren(...cells);
     }
 
@@ -1528,6 +1535,22 @@
           if (c.className) td.className = c.className;
           tr.append(td);
         }
+        if (edit) {
+          const td = document.createElement("td");
+          td.className = "edit-col";
+          const pencil = document.createElement("button");
+          pencil.type = "button";
+          pencil.className = "link edit-row";
+          pencil.textContent = "✎";
+          pencil.title = "Open this QSO to change, delete or see its history";
+          pencil.setAttribute("aria-label", "Edit this QSO");
+          pencil.addEventListener("click", (event) => {
+            event.stopPropagation(); // the pencil opens the QSO; the row click only selects it
+            edit(row);
+          });
+          td.append(pencil);
+          tr.append(td);
+        }
         decorate(tr, row);
         return tr;
       }));
@@ -1620,6 +1643,7 @@
     try { await api("DELETE", "/sessions/current"); } catch { /* already ended */ }
     forget();
     closeDetail();
+    selectQso(null);
     showSignIn("Signed out.");
   }
 
@@ -1857,8 +1881,9 @@
     logTable.render(qsos, (row, qso) => {
       if (qso.deleted) row.className = "deleted";
       row.dataset.qso = qso.id;
-      row.classList.toggle("selected", Boolean(current && current.id === qso.id));
-      row.addEventListener("click", () => openDetail(qso.id));
+      row.classList.toggle("selected", Boolean(selected && selected.id === qso.id));
+      // A click selects the row (the station profile follows it); a second click lets it go.
+      row.addEventListener("click", () => selectQso(selected && selected.id === qso.id ? null : qso));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
     // Other modules that show the log (map.js) follow it.
@@ -1877,63 +1902,75 @@
     if (!$("#detail-chooser").hidden) renderDetailChooser();
   }
 
-  // One field of the open QSO: its plain name with its ADIF name beside it.
-  // Which fields show is set by the Fields chooser, never QSO by QSO. A field
-  // the operator always shows stays on screen when cleared. A field left
-  // empty is not saved.
-  function fieldRow(f, { pinned = false } = {}) {
-    const row = document.createElement("tr");
-    row.dataset.type = f.type || "";
-    row.dataset.name = f.name;
-    const nameCell = document.createElement("td");
+  // One field of the open QSO, laid out like a New QSO box: its plain name
+  // with its ADIF name beside it, over its value. Which fields show is set by
+  // the Fields chooser, never QSO by QSO. A field the operator always shows
+  // stays on screen when cleared. A field left empty is not saved.
+  const WIDE_FIELDS = new Set(["COMMENT", "NOTES", "ADDRESS", "QSLMSG", "NAME", "QTH"]);
+  function fieldBox(f, { pinned = false } = {}) {
+    const box = document.createElement("div");
+    box.className = "field";
+    box.dataset.type = f.type || "";
+    box.dataset.name = f.name;
+    if (WIDE_FIELDS.has(f.name.toUpperCase()) || f.value.length > 24) box.classList.add("wide");
+    const head = document.createElement("div");
+    head.className = "field-head";
     const label = document.createElement("span");
     label.className = "field-label";
     label.textContent = fieldLabel(f.name);
     const adif = document.createElement("span");
     adif.className = "field-adif";
     adif.textContent = f.name.toUpperCase();
-    nameCell.append(label, adif);
     const value = document.createElement("input");
     value.value = f.value;
-    value.setAttribute("aria-label", `${fieldLabel(f.name)} value`);
+    value.setAttribute("aria-label", fieldLabel(f.name));
     const remove = document.createElement("button");
     remove.type = "button";
-    remove.className = "link";
-    remove.textContent = pinned ? "Clear" : "Remove";
+    remove.className = "link field-remove";
+    remove.textContent = "×";
+    remove.title = pinned ? "Clear" : "Remove this field";
+    remove.setAttribute("aria-label", `${pinned ? "Clear" : "Remove"} ${fieldLabel(f.name)}`);
+    remove.tabIndex = -1;
     remove.addEventListener("click", () => {
       if (pinned) {
         value.value = "";
         value.focus();
       } else {
-        row.remove();
+        box.remove();
       }
     });
-    const valueCell = document.createElement("td");
-    valueCell.append(value);
-    const removeCell = document.createElement("td");
-    removeCell.append(remove);
-    row.append(nameCell, valueCell, removeCell);
-    return row;
+    head.append(label, adif, remove);
+    box.append(head, value);
+    return box;
   }
+
+  const fieldBoxes = () => [...$("#edit-fields").querySelectorAll(".field")];
 
   // The fields the operator always shows come first, in their order, empty or
   // not; then every other field the QSO has, so nothing it holds is hidden.
   function showFields(qso) {
-    const typed = new Map([...$("#edit tbody").rows]
-      .filter((r) => r.dataset.name && current && current.id === qso.id)
-      .map((r) => [r.dataset.name.toUpperCase(), $("input", r).value]));
+    const typed = new Map(fieldBoxes()
+      .filter((b) => current && current.id === qso.id)
+      .map((b) => [b.dataset.name.toUpperCase(), $("input", b).value]));
     const have = new Map(qso.fields.map((f) => [f.name.toUpperCase(), f]));
     const pinned = detailFields();
-    const rows = pinned.map((name) => {
+    const boxes = pinned.map((name) => {
       const f = have.get(name) || { name, value: "", type: null };
-      return fieldRow({ ...f, value: typed.has(name) ? typed.get(name) : f.value }, { pinned: true });
+      return fieldBox({ ...f, value: typed.has(name) ? typed.get(name) : f.value }, { pinned: true });
     });
     const shown = new Set(pinned);
-    for (const f of qso.fields) {
-      const name = f.name.toUpperCase();
-      if (!shown.has(name)) rows.push(fieldRow({ ...f, value: typed.has(name) ? typed.get(name) : f.value }));
+    const more = qso.fields.filter((f) => !shown.has(f.name.toUpperCase()));
+    if (more.length) {
+      const heading = document.createElement("h4");
+      heading.className = "field-group";
+      heading.textContent = "More fields this QSO has";
+      boxes.push(heading);
+      for (const f of more) {
+        const name = f.name.toUpperCase();
+        boxes.push(fieldBox({ ...f, value: typed.has(name) ? typed.get(name) : f.value }));
+      }
     }
-    $("#edit tbody").replaceChildren(...rows);
+    $("#edit-fields").replaceChildren(...boxes);
   }
 
   // -- Which fields a QSO shows: the Fields chooser --
@@ -2066,12 +2103,13 @@
       return;
     }
     current = qso;
-    $("#detail").hidden = false;
+    const dialog = $("#detail");
+    if (!dialog.open) dialog.showModal();
     $("#detail-title").replaceChildren(qso.call ? callsign(qso.call) : "QSO", qso.deleted ? " (deleted)" : "");
     $("#detail-meta").textContent =
       `ID ${qso.id} · version ${qso.version} · last changed ${qso.changed_at.slice(0, 16).replace("T", " ")} UTC ` +
       `by ${qso.operator} at ${qso.station}`;
-    $("#edit tbody").replaceChildren();
+    $("#edit-fields").replaceChildren();
     current = qso;
     showFields(qso);
     $("#edit-note").value = "";
@@ -2081,23 +2119,22 @@
     $("#edit button[type=submit]").hidden = qso.deleted;
     $("#detail-fields").hidden = qso.deleted;
     renderHistory(history);
-    selectRow();
-    $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
+    if (selected && selected.id === qso.id) selectQso(qso); // its call may have just changed
   }
 
   function closeDetail() {
     current = null;
-    $("#detail").hidden = true;
-    selectRow();
+    if ($("#detail").open) $("#detail").close();
   }
 
-  // The Log row open in QSO detail is highlighted, and the station profile
-  // shows its call while New QSO's Call box is empty (profile.js).
-  function selectRow() {
+  // The selected Log row is highlighted, and the station profile shows its
+  // call while New QSO's Call box is empty (profile.js).
+  function selectQso(qso) {
+    selected = qso;
     for (const row of document.querySelectorAll("#log tbody tr")) {
-      row.classList.toggle("selected", Boolean(current && row.dataset.qso === String(current.id)));
+      row.classList.toggle("selected", Boolean(qso && row.dataset.qso === String(qso.id)));
     }
-    const call = current && !current.deleted ? current.call || "" : "";
+    const call = qso && !qso.deleted ? qso.call || "" : "";
     document.dispatchEvent(new CustomEvent("loglab:qso-selected", { detail: { call } }));
   }
 
@@ -2156,10 +2193,10 @@
 
   function editedFields() {
     const fields = [];
-    for (const row of $("#edit tbody").rows) {
-      const value = $("input", row).value;
+    for (const box of fieldBoxes()) {
+      const value = $("input", box).value;
       if (!value.trim()) continue; // an empty field is not kept
-      fields.push({ name: row.dataset.name, value, type: row.dataset.type || null });
+      fields.push({ name: box.dataset.name, value, type: box.dataset.type || null });
     }
     return fields;
   }
@@ -2197,6 +2234,7 @@
         descending: true,
       }),
       load: () => (session && !$("#app").hidden ? loadLog() : null),
+      edit: (qso) => { selectQso(qso); openDetail(qso.id); },
     });
     buildModuleHeads();
     buildPanelHeads();
@@ -2285,6 +2323,7 @@
     });
     $("#show-deleted").addEventListener("change", loadLog);
     $("#close-detail").addEventListener("click", closeDetail);
+    $("#detail").addEventListener("close", () => { current = null; }); // Esc closes it too
     const fieldList = $("#adif-field-list");
     for (const [name, f] of ADIF_FIELDS) {
       const option = document.createElement("option");
@@ -2296,6 +2335,7 @@
     $("#detail-search").addEventListener("input", renderDetailChooser);
     $("#detail-chooser").addEventListener("keydown", (event) => {
       if (event.key === "Escape") {
+        event.preventDefault(); // close the field list, not the QSO window under it
         openDetailChooser(false);
         $("#detail-fields").focus();
       }
