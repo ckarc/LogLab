@@ -4,7 +4,8 @@
 // The station profile: a box that shows who the call being typed in New QSO
 // is, and every QSO already in the log with that call. It follows the Call
 // box as the operator types, pausing for a moment so it does not ask about
-// every letter. Who the call is comes from the Engine's callbook (Principle I:
+// every letter. While the Call box is empty it shows the call of the QSO
+// selected in the Log, and with neither it is empty. Who the call is comes from the Engine's callbook (Principle I:
 // the Engine talks to QRZ.com, never the page); with no QRZ.com login or no
 // internet the box still shows the log's QSOs with the call (Principle V).
 // When QRZ.com has a photo or a biography for the call, the Engine fetches it
@@ -18,7 +19,7 @@
   const CALL = /^[A-Z0-9]+(\/[A-Z0-9]+)*$/;
   // A call worth asking about: a digit with a letter after it, like K9K or N0OY.
   const LOOKS_COMPLETE = /[0-9][A-Z]/;
-  const PAUSE_MS = 600;
+  const PAUSE_MS = 1000; // a call is looked up once typing stops this long, or on Tab
   const LIMIT = 100;
   const FACTS = [["qth", "QTH"], ["state", "State"], ["country", "Country"], ["grid", "Grid"]];
   const QUIET = {
@@ -28,6 +29,7 @@
   const $ = (selector, root = document) => root.querySelector(selector);
   const form = $("#entry");
   let shown = ""; // the call the box is about
+  let selected = ""; // the call of the QSO selected in the Log, if any
   let asked = 0; // each question gets a number, so a late answer to an old one is dropped
   let pauseTimer = null;
 
@@ -128,7 +130,8 @@
   async function lookUp(call, question, refresh = false) {
     let found;
     try {
-      found = await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
+      found = refresh ? await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}&refresh=true`)
+        : await window.LogLab.lookup(call);
     } catch {
       found = { status: "unreachable", message: "The Engine can't be reached right now." };
     }
@@ -190,12 +193,20 @@
     if (channel) channel.postMessage(message);
   }
 
+  // Show what the box should be about right now: the Call box, else the
+  // selected QSO, else nothing.
+  function follow() {
+    clearTimeout(pauseTimer);
+    const call = typed() || selected;
+    show(call);
+    tell({ call });
+  }
+
   form.CALL.addEventListener("input", () => {
     clearTimeout(pauseTimer);
     const call = typed();
     if (!call) {
-      clear();
-      tell({ call: "" });
+      follow();
       return;
     }
     pauseTimer = setTimeout(() => { show(call); tell({ call }); }, PAUSE_MS);
@@ -210,13 +221,21 @@
     if (!shown) return;
     asked += 1;
     $("#profile-source").textContent = "Asking QRZ.com…";
+    window.LogLab.forgetLookups();
     lookUp(shown, asked, true);
   });
 
-  // After a QSO is stored the box keeps the station just worked, now with
-  // the new QSO in its list.
+  // A stored or cleared form empties the Call box, so the box goes back to
+  // the selected QSO or empties. Its list refreshes when the Log reloads.
   document.addEventListener("loglab:log-loaded", () => loadWorked());
-  document.addEventListener("loglab:entry-reset", () => tell({ stored: true }));
+  document.addEventListener("loglab:entry-reset", (event) => {
+    follow();
+    if (!event.detail?.cleared) tell({ stored: true });
+  });
+  document.addEventListener("loglab:qso-selected", (event) => {
+    selected = String(event.detail?.call || "").trim().toUpperCase();
+    if (!typed()) follow();
+  });
   if (channel) {
     channel.addEventListener("message", (event) => {
       const message = event.data || {};

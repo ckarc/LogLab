@@ -47,7 +47,7 @@
     if (!CALL.test(call)) return;
     let found;
     try {
-      found = await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}`);
+      found = await window.LogLab.lookup(call); // shared with the profile box
     } catch {
       return; // the Engine is out of reach: the journal handles logging, nothing to fill
     }
@@ -71,6 +71,8 @@
     if (form.CALL.value.trim() === "") { asked = ""; unfill(); say(""); }
   });
   form.addEventListener("submit", () => { asked = ""; say(""); });
+  // A stored or cleared form starts fresh: the same call typed again is looked up again.
+  document.addEventListener("loglab:entry-reset", () => { asked = ""; unfill(); say(""); });
   note.addEventListener("transitionend", () => {
     if (note.classList.contains("fading")) say("");
   });
@@ -115,6 +117,7 @@
       showState(saved);
       if (saved.status === null) {
         asked = ""; // look the current call up with the new login
+        window.LogLab.forgetLookups();
         if (form.CALL.value.trim()) lookUp();
       } else if (saved.status === "login_failed") {
         problem(saved.message);

@@ -299,6 +299,7 @@ th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--gla
 th { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
 #log tbody tr { cursor: pointer; transition: background 0.12s; }
 #log tbody tr:hover { background: var(--row-hover); }
+#log tbody tr.selected { background: var(--row-hover); box-shadow: inset 3px 0 0 var(--accent); }
 #log tbody tr:last-child td { border-bottom: none; }
 #log td.call { font-weight: 700; letter-spacing: 0.03em; }
 tr.deleted td { color: var(--deleted); text-decoration: line-through; }

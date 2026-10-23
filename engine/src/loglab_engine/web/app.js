@@ -153,6 +153,20 @@
   // profile.js (the station profile) also shows callsigns and a QSO table.
   // overlay.js (operation overlays) also reads and changes the layout, reads
   // the New QSO form, and gives the page its overlay's default layout.
+  const LOOKUP_KEEP_MS = 60000;
+  const lookups = new Map(); // call -> { at, answer: Promise }
+  function lookupOnce(call) {
+    const now = Date.now();
+    for (const [key, held] of lookups) if (now - held.at > LOOKUP_KEEP_MS) lookups.delete(key);
+    let held = lookups.get(call);
+    if (!held) {
+      held = { at: now, answer: api("GET", `/lookup?call=${encodeURIComponent(call)}`) };
+      // A failed question is asked again next time, not remembered.
+      held.answer.catch(() => lookups.delete(call));
+      lookups.set(call, held);
+    }
+    return held.answer;
+  }
   let overlayDefault = null; // the operator's overlay's starting layout, if it has one
   window.LogLab = Object.freeze({
     api,
@@ -168,6 +182,10 @@
       suggested: [...Object.keys(LOG_COLUMNS), ...SUGGESTED_FIELDS.map((f) => `field:${f}`)],
     }),
     openQso: (id) => openDetail(id),
+    // Who a call is (profile.js and lookup.js both ask): one question per call
+    // for a minute, so the profile box and the form fill share one answer.
+    lookup: (call) => lookupOnce(call),
+    forgetLookups: () => lookups.clear(), // the QRZ.com login changed, or a refresh was asked for
     setDefaultLayout: (saved) => { overlayDefault = saved; },
   });
 
@@ -1624,7 +1642,9 @@
     }
   }
 
-  function resetEntry() {
+  // Empty New QSO for the next contact, keeping the band and mode. Esc
+  // (cleared) does the same as a store but logs nothing.
+  function resetEntry({ cleared = false } = {}) {
     const form = $("#entry");
     const { date, time } = utcNow();
     for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "QTH", "STATE", "GRIDSQUARE", "CLASS", "ARRL_SECT", "COMMENT"]) form[name].value = "";
@@ -1632,7 +1652,7 @@
     form.TIME_ON.value = time;
     showCallZeros(form.CALL);
     form.CALL.focus();
-    document.dispatchEvent(new CustomEvent("loglab:entry-reset"));
+    document.dispatchEvent(new CustomEvent("loglab:entry-reset", { detail: { cleared } }));
   }
 
   // The Call box shows zeros slashed as they are typed. An input can only
@@ -1836,6 +1856,8 @@
     }
     logTable.render(qsos, (row, qso) => {
       if (qso.deleted) row.className = "deleted";
+      row.dataset.qso = qso.id;
+      row.classList.toggle("selected", Boolean(current && current.id === qso.id));
       row.addEventListener("click", () => openDetail(qso.id));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
@@ -2059,12 +2081,24 @@
     $("#edit button[type=submit]").hidden = qso.deleted;
     $("#detail-fields").hidden = qso.deleted;
     renderHistory(history);
+    selectRow();
     $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function closeDetail() {
     current = null;
     $("#detail").hidden = true;
+    selectRow();
+  }
+
+  // The Log row open in QSO detail is highlighted, and the station profile
+  // shows its call while New QSO's Call box is empty (profile.js).
+  function selectRow() {
+    for (const row of document.querySelectorAll("#log tbody tr")) {
+      row.classList.toggle("selected", Boolean(current && row.dataset.qso === String(current.id)));
+    }
+    const call = current && !current.deleted ? current.call || "" : "";
+    document.dispatchEvent(new CustomEvent("loglab:qso-selected", { detail: { call } }));
   }
 
   function show(f) {
@@ -2217,6 +2251,15 @@
       saveLayout();
     });
     $("#entry").addEventListener("submit", storeQso);
+    // Esc anywhere in New QSO throws the half-typed contact away and starts
+    // over. Nothing was journaled yet, so nothing is logged. An open band or
+    // mode list takes its own Esc first.
+    $("#entry").addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      event.preventDefault();
+      setError("#entry", "");
+      resetEntry({ cleared: true });
+    });
     const callInput = $("#entry [name=CALL]");
     for (const type of ["input", "scroll", "keyup", "select"]) {
       callInput.addEventListener(type, () => showCallZeros(callInput));
