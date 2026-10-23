@@ -26,3 +26,15 @@
 .lotw-skipped { margin: 8px 0 0; padding-left: 20px; font-size: 13px; color: var(--muted); }
 .lotw-skipped li { margin: 3px 0; }
 .lotw-skipped b { color: var(--text); }
+
+.lotw-batch { margin-top: 14px; }
+.lotw-batch h3 { margin: 0 0 4px; font-size: 15px; }
+.lotw-batch-table { max-height: 260px; overflow-y: auto; margin: 8px 0; }
+.lotw-qsos { width: 100%; border-collapse: collapse; font-size: 13px; }
+.lotw-qsos th { text-align: left; font-weight: 600; color: var(--muted); padding: 4px 8px; }
+.lotw-qsos td { padding: 4px 8px; border-top: 1px solid var(--glass-line); }
+.lotw-qsos tr.held td { color: var(--muted); text-decoration: line-through; }
+
+.lotw-batch-row { margin: 6px 0; font-size: 13px; }
+.lotw-batch-row > summary { cursor: pointer; }
+.lotw-batch-row .hint { margin-left: 6px; }

@@ -93,6 +93,7 @@ from loglab_engine.lotw import (
     LotwClient,
     Place,
     Setup,
+    Skipped,
     Transport,
     https,
 )
@@ -139,7 +140,7 @@ from loglab_engine.store import (
 from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
 from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
-from loglab_engine.store.lotw import LotwAccountStore
+from loglab_engine.store.lotw import BatchQso, LotwAccountStore, LotwBatch
 from loglab_engine.store.operation import (
     Operation,
     OperationNotFoundError,
@@ -1264,8 +1265,39 @@ class LotwCertificateOut(BaseModel):
     expires: datetime
 
 
+class LotwBatchQsoOut(BaseModel):
+    """A QSO in a LoTW batch, as it was when the batch was prepared."""
+
+    id: uuid.UUID
+    version: int
+    call: str | None
+    qso_start: datetime | None
+    band: str | None
+    mode: str | None
+    sent: bool
+
+
+class LotwBatchOut(BaseModel):
+    """A batch of QSOs for LoTW.
+
+    ``state`` is ``ready`` (waiting for the operator's review), ``sent`` or
+    ``cancelled``. LoTW numbers neither uploads nor QSOs, so ``id`` is
+    LabLog's own batch number. ``qsos`` is listed only for one batch.
+    """
+
+    id: int
+    station_call: str
+    state: str
+    prepared_at: datetime
+    finished_at: datetime | None
+    answer: str | None
+    count: int
+    sent: int
+    qsos: list[LotwBatchQsoOut] | None = None
+
+
 class LotwSetupOut(BaseModel):
-    """The operator's LoTW set-up, and how many of their QSOs wait to be sent.
+    """The operator's LoTW set-up, how many of their QSOs wait, and any batch to review.
 
     ``problem`` says what stops sending, if anything is set up wrongly.
     """
@@ -1277,6 +1309,7 @@ class LotwSetupOut(BaseModel):
     qsl_since: str | None
     problem: str | None
     message: str
+    batch: LotwBatchOut | None
 
 
 class LotwSkippedOut(BaseModel):
@@ -1287,8 +1320,22 @@ class LotwSkippedOut(BaseModel):
     reason: str
 
 
+class LotwPrepareOut(BaseModel):
+    """What preparing a batch did; nothing is sent until the batch is.
+
+    ``status`` is ``done``, ``nothing``, ``not_set_up`` or
+    ``certificate_problem``.
+    """
+
+    status: str
+    batch: LotwBatchOut | None
+    skipped: list[LotwSkippedOut]
+    remaining: int
+    message: str
+
+
 class LotwUploadOut(BaseModel):
-    """What sending did.
+    """What sending a batch did.
 
     ``status`` is ``done``, ``nothing``, ``not_set_up``, ``unreachable``,
     ``rejected`` or ``certificate_problem``.
@@ -3144,6 +3191,11 @@ def _setup_out(setup: Setup) -> LotwSetupOut:
         message = "LoTW is not set up."
     elif location is None:
         message = f"Certificate for {cert.call} saved. Add your station location to send QSOs."
+    elif setup.batch is not None:
+        n = setup.batch.count
+        message = (
+            f"Batch {setup.batch.id} ({n} QSO{'' if n == 1 else 's'}) is waiting for your review."
+        )
     else:
         waiting = setup.waiting
         message = (
@@ -3177,7 +3229,39 @@ def _setup_out(setup: Setup) -> LotwSetupOut:
         qsl_since=setup.qsl_since,
         problem=setup.problem,
         message=setup.problem or message,
+        batch=None if setup.batch is None else _batch_out(setup.batch),
     )
+
+
+def _batch_out(batch: LotwBatch, qsos: tuple[BatchQso, ...] | None = None) -> LotwBatchOut:
+    return LotwBatchOut(
+        id=batch.id,
+        station_call=batch.station_call,
+        state=batch.state,
+        prepared_at=batch.prepared_at,
+        finished_at=batch.finished_at,
+        answer=batch.answer,
+        count=batch.count,
+        sent=batch.sent,
+        qsos=None
+        if qsos is None
+        else [
+            LotwBatchQsoOut(
+                id=q.qso_id,
+                version=q.version,
+                call=q.call,
+                qso_start=q.qso_start,
+                band=q.band,
+                mode=q.mode,
+                sent=q.sent,
+            )
+            for q in qsos
+        ],
+    )
+
+
+def _skipped_out(skipped: tuple[Skipped, ...]) -> list[LotwSkippedOut]:
+    return [LotwSkippedOut(id=s.qso_id, call=s.call, reason=s.reason) for s in skipped]
 
 
 @api.get("/lotw")
@@ -3246,22 +3330,73 @@ def delete_lotw(who: Signed, lotw: LotwService) -> None:
     lotw.remove(who)
 
 
-@api.post("/lotw/upload")
-def lotw_upload(who: Signed, conn: Conn, lotw: LotwService) -> LotwUploadOut:
-    """Sign the operator's waiting QSOs with their certificate and send them to LoTW.
+@api.post("/lotw/batches")
+def lotw_prepare(who: Signed, conn: Conn, lotw: LotwService) -> LotwPrepareOut:
+    """Gather the operator's waiting QSOs into a batch for review. Nothing is sent.
 
-    Always answers 200; ``status`` says what happened. QSOs LoTW accepted get
-    ``LOTW_QSL_SENT`` ``Y``, as a new audited version (Principle VII).
+    Always answers 200; ``status`` says what happened. While a batch waits for
+    review, this answers with it rather than making another.
     """
     _require(conn, who, Permission.LOG)
-    result = lotw.upload(who)
-    return LotwUploadOut(
+    result = lotw.prepare(who)
+    batch = None
+    if result.batch is not None:
+        found = lotw.batch(who, result.batch.id)
+        batch = None if found is None else _batch_out(*found)
+    return LotwPrepareOut(
         status=result.outcome.value,
-        sent=result.sent,
-        skipped=[LotwSkippedOut(id=s.qso_id, call=s.call, reason=s.reason) for s in result.skipped],
+        batch=batch,
+        skipped=_skipped_out(result.skipped),
         remaining=result.remaining,
         message=result.message,
     )
+
+
+@api.get("/lotw/batches")
+def lotw_batches(who: Signed, lotw: LotwService) -> list[LotwBatchOut]:
+    """The operator's latest LoTW batches, newest first."""
+    return [_batch_out(b) for b in lotw.batches(who)]
+
+
+@api.get("/lotw/batches/{batch_id}")
+def lotw_batch(batch_id: int, who: Signed, lotw: LotwService) -> LotwBatchOut:
+    """One of the operator's LoTW batches, with its QSOs as they were when prepared."""
+    found = lotw.batch(who, batch_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"you have no LoTW batch {batch_id}")
+    return _batch_out(*found)
+
+
+@api.post("/lotw/batches/{batch_id}/send")
+def lotw_send(batch_id: int, who: Signed, conn: Conn, lotw: LotwService) -> LotwUploadOut:
+    """Sign the QSOs in the operator's reviewed batch and send them to LoTW.
+
+    Always answers 200; ``status`` says what happened. QSOs LoTW took get
+    ``LOTW_QSL_SENT`` ``Y``, as a new audited version (Principle VII). A QSO
+    changed since the batch was prepared is not sent.
+    """
+    _require(conn, who, Permission.LOG)
+    result = lotw.release(who, batch_id)
+    return LotwUploadOut(
+        status=result.outcome.value,
+        sent=result.sent,
+        skipped=_skipped_out(result.skipped),
+        remaining=result.remaining,
+        message=result.message,
+    )
+
+
+@api.post("/lotw/batches/{batch_id}/cancel")
+def lotw_cancel(batch_id: int, who: Signed, conn: Conn, lotw: LotwService) -> LotwBatchOut:
+    """Cancel the operator's batch waiting for review; its QSOs keep waiting. Nothing is sent."""
+    _require(conn, who, Permission.LOG)
+    if not lotw.cancel(who, batch_id):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"LoTW batch {batch_id} is not waiting for review"
+        )
+    found = lotw.batch(who, batch_id)
+    assert found is not None  # noqa: S101 - it was just cancelled
+    return _batch_out(*found)
 
 
 @api.post("/lotw/download")
