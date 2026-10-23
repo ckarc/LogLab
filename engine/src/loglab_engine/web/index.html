@@ -103,7 +103,14 @@
         <p id="profile-empty" class="hint">Type a call in New QSO to see who it is and when you worked them before.</p>
         <div id="profile-body" hidden>
           <div class="profile-top">
-            <img id="profile-photo" class="profile-photo" alt="" hidden>
+            <div class="profile-side">
+              <img id="profile-photo" class="profile-photo" alt="" hidden>
+              <p id="profile-path" class="profile-path" hidden>
+                <button type="button" id="profile-distance" class="link" title="Click for kilometres or miles"></button>
+                <span id="profile-heading"></span>
+                <span class="hint profile-path-note" title="Worked out from the two stations' grid squares, not measured">from grid squares</span>
+              </p>
+            </div>
             <div class="profile-about">
               <div class="profile-who">
                 <span id="profile-call" class="profile-call"></span>
@@ -113,7 +120,7 @@
               <p class="profile-source"><span id="profile-source" class="hint" aria-live="polite"></span> <button type="button" id="profile-refresh" class="link" hidden>Refresh from QRZ.com</button></p>
             </div>
           </div>
-          <details id="profile-bio-part" class="profile-bio" open hidden>
+          <details id="profile-bio-part" class="profile-bio" hidden>
             <summary>Biography</summary>
             <div id="profile-bio"></div>
           </details>

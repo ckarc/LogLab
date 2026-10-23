@@ -72,6 +72,8 @@
     operation: null,
     by_overlay: {},
     world_qsos: WORLD_QSOS,
+    bio_open: false,
+    distance_unit: "mi",
   });
   // Panels: parts of a module the operator places above, below, or beside
   // the module's main content, the way boxes are placed on the page. Each
@@ -415,7 +417,9 @@
     }
     const count = saved && Number(saved.world_qsos);
     const world_qsos = Number.isInteger(count) && count >= 1 && count <= MAX_WORLD_QSOS ? count : WORLD_QSOS;
-    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos };
+    const bio_open = Boolean(saved && saved.bio_open === true);
+    const distance_unit = saved && saved.distance_unit === "km" ? "km" : "mi";
+    return { version: 1, modules, tables, panels, detail, theme, operation, by_overlay, world_qsos, bio_open, distance_unit };
   }
 
   function applyTheme(theme) {
@@ -2287,7 +2291,7 @@
       // Panels go back to their places with the boxes.
       // An overlay's own layout is its starting point (overlay.js).
       const base = normalize(overlayDefault || DEFAULT_LAYOUT);
-      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos };
+      layout = { ...base, tables: layout.tables, detail: layout.detail, theme: layout.theme, operation: layout.operation, by_overlay: layout.by_overlay, world_qsos: layout.world_qsos, bio_open: layout.bio_open, distance_unit: layout.distance_unit };
       applyLayout();
       saveLayout();
     });
