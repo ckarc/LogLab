@@ -71,6 +71,8 @@
     if (form.CALL.value.trim() === "") { asked = ""; unfill(); say(""); }
   });
   form.addEventListener("submit", () => { asked = ""; say(""); });
+  // A stored or cleared form starts fresh: the same call typed again is looked up again.
+  document.addEventListener("loglab:entry-reset", () => { asked = ""; unfill(); say(""); });
   note.addEventListener("transitionend", () => {
     if (note.classList.contains("fading")) say("");
   });

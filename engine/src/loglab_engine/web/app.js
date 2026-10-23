@@ -1631,7 +1631,10 @@
     }
   }
 
-  function resetEntry() {
+  // Empty New QSO for the next contact. After a store the form keeps the
+  // band and mode; Esc (cleared) does the same but logs nothing, and also
+  // forgets the station the profile box was showing.
+  function resetEntry({ cleared = false } = {}) {
     const form = $("#entry");
     const { date, time } = utcNow();
     for (const name of ["CALL", "FREQ", "RST_SENT", "RST_RCVD", "NAME", "QTH", "STATE", "GRIDSQUARE", "CLASS", "ARRL_SECT", "COMMENT"]) form[name].value = "";
@@ -1639,7 +1642,7 @@
     form.TIME_ON.value = time;
     showCallZeros(form.CALL);
     form.CALL.focus();
-    document.dispatchEvent(new CustomEvent("loglab:entry-reset"));
+    document.dispatchEvent(new CustomEvent("loglab:entry-reset", { detail: { cleared } }));
   }
 
   // The Call box shows zeros slashed as they are typed. An input can only
@@ -2229,6 +2232,15 @@
       saveLayout();
     });
     $("#entry").addEventListener("submit", storeQso);
+    // Esc anywhere in New QSO throws the half-typed contact away and starts
+    // over. Nothing was journaled yet, so nothing is logged. An open band or
+    // mode list takes its own Esc first.
+    $("#entry").addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.isComposing) return;
+      event.preventDefault();
+      setError("#entry", "");
+      resetEntry({ cleared: true });
+    });
     const callInput = $("#entry [name=CALL]");
     for (const type of ["input", "scroll", "keyup", "select"]) {
       callInput.addEventListener(type, () => showCallZeros(callInput));

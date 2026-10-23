@@ -214,9 +214,17 @@
   });
 
   // After a QSO is stored the box keeps the station just worked, now with
-  // the new QSO in its list.
+  // the new QSO in its list. A form cleared with Esc empties the box instead.
   document.addEventListener("loglab:log-loaded", () => loadWorked());
-  document.addEventListener("loglab:entry-reset", () => tell({ stored: true }));
+  document.addEventListener("loglab:entry-reset", (event) => {
+    if (event.detail?.cleared) {
+      clearTimeout(pauseTimer);
+      clear();
+      tell({ call: "" });
+    } else {
+      tell({ stored: true });
+    }
+  });
   if (channel) {
     channel.addEventListener("message", (event) => {
       const message = event.data || {};
