@@ -746,6 +746,41 @@
     "two-thirds:left": "Left two thirds", "two-thirds:right": "Right two thirds",
   };
 
+  // While something is carried near the top or bottom of the window, the
+  // page scrolls that way, faster the closer the pointer gets to the edge,
+  // so a box can go anywhere on a page taller than the screen. `onScroll`
+  // runs after each step so the drop place follows the page.
+  const EDGE = 64;
+  const EDGE_SPEED = 24;
+  function edgeScroll(onScroll) {
+    let y = null;
+    let frame = 0;
+    const step = () => {
+      frame = 0;
+      if (y === null) return;
+      const h = window.innerHeight;
+      const zone = Math.min(EDGE, h / 4);
+      const speed = y < zone ? -(zone - y) / zone : y > h - zone ? (y - (h - zone)) / zone : 0;
+      if (!speed) return;
+      const was = window.scrollY;
+      window.scrollBy(0, Math.round(Math.max(-1, Math.min(1, speed)) * EDGE_SPEED) || Math.sign(speed));
+      if (window.scrollY === was) return;
+      onScroll();
+      frame = requestAnimationFrame(step);
+    };
+    return {
+      move(e) {
+        y = e.clientY;
+        if (!frame) frame = requestAnimationFrame(step);
+      },
+      stop() {
+        y = null;
+        if (frame) cancelAnimationFrame(frame);
+        frame = 0;
+      },
+    };
+  }
+
   // Dragging uses pointer events, so it works with a mouse, a pen, or a
   // finger. The box's place shows as an outline; a small card follows the
   // pointer like a window being carried.
@@ -758,12 +793,13 @@
     const area = $("#workspace").getBoundingClientRect();
     // Where the other boxes are, in order, with each one's index once this
     // box is lifted out of the order.
+    // Tops are kept in page coordinates, so they hold while the page scrolls.
     const rest = layout.modules.filter((m) => m.id !== id);
     const others = rest.map((m, index) => ({ m, index }))
       .filter(({ m }) => shown(m))
       .map(({ m, index }) => {
         const r = moduleEl(m.id).getBoundingClientRect();
-        return { index, top: r.top, height: r.height, left: r.left, right: r.right };
+        return { index, top: r.top + window.scrollY, height: r.height, left: r.left, right: r.right };
       });
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
@@ -786,9 +822,9 @@
     };
     follow(event);
     let last = "";
-    const onMove = (e) => {
-      follow(e);
-      const t = dropTarget(e.clientX, e.clientY, others, area, layout.modules.find((m) => m.id === id).width);
+    let at = event;
+    const aim = () => {
+      const t = dropTarget(at.clientX, at.clientY + window.scrollY, others, area, layout.modules.find((m) => m.id === id).width);
       const key = `${t.index}:${t.width}:${t.side}`;
       if (key === last) return;
       last = key;
@@ -798,7 +834,16 @@
       // puts it once it has been lifted out.
       place(id, t.index, t.width, t.side);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       handle.removeEventListener("pointermove", onMove);
       handle.removeEventListener("pointerup", onUp);
       handle.removeEventListener("pointercancel", onCancel);
@@ -814,6 +859,7 @@
     };
     const onUp = () => finish(true);
     const onCancel = () => finish(false);
+    window.addEventListener("scroll", aim, { passive: true });
     handle.addEventListener("pointermove", onMove);
     handle.addEventListener("pointerup", onUp);
     handle.addEventListener("pointercancel", onCancel);
@@ -917,7 +963,9 @@
     const el = panelEl(id);
     const panel = PANELS[id];
     const before = { ...layout.panels };
-    const area = el.closest(".panels").getBoundingClientRect();
+    const block = el.closest(".panels").getBoundingClientRect();
+    // In page coordinates, so it holds while the page scrolls.
+    const area = { left: block.left, width: block.width, top: block.top + window.scrollY, height: block.height };
     const grab = handle.getBoundingClientRect();
     const dx = event.clientX - grab.left;
     const dy = event.clientY - grab.top;
@@ -939,14 +987,23 @@
     };
     follow(event);
     const pointer = event.pointerId;
-    const onMove = (e) => {
-      if (e.pointerId !== pointer) return;
-      follow(e);
-      const place = panelTarget(e.clientX, e.clientY, area);
+    let at = event;
+    const aim = () => {
+      const place = panelTarget(at.clientX, at.clientY + window.scrollY, area);
       ghostWhere.textContent = panelWhere(place, panel);
       placePanel(id, place);
     };
+    const scroller = edgeScroll(aim);
+    const onMove = (e) => {
+      if (e.pointerId !== pointer) return;
+      at = e;
+      follow(e);
+      aim();
+      scroller.move(e);
+    };
     const finish = (keep) => {
+      scroller.stop();
+      window.removeEventListener("scroll", aim);
       window.removeEventListener("pointermove", onMove);
       window.removeEventListener("pointerup", onUp);
       window.removeEventListener("pointercancel", onCancel);
@@ -962,6 +1019,7 @@
     };
     const onUp = (e) => { if (e.pointerId === pointer) finish(true); };
     const onCancel = (e) => { if (e.pointerId === pointer) finish(false); };
+    window.addEventListener("scroll", aim, { passive: true });
     window.addEventListener("pointermove", onMove);
     window.addEventListener("pointerup", onUp);
     window.addEventListener("pointercancel", onCancel);
