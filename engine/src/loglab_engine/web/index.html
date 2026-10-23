@@ -141,12 +141,6 @@
         </div>
       </section>
 
-      <section id="journal" class="card module" data-module="journal" hidden>
-        <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
-        <ul id="journal-list"></ul>
-        <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
-      </section>
-
       <section class="card module" data-module="log">
         <h2>Log
           <span id="log-whose" class="segmented log-whose" role="group" aria-label="Whose QSOs the Log shows" hidden>
@@ -298,6 +292,17 @@
       </section>
 
       </div>
+
+      <!-- QSOs this browser holds that the Engine has not logged yet. Not a
+           box: it pops up over the corner of the page whenever one is
+           waiting and stays until every one is logged (Principle XV). It
+           never blocks the page, so logging goes on while the Engine is out
+           of reach. -->
+      <section id="journal" class="card journal-pop" role="status" aria-live="polite" hidden>
+        <h2><span>Not logged yet (<span id="journal-count">0</span>)</span> <span class="hint">kept in this browser until the Engine has them</span></h2>
+        <ul id="journal-list"></ul>
+        <div class="actions"><button type="button" id="send-now" class="small secondary">Send now</button></div>
+      </section>
     </div>
   </main>
 
