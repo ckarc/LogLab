@@ -11,10 +11,13 @@ The lookups are spaced a few seconds apart and capped per hour, to go easy on
 QRZ.com.
 
 Starlink is a metered link in the field, so by default nothing is re-checked
-while the Engine's internet comes through Starlink. The Engine tells by asking
-which network its public address belongs to: SpaceX's (AS14593), or a name
-under starlinkisp.net. An administrator can instead re-check on any internet,
-or never. When the network can't be told, nothing is re-checked.
+while the Engine's internet comes through Starlink. In FieldLab the gateway
+says which link it is using, on FieldLab's MQTT bus: re-checking runs only on
+the shop link (wan1), never on Starlink or the phone tether. With no word from
+the bus, the Engine asks which network its public address belongs to: SpaceX's
+(AS14593), or a name under starlinkisp.net, is Starlink. An administrator can
+instead re-check on any internet, or never. When the network can't be told,
+nothing is re-checked.
 
 This is reference data only, apart from the log (Principle VI). It never
 blocks a lookup or logging, and with no internet it does nothing (Principle V).
@@ -46,6 +49,7 @@ from loglab_engine.callbook.qrz import (
     clean_text,
 )
 from loglab_engine.callbook.service import RECHECK_AFTER, SOURCE
+from loglab_engine.mqtt import MqttError, read_retained
 from loglab_engine.store import connect
 from loglab_engine.store.callbook import CallbookStore
 
@@ -66,6 +70,10 @@ _STARLINK_AS: Final = "AS14593"
 _STARLINK_NAME: Final = ".starlinkisp.net"
 WHERE_AM_I: Final = "https://ipinfo.io/json"
 WHAT_IS_MY_ADDRESS: Final = "https://api.ipify.org"
+# FieldLab's kiosk (github.com/ckarc/fieldlab-kiosk) publishes what its gateway says.
+FACTS_TOPIC: Final = "fieldlab/facts/host"
+HOME_WAN: Final = "wan1"  # the shop link, not metered
+FACTS_STALE_SECONDS: Final = 900.0
 _log = logging.getLogger(__name__)
 
 
@@ -82,6 +90,8 @@ class Network(StrEnum):
 
     NONE = "none"
     STARLINK = "starlink"
+    METERED = "metered"  # a gateway link other than the shop's, such as a phone tether
+    SHOP = "shop"  # the gateway's own word: the shop link
     OTHER = "other"
     UNKNOWN = "unknown"
 
@@ -133,6 +143,67 @@ def _address(value: object) -> str | None:
         return None
 
 
+def gateway_uplink(facts: bytes | None, now: float, home: str = HOME_WAN) -> NetworkSeen | None:
+    """Which link FieldLab's gateway is using, from the kiosk's retained facts message.
+
+    ``None`` when the message is missing, too old, or doesn't say; the first
+    link listed is the one in use. Everything in it is untrusted and only compared.
+    """
+    links = _links(facts, now)
+    if links is None:
+        return None
+    wans, names = links
+    if not wans:
+        return NetworkSeen(Network.NONE)
+    named = names.get(wans[0])
+    name = clean_text(named, 40) if isinstance(named, str) else None
+    label = name or clean_text(wans[0], 16)
+    if wans[0] == home:
+        return NetworkSeen(Network.SHOP, None, label)
+    starlink = "starlink" in (name or "").lower()
+    return NetworkSeen(Network.STARLINK if starlink else Network.METERED, None, label)
+
+
+def _links(facts: bytes | None, now: float) -> tuple[list[str], dict[str, object]] | None:
+    """The gateway's links in use, first the active one, and their names, if fresh and stated."""
+    try:
+        doc = json.loads(facts) if facts is not None else None
+    except ValueError:
+        return None
+    uplink = doc.get("uplink") if isinstance(doc, dict) else None
+    stamp = doc.get("ts") if isinstance(doc, dict) else None
+    fresh = isinstance(stamp, int | float) and 0 <= now - stamp <= FACTS_STALE_SECONDS
+    if not fresh or not isinstance(uplink, dict) or uplink.get("error"):
+        return None
+    wans, names = uplink.get("wans"), uplink.get("names")
+    if not isinstance(wans, list) or not all(isinstance(w, str) for w in wans):
+        return None
+    return wans, names if isinstance(names, dict) else {}
+
+
+def gateway_or_address(
+    read_facts: Callable[[], bytes | None],
+    fallback: Callable[[], NetworkSeen] | None = None,
+    clock: Callable[[], float] = time.time,
+) -> NetworkSeen:
+    """The gateway's word on the bus if it has given one, else :func:`look_at_network`."""
+    try:
+        seen = gateway_uplink(read_facts(), clock())
+    except MqttError as error:
+        _log.info("QRZ profile re-check: FieldLab's bus: %s", error)
+        seen = None
+    return seen if seen is not None else (fallback or look_at_network)()
+
+
+def bus_reader(host: str, port: int) -> Callable[[], bytes | None]:
+    """Reads the kiosk's retained facts message from the broker at ``host``:``port``."""
+
+    def read() -> bytes | None:
+        return read_retained(host, port, FACTS_TOPIC, client_id="lablog-engine-network")
+
+    return read
+
+
 def look_at_network(
     fetch: Callable[[str], bytes] = fetch_small,
     reverse: Callable[[str], str | None] = reverse_name,
@@ -178,8 +249,15 @@ def look_at_network(
 _HELD: Final = {
     Network.NONE: "No internet right now.",
     Network.STARLINK: "Paused: the internet is Starlink.",
+    Network.METERED: "Paused: the internet is a metered link",
     Network.UNKNOWN: "Paused: LabLog can't tell which network this is.",
 }
+
+
+def _held(seen: NetworkSeen) -> str:
+    if seen.network is Network.METERED:
+        return f"{_HELD[Network.METERED]} ({seen.provider or 'not the shop link'})."
+    return _HELD[seen.network]
 
 
 @dataclass(frozen=True, slots=True)
@@ -273,10 +351,10 @@ class ProfileRefresher:
             return self._report(None, 0, 0, 0, "Waiting for a QRZ.com login that QRZ.com accepts.")
         if self._link.down():
             return self._report(Network.NONE, 0, 0, 0, "QRZ.com can't be reached right now.")
-        network = self._network().network
-        if network is Network.NONE or (mode is Mode.AUTO and network in _HELD):
-            return self._report(network, 0, 0, 0, _HELD[network])
-        return self._recheck(store, login, due, network)
+        seen = self._network()
+        if seen.network is Network.NONE or (mode is Mode.AUTO and seen.network in _HELD):
+            return self._report(seen.network, 0, 0, 0, _held(seen))
+        return self._recheck(store, login, due, seen.network)
 
     def _recheck(
         self, store: CallbookStore, login: tuple[str, str], due: list[str], network: Network

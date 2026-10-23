@@ -20,8 +20,10 @@ Exit codes: 0 stopped normally, 2 refused or failed to start.
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, TextIO
 
@@ -30,6 +32,7 @@ import uvicorn
 
 from loglab_engine import __version__
 from loglab_engine.api import create_app
+from loglab_engine.callbook.profiles import bus_reader, gateway_or_address
 from loglab_engine.cli.operator import RefusedError, check_schema
 from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.reference.refresh import HttpDownloads, Refresher
@@ -42,6 +45,18 @@ if TYPE_CHECKING:
 EXIT_OK: Final = 0
 EXIT_REFUSED: Final = 2
 DEFAULT_PORT: Final = 8073
+
+
+def _broker(text: str) -> tuple[str, int]:
+    """``HOST`` or ``HOST:PORT`` (default port 1883)."""
+    host, _, port = text.strip().partition(":")
+    try:
+        number = int(port) if port else 1883
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"not a port: {port}") from None
+    if not host or not 0 < number < 65536:  # noqa: PLR2004 - TCP's port range
+        raise argparse.ArgumentTypeError(f"not HOST or HOST:PORT: {text}")
+    return host, number
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -63,6 +78,14 @@ def _parser() -> argparse.ArgumentParser:
         help="address to listen on (default 127.0.0.1, this machine only)",
     )
     serve.add_argument("--port", type=int, default=DEFAULT_PORT, help="default 8073")
+    serve.add_argument(
+        "--mqtt",
+        type=_broker,
+        default=os.environ.get("LOGLAB_MQTT") or None,  # argparse checks it with _broker
+        metavar="HOST[:PORT]",
+        help="FieldLab's MQTT broker, to read which internet link the gateway uses"
+        " (default: $LOGLAB_MQTT, else none)",
+    )
     serve.add_argument(
         "--no-license-refresh",
         action="store_true",
@@ -172,7 +195,12 @@ def main(
         return EXIT_OK
     out.write(f"LabLog Engine {__version__}: http://{args.host}:{args.port}/\n")
     out.flush()
-    app = create_app(database)
+    if args.mqtt is None:
+        app = create_app(database)
+    else:
+        # In FieldLab, the gateway's word on its MQTT bus says which link is in use.
+        network = partial(gateway_or_address, bus_reader(*args.mqtt))
+        app = create_app(database, profile_network=network)
     app.state.logbook.start()  # sends QSOs to QRZ logbooks, when operators set that up
     app.state.profiles.start()  # re-checks kept QRZ.com profiles, off Starlink
     if not args.no_license_refresh:

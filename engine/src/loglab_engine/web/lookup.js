@@ -197,7 +197,7 @@
   // -- When stored profiles are re-checked (an admin setting) --------------
 
   const refresh = $("#qrz-refresh-form");
-  const NETWORKS = { starlink: "Starlink", other: "not Starlink", none: "no internet", unknown: "couldn't tell" };
+  const NETWORKS = { shop: "shop link", starlink: "Starlink", metered: "metered link", other: "not Starlink", none: "no internet", unknown: "couldn't tell" };
 
   function refreshProblem(text) { $(".error", refresh).textContent = text; }
 
