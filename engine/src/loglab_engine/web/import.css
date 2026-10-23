@@ -1,0 +1,9 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The Import an ADIF file dialog (import.js). */
+.import-where { border: 1px solid var(--glass-line); border-radius: 10px; margin: 0 0 12px; padding: 8px 12px; }
+.import-where legend { padding: 0 4px; }
+.import-where label { display: block; margin: 6px 0; }
+.import-warnings { margin: 8px 0 0; padding-left: 18px; font-size: 0.85em; }
+.import-warnings:empty { display: none; }
