@@ -1708,7 +1708,7 @@
     $("#sign-in").hidden = true;
     $("#app").hidden = false;
     $("#who").hidden = false;
-    $("#menu-open").hidden = false;
+    $("#menu-open").hidden = Boolean(SOLO); // a popped-out box is only the box: no top bar, no Menu
     $("#arrange").hidden = Boolean(SOLO); // a page of one box has nothing to arrange
     $("#all-boxes").hidden = !SOLO;
     $("#who").textContent = `${session.operator} at ${session.station}`;
@@ -2567,7 +2567,7 @@
     });
     // The menu: one plain-text entry in the top bar opens everything else.
     const menu = $("#menu-dialog");
-    $("#menu-open").addEventListener("click", () => menu.showModal());
+    $("#menu-open").addEventListener("click", () => { if (!SOLO) menu.showModal(); });
     $("#menu-close").addEventListener("click", () => menu.close());
     menu.addEventListener("click", (event) => { if (event.target === menu) menu.close(); }); // the backdrop
     tidyMenu(menu);
