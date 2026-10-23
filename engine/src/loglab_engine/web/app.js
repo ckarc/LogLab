@@ -617,17 +617,14 @@
     });
     applyPanels();
     pack();
+    // While unlocked, the bar lists every box with a tick: untick to hide
+    // one, tick a hidden one to bring it back (the Menu has the same list).
     const tray = $("#tray");
-    tray.replaceChildren();
+    const title = document.createElement("span");
+    title.className = "tray-title";
+    title.textContent = "Boxes shown:";
+    tray.replaceChildren(title, ...boxChoices({ offeredOnly: true }));
     showBoxPicker();
-    for (const m of layout.modules.filter((x) => x.hidden && !unoffered.has(x.id))) {
-      const show = document.createElement("button");
-      show.type = "button";
-      show.className = "small secondary";
-      show.textContent = `Show ${MODULES[m.id]}`;
-      show.addEventListener("click", () => changeLayout(m.id, { hidden: false }));
-      tray.append(show);
-    }
   }
 
   function saveLayout() {
@@ -1132,9 +1129,14 @@
   function showBoxPicker() {
     const list = $("#box-picker");
     if (!list || list.hidden) return;
-    list.replaceChildren();
+    list.replaceChildren(...boxChoices());
+  }
+
+  // The bar leaves out maps the overlay does not use; the Menu lists them, saying so.
+  function boxChoices({ offeredOnly = false } = {}) {
+    const rows = [];
     for (const m of layout.modules) {
-      if (!HIDEABLE.has(m.id)) continue;
+      if (!HIDEABLE.has(m.id) || (offeredOnly && unoffered.has(m.id))) continue;
       const row = document.createElement("label");
       row.className = "inline";
       const tick = document.createElement("input");
@@ -1149,8 +1151,9 @@
         note.textContent = `(${why})`;
         row.append(" ", note);
       }
-      list.append(row);
+      rows.push(row);
     }
+    return rows;
   }
 
   // A box popped out into a window of its own is not shown here as well.
