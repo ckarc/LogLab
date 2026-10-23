@@ -449,6 +449,19 @@
       </div>
       <p class="error" role="alert"></p>
     </form>
+    <form id="qrz-refresh-form" method="dialog" autocomplete="off">
+      <h3>Keeping stored profiles current</h3>
+      <p class="hint">Once a stored profile is a month old, LabLog quietly asks QRZ.com again for its small callsign record, a few seconds apart. It downloads the biography or photo again only when QRZ.com says it changed. Nothing is checked with no internet, and lookups and logging never wait on it.</p>
+      <label>Re-check stored profiles
+        <select name="mode">
+          <option value="auto">On any internet except Starlink</option>
+          <option value="always">On any internet, Starlink too</option>
+          <option value="off">Never</option>
+        </select>
+      </label>
+      <p id="qrz-refresh-state" class="hint" aria-live="polite"></p>
+      <p class="error" role="alert"></p>
+    </form>
     <div class="actions"><button type="button" id="qrz-close" class="secondary">Close</button></div>
   </dialog>
 

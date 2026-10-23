@@ -42,6 +42,7 @@ class FakeQrz:
         self.bio = "First licensed in 1914."
         self.bio_date = "2023-10-26 17:02:11"
         self.photo = JPEG
+        self.image = PHOTO_URL
 
     def __call__(self, url: str) -> bytes:
         """Answer one request."""
@@ -65,7 +66,7 @@ class FakeQrz:
         record = (
             "<Callsign><call>W1AW</call><fname>Hiram Percy</fname><name>Maxim</name>"
             "<addr2>Newington</addr2><state>CT</state><country>United States</country>"
-            "<grid>FN31pr</grid><bio>120</bio><image>https://cdn-xml.qrz.com/u/w1aw/w1aw.jpg</image>"
+            f"<grid>FN31pr</grid><bio>120</bio><image>{self.image}</image>"
             f"<biodate>{self.bio_date}</biodate></Callsign>"
         )
         return f'<QRZDatabase xmlns="http://xmldata.qrz.com">{record}<Session>{key}</Session></QRZDatabase>'.encode()
@@ -75,7 +76,7 @@ class FakeQrz:
         assert limit > 0
         if not self.online:
             raise QrzUnreachableError("no internet")
-        if url == PHOTO_URL:
+        if url == self.image:
             self.asked.append({"photo": url})
             return self.photo
         query = dict(urllib.parse.parse_qsl(urllib.parse.urlsplit(url).query))

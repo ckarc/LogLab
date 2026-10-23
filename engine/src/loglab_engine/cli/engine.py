@@ -174,6 +174,7 @@ def main(
     out.flush()
     app = create_app(database)
     app.state.logbook.start()  # sends QSOs to QRZ logbooks, when operators set that up
+    app.state.profiles.start()  # re-checks kept QRZ.com profiles, off Starlink
     if not args.no_license_refresh:
         app.state.licenses.start()  # keeps the FCC and ISED lists current, when online
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")
