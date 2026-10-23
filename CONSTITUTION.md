@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 2.0.1                                                                                  |
+| **Version**    | 2.1.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -151,6 +151,14 @@ Every change to a QSO record is versioned: which operator changed it
 a recorded action, not an erasure, and a deleted QSO can be recovered. No
 import, migration, template change, or sync operation may modify existing QSOs
 except through this same audited path.
+
+A pretend QSO is the one exception. A pretend QSO is marked as made with a
+pretend station (`APP_LOGLAB_PRETEND`), is accepted only in a practice
+operation, and is never sent to any outside service. It is not a contact, so
+a signed-in administrator may erase the pretend QSOs of a practice operation
+entirely, history and all, as when demo mode is turned off. The erasure
+itself is recorded: who did it, when, in which operation, and how many QSOs it
+removed. A QSO with any version that is not pretend is never erased.
 
 *Why this is inviolable: a contact can't be re-made. Contest results, awards,
 and QSL confirmations all rest on the log being exactly what the operators
@@ -582,6 +590,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 1.2.0   | 2026-10-18 | Narrowed Principle XV: a QSO counts as logged once the Engine has committed it to durable storage; a second independent copy is no longer a condition for logging. Client journals, unique QSO identifiers, further copies, and tested recovery remain. Situation: the Field Lab station runs with no internet, and its operating positions include tablets and workstations that are not always on; requiring a second copy before a QSO counts as logged would leave every QSO unconfirmed whenever the second machine is a tablet, switched off, or out of reach, a worse outcome than logging on the Engine's durable commit. Decided by the maintainer. |
 | 2.0.0   | 2026-10-19 | Added Principle XX (Received Is Never Confused With Inferred): every decode is received, assisted, or predicted, carries that kind everywhere, and is never silently upgraded; benchmarks report received and assisted results separately. Added at the end so no principle is renumbered. Situation: LogLab's own FT8 decoder will reach weaker signals with help such as expected messages and combined repeats; without this rule, what a station probably sent could be logged and shown as what it did send, and the log could no longer be trusted as a record of what was heard. Requested by the maintainer. |
 | 2.0.1   | 2026-10-19 | Renamed the software LabLog wherever people read its name. The repository, code and database keep the name loglab. Wording only; no principle changed. Decided by the maintainer. |
+| 2.1.0   | 2026-10-23 | Narrowed Principle VII: an administrator may erase the pretend QSOs of a practice operation entirely, and the erasure itself is recorded; every other QSO keeps its full history. Situation: demo mode fills the boxes with pretend QSOs, using real calls marked pretend, to show LabLog to people. Keeping every one of them forever as deleted versions would fill the log's history with contacts that never happened, mixed in with the real ones, which is a worse outcome than erasing what was never a contact. Decided by the maintainer. |
 
 ---
 

@@ -21,10 +21,12 @@ Everything it makes is marked pretend (Principle XX):
 * its operators are Q calls, and its On air lines and radios say they are
   pretend.
 
-Its QSOs are logged through the versioned, audited path (Principle VII), in
-the session of the administrator who turned it on (Principle XIII): when that
-session ends, demo mode stops. It runs only in memory, so a restart of the
-Engine turns it off. All times are UTC (Principle VIII); nothing here needs
+Its QSOs are logged in the session of the administrator who turned it on
+(Principle XIII): when that session ends, demo mode stops. Turning it off
+erases them entirely, and the erasure is recorded (Principle VII as amended
+in Constitution 2.1.0: a pretend QSO is not a contact). It runs only in
+memory, so a restart of the Engine turns it off; its QSOs are then erased
+the next time an administrator turns it off. All times are UTC (Principle VIII); nothing here needs
 the internet (Principle V).
 """
 
