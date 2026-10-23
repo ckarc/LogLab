@@ -306,34 +306,8 @@
       head.append(" ", change);
     }
     box.append(head);
-    if (summary.by_band_mode.length) box.append(tallyTable(summary.by_band_mode));
-    if (summary.by_operator.length) {
-      const by = document.createElement("p");
-      by.className = "hint";
-      by.textContent = `By operator: ${summary.by_operator.map((t) => `${callText(t.operator)} ${t.qsos}`).join(" · ")}`;
-      box.append(by);
-    }
+    // The band and mode table and the count by operator are in the Stats box.
     box.hidden = false;
-  }
-
-  // Bands down the side, mode groups across, as the contest groups them.
-  function tallyTable(rows) {
-    const groups = ["CW", "Phone", "Digital"].filter((g) => rows.some((r) => r.mode_group === g));
-    const bands = [...new Set(rows.map((r) => r.band || "—"))];
-    const table = document.createElement("table");
-    table.className = "tally";
-    const cell = (tag, text) => { const c = document.createElement(tag); c.textContent = text; return c; };
-    const header = document.createElement("tr");
-    header.append(cell("th", "Band"), ...groups.map((g) => cell("th", g)), cell("th", "Total"));
-    table.append(header);
-    for (const band of bands) {
-      const tr = document.createElement("tr");
-      const mine = rows.filter((r) => (r.band || "—") === band);
-      tr.append(cell("td", band), ...groups.map((g) => cell("td", String(mine.find((r) => r.mode_group === g)?.qsos || ""))),
-        cell("td", String(mine.reduce((n, r) => n + r.qsos, 0))));
-      table.append(tr);
-    }
-    return table;
   }
 
   // -- Setting up an operation ----------------------------------------------

@@ -1,7 +1,7 @@
 /* SPDX-FileCopyrightText: 2026 LogLab contributors */
 /* SPDX-License-Identifier: AGPL-3.0-only */
 
-/* Operation overlays: the operation's name on New QSO, the dupe warning, the set-up dialog, and an operation's tally in the Log. */
+/* Operation overlays: the operation's name on New QSO, the dupe warning, the set-up dialog, and an operation's count in the Log. */
 
 .overlay-name {
   margin-left: 6px;
@@ -33,7 +33,3 @@
 .log-operation { width: auto; flex: 0 1 260px; }
 .op-tally { margin: 0 0 12px; font-size: 14px; }
 .op-tally p { margin: 0 0 8px; }
-.op-tally .tally { width: auto; border-collapse: collapse; margin-bottom: 8px; font-variant-numeric: tabular-nums; }
-.op-tally .tally th, .op-tally .tally td { padding: 3px 14px 3px 0; text-align: right; }
-.op-tally .tally th:first-child, .op-tally .tally td:first-child { text-align: left; }
-.op-tally .tally th { font-size: 12px; color: var(--muted); font-weight: 600; }
