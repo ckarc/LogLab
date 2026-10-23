@@ -1203,6 +1203,28 @@ class AdifImportOut(BaseModel):
     warnings: list[str]
 
 
+class AgentQsoIn(_Strict):
+    """A QSO a program on the station's computer logged, sent by its Station Agent.
+
+    ``adif`` is the program's own ADIF for the one QSO, exactly as it sent
+    it (WSJT-X's "Logged ADIF" message, say); ``id`` is the one the Agent
+    gave it in its journal, so a re-send never logs it twice (Principle XV).
+    """
+
+    id: Annotated[uuid.UUID, Field(strict=False)]
+    adif: Annotated[str, StringConstraints(min_length=1, max_length=MAX_VALUE)]
+    program: Annotated[str, StringConstraints(min_length=1, max_length=MAX_NAME)]
+
+
+class AgentQsoOut(BaseModel):
+    """What became of a QSO an Agent sent."""
+
+    qso_id: uuid.UUID
+    created: bool
+    operator: str
+    message: str
+
+
 class LotwCertificateIn(_Strict):
     """A LoTW callsign certificate: TrustedQSL's ``.p12`` file, in base64, and its password."""
 
@@ -2200,6 +2222,82 @@ def report_rig(body: AgentReportIn, station: AgentStation, rigs: Rigs) -> None:
             problem=body.problem if radio is None else None,
             heard_at=datetime.now(UTC),
         )
+    )
+
+
+def _chosen_operation(conn: Conn, who: Actor) -> OperationRef | None:
+    """The operation the operator is logging in now, as their saved layout says."""
+    layout = WorkspaceStore(conn).layout(who) or {}
+    chosen = layout.get("operation")
+    if not isinstance(chosen, dict):
+        return None
+    try:
+        return OperationRef.model_validate(chosen)
+    except ValidationError:
+        return None
+
+
+@api.post("/agent/qsos", status_code=status.HTTP_201_CREATED)
+def agent_log_qso(
+    body: AgentQsoIn, station: AgentStation, conn: Conn, response: Response, sync: Sync
+) -> AgentQsoOut:
+    """Log a QSO a program at the Agent's station logged, as the operator signed in there.
+
+    The QSO is logged exactly as if that operator had typed it at that
+    station: in the operation they chose, with its fields and its hours
+    (Principle XIII). With nobody signed in at the station, it is refused
+    with 503, and the Agent keeps it in its journal until someone signs in
+    (Principle XV). A QSO already in the log, the same call, band and mode
+    in the same UTC minute, is answered with that QSO, never logged twice.
+    """
+    who = IdentityStore(conn).at_station(station)
+    if who is None:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            f"nobody is signed in to LabLog at {station}",
+        )
+    if not IdentityStore(conn).may(who, Permission.LOG):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT, f"{who.operator}, signed in at {station}, may not log"
+        )
+    try:
+        parsed = parse_adi(body.adif.encode())
+    except AdiParseError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.program} sent ADIF LabLog can't read: {error}",
+        ) from error
+    if len(parsed.document.records) != 1:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.program} sent {len(parsed.document.records)} QSOs; one at a time, please",
+        )
+    record = parsed.document.records[0]
+    ref = _chosen_operation(conn, who)
+    if ref is not None:
+        made = _made({f.name.upper(): f.value for f in reversed(record.fields)})
+        found, station_fields, _ = _station(conn, who, ref, made)
+        record = stamp(record, found, station_fields)
+    store = LogStore(conn)
+    match = store.already_logged([record])[0]
+    if match is not None and match.qso_id != body.id:
+        response.status_code = status.HTTP_200_OK
+        return AgentQsoOut(
+            qso_id=match.qso_id,
+            created=False,
+            operator=who.operator,
+            message=f"{record.get('CALL') or 'That QSO'} is already in the log; nothing was added.",
+        )
+    note = f"Logged in {body.program} at {station}; sent by its Station Agent."
+    version, created = store.enter_qso(record, actor=who, qso_id=body.id, note=note)
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    sync.wake()
+    return AgentQsoOut(
+        qso_id=version.qso_id,
+        created=created,
+        operator=who.operator,
+        message=_written(version, created=created).message,
     )
 
 

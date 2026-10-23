@@ -62,6 +62,53 @@ This version only reads the radio. It never tunes it and never transmits
    QSO follows the radio until you type in Freq, Band, or Mode yourself; the
    next QSO follows it again.
 
+## Logging from WSJT-X
+
+The Agent can hear WSJT-X (or JTDX) log a QSO on the same computer and log
+it in LabLog, as the operator signed in at that station. Nobody types it
+twice.
+
+1. In WSJT-X, open Settings > Reporting. Set **UDP Server** to `127.0.0.1`
+   and **UDP Server port number** to `2237`. The Agent only listens; it sends
+   nothing to WSJT-X.
+2. Start the Agent with `--wsjtx 127.0.0.1:2237` added:
+
+   ```sh
+   loglab-agent run --engine http://127.0.0.1:8073 --station shack \
+       --key-file ~/.config/loglab/agent-key --wsjtx 127.0.0.1:2237 \
+       --hamlib-model 3073 --device /dev/ttyUSB0 --baud 19200
+   ```
+
+3. Sign in to LabLog at that station (`shack`) and pick the operation, as
+   for typing QSOs. When you click **Log QSO** in WSJT-X, the QSO appears in
+   the Log a moment later, logged by you at `shack`, in your operation. Its
+   history says it came from WSJT-X through the Station Agent.
+
+How it behaves:
+
+- **Every field WSJT-X wrote is kept** as it wrote it: call, grid, reports,
+  frequency and the rest. LabLog adds only what typing would add (the
+  operation's call and exchange, when you log in an operation), never
+  something it guessed (Principle XX).
+- **Nothing is lost.** Each QSO goes into the Agent's journal on disk first
+  (the key file's name plus `.qsos`, or `--journal FILE`). It stays there
+  until the Engine has saved it, so a QSO logged while the Engine is down,
+  the network is out, or nobody is signed in at the station is sent later,
+  once, under the ID it got when it arrived (Principle XV).
+- **No duplicates.** A QSO already in the log (the same call, band and mode
+  in the same UTC minute, for instance one brought in earlier with Menu >
+  Operation > Import an ADIF file) is not logged again.
+- **A QSO the Engine refuses** (one made outside the operation's hours, say)
+  is kept in an ADIF file beside the journal (`...qsos.refused.adi`). The
+  Agent says so; fix what was wrong and import that file from the Menu.
+- **Only this computer.** WSJT-X's messages carry no password, so the Agent
+  listens only on `127.0.0.1` and ignores anything from elsewhere
+  (Principle XIII).
+- **One listener per address.** WSJT-X sends to one address. If another
+  program on the computer (GridTracker, JTAlert) also wants WSJT-X's
+  messages, it must use a different port; that program's own settings may
+  let it pass them on.
+
 ## Notes
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
