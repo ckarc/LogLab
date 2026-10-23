@@ -294,6 +294,10 @@ button:disabled { opacity: 0.45; cursor: default; filter: none; transform: none;
 .filters input[type="search"] { width: 220px; text-transform: uppercase; border-radius: 999px; padding-left: 16px; }
 
 .table-wrap { overflow-x: auto; border-radius: 12px; }
+/* The Log scrolls inside its box (app.js sets the height to ten rows), and
+   its heading row stays at the top while the rows move under it. */
+.log-wrap { overflow-y: auto; overscroll-behavior: contain; }
+.log-wrap thead th { position: sticky; top: 0; z-index: 1; background: var(--panel); }
 table { border-collapse: collapse; width: 100%; }
 th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--glass-line); white-space: nowrap; }
 th { font-size: 11px; color: var(--muted); font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }

@@ -1968,9 +1968,27 @@
       row.addEventListener("click", () => selectQso(selected && selected.id === qso.id ? null : qso));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
+    fitLog();
     // Other modules that show the log (map.js) follow it.
     document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
+
+  // The Log shows ten rows and scrolls the rest inside the box, under a
+  // heading row that stays put. Measured from the rows themselves, so it
+  // holds at any box size and with tags like "pretend" in a row.
+  const LOG_ROWS = 10;
+  function fitLog() {
+    const wrap = $("#log-wrap");
+    const rows = [...$("#log tbody").rows].slice(0, LOG_ROWS);
+    if (!rows.length || !$("#log thead").offsetHeight) {
+      wrap.style.maxHeight = "";
+      return;
+    }
+    const height = $("#log thead").offsetHeight + rows.reduce((sum, row) => sum + row.offsetHeight, 0);
+    wrap.style.maxHeight = `${height + 2}px`;
+  }
+  // Again whenever the table changes size: a box shown again, a column added.
+  new ResizeObserver(() => fitLog()).observe($("#log"));
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 
