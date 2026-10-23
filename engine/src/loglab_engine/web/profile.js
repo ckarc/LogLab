@@ -304,6 +304,20 @@
     tell({ call: typed() });
   });
 
+  // The biography and the QSOs worked before fold away under the name and
+  // photo, behind a bar that says how many and opens them over the page
+  // (app.js, expander).
+  window.LogLab.expander({
+    id: "profile",
+    box: $("#profile"),
+    part: $("#profile-more"),
+    over: true,
+    label: () => {
+      const worked = $("#profile-worked").textContent.split(",")[0] || "Worked before";
+      return $("#profile-bio-part").hidden ? worked : `${worked} · biography`;
+    },
+  });
+
   // The biography starts closed; whether the operator last left it open or
   // closed is kept with their layout, on any workstation.
   const bioPart = $("#profile-bio-part");
