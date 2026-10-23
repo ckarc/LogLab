@@ -61,6 +61,10 @@ class Broker:
             with contextlib.suppress(OSError):  # the client may simply give up
                 self.received += conn.recv(4096)  # DISCONNECT
 
+    def wait(self) -> None:
+        """Wait until the broker's side of the connection is over."""
+        self._thread.join(timeout=5)
+
     def close(self) -> None:
         """Stop listening."""
         self.server.close()
@@ -82,6 +86,7 @@ def test_the_retained_message_is_read_and_the_client_says_goodbye(broker: Broker
     """Connect, subscribe once at QoS 0, take the retained message, disconnect."""
     broker.after_subscribe += _publish(TOPIC, b'{"ts": 1}')
     assert _read(broker) == b'{"ts": 1}'
+    broker.wait()  # the DISCONNECT may still be on its way
     sent = broker.received
     assert sent.startswith(b"\x10")  # CONNECT
     assert b"\x00\x04MQTT\x04\x02" in sent  # MQTT 3.1.1, a clean session
