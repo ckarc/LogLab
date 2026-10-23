@@ -125,7 +125,10 @@
             </div>
           </div>
           <div id="profile-more">
-          <p id="profile-bio-part" class="profile-bio" hidden><button type="button" id="profile-bio-open" class="link">Biography</button></p>
+          <div id="profile-bio-part" class="profile-bio" hidden>
+            <h3>Biography</h3>
+            <div id="profile-bio" role="button" tabindex="0" title="Click to read it large" aria-label="Biography: click to read it large"></div>
+          </div>
           <div class="filters">
             <span id="profile-worked" class="profile-worked" aria-live="polite"></span>
             <span id="profile-tools" class="table-tools"></span>
@@ -505,7 +508,7 @@
 
   <dialog id="bio-dialog" class="card qrz-dialog bio-dialog" aria-labelledby="bio-title">
     <h2 id="bio-title"></h2>
-    <div id="profile-bio"></div>
+    <div id="bio-dialog-text"></div>
     <div class="actions">
       <button type="button" id="bio-close" class="secondary">Close</button>
     </div>

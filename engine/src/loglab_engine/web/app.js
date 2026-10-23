@@ -200,6 +200,7 @@
     setDefaultLayout: (saved) => { overlayDefault = saved; },
     // A box's growing part, folded under a bar that opens it over the page (stats.js, profile.js, onair.js).
     expander: (options) => expander(options),
+    solo: () => SOLO, // the box this window was popped out for, or null on the workspace
     rowsHeight: (table, count) => rowsHeight(table, count),
   });
 
@@ -2055,7 +2056,8 @@
     let grace = 0; // waiting before closing, after the pointer left
     let last = null; // the pointer's last place and time, for its speed
     let hush = false; // closed by hand: stays shut until the pointer leaves the box
-    const locked = () => layout.expanded.includes(id);
+    // A box popped out into its own window has the room: it shows everything.
+    const locked = () => SOLO === id || layout.expanded.includes(id);
 
     function show() {
       const pinned = locked();
@@ -2065,12 +2067,12 @@
         : low > 0 && part.scrollHeight > low + 2;
       outer.classList.toggle("pinned", pinned);
       outer.classList.toggle("empty", over && !open); // folded out of sight
-      bar.hidden = !more && !open;
+      bar.hidden = SOLO === id || (!more && !open); // popped out, it is simply all there
       part.style.maxHeight = pinned ? "" : peek ? "70vh" : low ? `${low}px` : "";
       part.style.overflowY = clip && !open ? "hidden" : ""; // folded, the rest waits for the bar rather than scrolling
       opener.textContent = `${open ? "▾" : "▸"} ${label()}`;
       opener.setAttribute("aria-expanded", String(open));
-      lock.hidden = !open;
+      lock.hidden = !open || SOLO === id;
       lock.textContent = pinned ? "🔒" : "🔓";
       lock.setAttribute("aria-pressed", String(pinned));
       lock.title = pinned ? "Locked open: click to let it fold away again" : "Lock it open, taking its room in the box";
