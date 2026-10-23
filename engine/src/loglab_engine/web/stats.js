@@ -45,10 +45,37 @@
     return t;
   }
 
+  // Hours and minutes from now to the next 0000 UTC, when POTA's count starts over.
+  function untilMidnight(nowIso) {
+    const now = new Date(nowIso);
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    const minutes = Math.max(0, Math.floor((next - now.getTime()) / 60000));
+    return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
+  }
+
+  // Each park's QSOs today toward an activation, one tile for each station
+  // callsign and park; a club call worked by several operators is one tile.
+  function activationTiles(s, row) {
+    const today = s.now.slice(0, 10);
+    const now = s.activations.filter((a) => a.day === today);
+    for (const a of now) {
+      const t = tile(`${a.park} · ${a.station_call}${a.done ? " · activated ✓" : ""}`, `${a.qsos}/${a.goal}`,
+        `QSOs from ${a.park} as ${a.station_call} today (UTC), dupes left out${a.p2p ? `; ${plural(a.p2p, "park to park")}` : ""}`);
+      if (a.done) t.classList.add("done");
+      row.append(t);
+    }
+    if (!now.length && s.goal) row.append(tile("Toward an activation", `0/${s.goal}`, "No QSOs from a park yet today (UTC)"));
+    row.append(tile("Till 0000 UTC", untilMidnight(s.now), "When the UTC day ends, the count starts over"));
+  }
+
   function tiles(s) {
     const row = el("div", { className: "stat-tiles" });
     for (const id of s.show) {
-      if (id === "rate") {
+      if (id === "activation") {
+        activationTiles(s, row);
+      } else if (id === "p2p") {
+        row.append(tile("Park to park", s.p2p, "QSOs with a station in another park"));
+      } else if (id === "rate") {
         row.append(
           tile("QSOs", s.qsos, `${s.counted} counting`),
           tile("Last hour", s.last_hour, "QSOs made in the last 60 minutes"),
@@ -145,6 +172,11 @@
     if (s.outside) notes.push(`${plural(s.outside, "QSO")} outside the operation's hours`);
     if (s.not_counted) notes.push(`${plural(s.not_counted, "QSO")} on a band or mode that doesn't count`);
     if (notes.length) parts.push(el("p", { className: "hint", textContent: `Not counted: ${notes.join(", ")}.` }));
+    const earlier = s.show.includes("activation") ? s.activations.filter((a) => a.day !== s.now.slice(0, 10)) : [];
+    if (earlier.length) {
+      const said = earlier.map((a) => `${a.day} ${a.park} as ${a.station_call}: ${a.qsos}${a.done ? " ✓" : `/${a.goal}`}`);
+      parts.push(el("p", { className: "hint", textContent: `Earlier UTC days: ${said.join("; ")}.` }));
+    }
     body.replaceChildren(...parts.filter(Boolean));
   }
 

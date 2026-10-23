@@ -72,6 +72,44 @@
     }
   }
 
+  // A park reference's name, from the park list, written into ``into``. The
+  // name is only shown, never logged: it is what the list says about that
+  // reference, not something the other station sent.
+  const PARK = /^[A-Z0-9]{1,4}-[0-9]{4,6}$/;
+  const names = new Map();
+  const naming = new WeakMap(); // each place shows only its latest answer
+  async function nameInto(text, into) {
+    const ref = (text || "").trim().toUpperCase();
+    const mine = (naming.get(into) || 0) + 1;
+    naming.set(into, mine);
+    into.textContent = "";
+    into.classList.remove("unknown");
+    if (!PARK.test(ref)) return;
+    try {
+      if (!names.has(ref)) names.set(ref, window.LogLab.api("GET", `/parks/${encodeURIComponent(ref)}`).catch(() => null));
+      const park = await names.get(ref);
+      if (mine !== naming.get(into)) return;
+      if (park) {
+        const where = park.locations.join(", ");
+        into.textContent = `${park.name}${where ? ` (${where})` : ""}${park.active ? "" : ", no longer active"}`;
+      } else {
+        names.delete(ref); // the list may load later
+        into.textContent = "Not in LabLog's park list";
+        into.classList.add("unknown");
+      }
+    } catch {
+      // no Engine: logging still works (Principle V)
+    }
+  }
+  window.LogLabParks = Object.freeze({ nameInto });
+
+  const their = document.querySelector('#entry input[name="SIG_INFO"]');
+  const theirName = $("#their-park-name");
+  if (their && theirName) {
+    their.addEventListener("input", () => nameInto(their.value, theirName));
+    document.addEventListener("loglab:entry-reset", () => { theirName.textContent = ""; });
+  }
+
   $("#parks-open").addEventListener("click", () => {
     $("#menu-dialog").close();
     const session = window.LogLab.session();

@@ -6,3 +6,7 @@
 .parks-found { list-style: none; margin: 8px 0; padding: 0; max-height: 16em; overflow-y: auto; }
 .parks-found li { margin: 6px 0; }
 .parks-credit { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--glass-line); font-size: 0.8em; }
+
+/* A park's name from the park list, under its reference (New QSO, operation setup). */
+.park-name { display: block; font-size: 0.8em; min-height: 1.2em; }
+.park-name.unknown { color: var(--danger); }

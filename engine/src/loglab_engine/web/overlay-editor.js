@@ -33,6 +33,8 @@
     ["operators", "Each operator's QSOs"],
     ["dupes", "How many dupes (needs the dupe check)"],
     ["sections", "ARRL and RAC sections worked"],
+    ["activation", "Each park's QSOs today toward an activation, and the time to 0000 UTC (POTA only)"],
+    ["p2p", "Park-to-park contacts (POTA only)"],
   ];
 
   const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
@@ -274,7 +276,7 @@
   // Contest parts a new contest starts with: the usual mode groups, and a
   // dupe check once per band and mode.
   function contestDefaults() {
-    draft.contest_id ??= "";
+    if (!draft.program) draft.contest_id ??= "";
     draft.rules ??= { title: "", url: "", revised: "", period: "" };
     draft.bands ??= { excluded: [], satellite: false };
     draft.modes ??= { cw: ["CW"], phone: ["SSB", "AM", "FM", "DIGITALVOICE"], excluded: [] };
@@ -287,7 +289,8 @@
     form.o_id.value = draft.id;
     form.o_id.disabled = !isNew;
     form.summary.value = draft.summary;
-    const contest = Boolean(draft.contest_id !== undefined && draft.contest_id !== null);
+    // A program overlay, like POTA's, has the contest parts but no contest ID.
+    const contest = Boolean(draft.program) || Boolean(draft.contest_id !== undefined && draft.contest_id !== null);
     form.contest.checked = contest;
     if (contest) contestDefaults();
     fillContest();
@@ -356,6 +359,7 @@
     box.hidden = !form.contest.checked;
     if (!form.contest.checked) return;
     form.contest_id.value = draft.contest_id || "";
+    form.contest_id.closest("label").hidden = Boolean(draft.program);
     form.rules_title.value = draft.rules.title;
     form.rules_url.value = draft.rules.url;
     form.rules_revised.value = draft.rules.revised;
@@ -409,7 +413,8 @@
       <label>Hint <input data-p="hint" maxlength="200"></label>
       <label>Checked as <select data-p="check"><option value="sections">an ARRL or RAC section</option><option value="pattern">matching a pattern</option></select></label>
       <label data-p-pattern>Pattern <input data-p="pattern" maxlength="200" spellcheck="false" placeholder="e.g. ^[1-9][0-9]?[A-F]$"></label>
-      <label>Also accepted <input data-p="also" spellcheck="false" placeholder="e.g. DX"></label>`;
+      <label>Also accepted <input data-p="also" spellcheck="false" placeholder="e.g. DX"></label>
+      <label class="inline"><input type="checkbox" data-p="optional"> May be left out</label>`;
     const get = (p) => row.querySelector(`[data-p="${p}"]`);
     get("label").value = part.label || "";
     get("key").value = part.key || "";
@@ -418,6 +423,7 @@
     get("check").value = part.sections ? "sections" : "pattern";
     get("pattern").value = part.pattern || "";
     get("also").value = (part.also || []).join(", ");
+    get("optional").checked = Boolean(part.optional);
     const showPattern = () => { row.querySelector("[data-p-pattern]").hidden = get("check").value !== "pattern"; };
     get("check").addEventListener("change", showPattern);
     showPattern();
@@ -436,6 +442,7 @@
         pattern: sections ? null : get("pattern") || null,
         sections,
         also: words(get("also")),
+        optional: row.querySelector('[data-p="optional"]').checked,
       };
       if (received) part.field = get("field").toUpperCase() || null;
       return part;
@@ -622,7 +629,12 @@
         bands,
         modes: { cw, phone, excluded: words(form.modes_excluded.value) },
         dupes: form.dupes.checked
-          ? { per: [form.per_band.checked && "band", form.per_mode.checked && "mode"].filter(Boolean), rule: form.dupe_rule.value.trim() }
+          ? {
+            per: [form.per_band.checked && "band", form.per_mode.checked && "mode",
+              ...(draft.program ? (draft.dupes?.per || []).filter((p) => p.endsWith("_park")) : [])].filter(Boolean),
+            rule: form.dupe_rule.value.trim(),
+            ...(draft.program && draft.dupes?.within ? { within: draft.dupes.within } : {}),
+          }
           : null,
         exchange: {
           sent: readParts($("#ov-sent", dialog), false),
@@ -632,7 +644,11 @@
             .filter(([name]) => name)),
         },
       });
-      if (!definition.contest_id) problems.push("Give the contest ID, like ARRL-FD.");
+      if (draft.program) {
+        definition.program = draft.program; // kept as it is: the editor doesn't change it
+        delete definition.contest_id;
+        delete definition.gota;
+      } else if (!definition.contest_id) problems.push("Give the contest ID, like ARRL-FD.");
       const r = definition.rules;
       if (!r.title || !r.period) problems.push("Give the rules' title and when the contest runs.");
       if (!/^https:\/\/\S+$/.test(r.url)) problems.push("The rules link must start with https://.");

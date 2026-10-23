@@ -1,0 +1,94 @@
+{
+  "format": 1,
+  "id": "pota-activator",
+  "name": "POTA activator",
+  "summary": "Parks on the Air, from a park. Set your park on the operation; ten QSOs from one park in one UTC day activate it. A station counts once per band and mode (CW, Phone, Digital) each UTC day, and again park to park from another park.",
+  "program": {
+    "sig": "POTA",
+    "role": "activator",
+    "goal": 10
+  },
+  "rules": {
+    "title": "POTA Activator Guide and Logging Made Easy (docs.pota.app)",
+    "url": "https://docs.pota.app/docs/activator_reference/activator_guide-english.html",
+    "revised": "2026-10-23",
+    "period": "Any time. An activation is ten QSOs from one park within one UTC day."
+  },
+  "bands": {
+    "excluded": []
+  },
+  "modes": {
+    "cw": ["CW"],
+    "phone": ["SSB", "AM", "FM", "DIGITALVOICE"]
+  },
+  "dupes": {
+    "per": ["band", "mode", "my_park", "their_park"],
+    "within": "day",
+    "rule": "A station counts once per band and mode on each UTC day from each park. A park-to-park contact with a station in a different park counts again. Dupes carry no penalty."
+  },
+  "exchange": {
+    "sent": [
+      {
+        "key": "park",
+        "label": "Your park",
+        "hint": "Its reference, like US-1234",
+        "pattern": "^[A-Z0-9]{1,4}-[0-9]{4,6}$"
+      },
+      {
+        "key": "state",
+        "label": "Your state, if the park spans several",
+        "hint": "Like WI; leave empty if the park is in one state",
+        "pattern": "^[A-Z]{2,3}$",
+        "optional": true
+      }
+    ],
+    "sent_fields": {
+      "MY_SIG": "POTA",
+      "MY_SIG_INFO": "{park}",
+      "MY_POTA_REF": "{park}",
+      "MY_STATE": "{state}"
+    },
+    "received": [
+      {
+        "key": "their_park",
+        "field": "SIG_INFO",
+        "label": "Their park",
+        "hint": "Only park to park, like US-5678",
+        "pattern": "^[A-Z0-9]{1,4}-[0-9]{4,6}$",
+        "optional": true
+      }
+    ]
+  },
+  "stats": {
+    "show": ["activation", "rate", "hourly", "p2p", "band_mode", "operators", "dupes"]
+  },
+  "entry": {
+    "fields": [
+      "CALL",
+      "RST_SENT",
+      "RST_RCVD",
+      "SIG_INFO",
+      "STATE",
+      "BAND",
+      "MODE",
+      "FREQ",
+      "QSO_DATE",
+      "TIME_ON",
+      "NAME",
+      "COMMENT"
+    ],
+    "live": true,
+    "store_after": "STATE"
+  },
+  "layout": {
+    "modules": [
+      {"id": "entry", "width": "half", "side": "left"},
+      {"id": "stats", "width": "half", "side": "right"},
+      {"id": "world"},
+      {"id": "journal"},
+      {"id": "log"},
+      {"id": "detail"}
+    ],
+    "log_columns": ["time", "call", "band", "mode", "field:RST_SENT", "field:RST_RCVD", "field:SIG_INFO", "field:STATE", "operator"]
+  }
+}

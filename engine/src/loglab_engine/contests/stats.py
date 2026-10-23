@@ -9,19 +9,26 @@ what a QSO is worth come from the overlay's data (Principle III). Everything
 is worked out from the local log, with no internet connection (Principle V).
 
 A QSO is a dupe here when an earlier QSO in the same operation has the same
-call, station callsign and UTC year, and agrees on the band and mode group
-where the overlay's dupe rule says it must: the same test the dupe check
-makes before a QSO is stored. The first QSO counts; later ones are dupes.
+call, station callsign and UTC year (UTC day, for a program like POTA), and
+agrees on the band, mode group and parks where the overlay's dupe rule says
+it must: the same test the dupe check makes before a QSO is stored. The first
+QSO counts; later ones are dupes.
+
+For a program like POTA, each station callsign's QSOs from each park on each
+UTC day are counted toward an activation: dupes do not count, and the park
+is activated once it has the program's goal (ten, for POTA). A club call
+operated by several operators is one station callsign, so all their QSOs
+count together; an operator logging under their own call counts on their own.
 """
 
 from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Final
 
-from loglab_engine.contests.dupes import classify
+from loglab_engine.contests.dupes import classify, park_key
 from loglab_engine.reference import SECTIONS, section_for
 
 if TYPE_CHECKING:
@@ -79,6 +86,23 @@ class BandMode:
 
 
 @dataclass(frozen=True, slots=True)
+class Activation:
+    """One station callsign's QSOs from one park on one UTC day, toward an activation."""
+
+    station_call: str
+    park: str
+    day: date
+    qsos: int
+    goal: int
+    p2p: int
+
+    @property
+    def done(self) -> bool:
+        """Whether the park is activated: it has the goal's QSOs."""
+        return self.qsos >= self.goal
+
+
+@dataclass(frozen=True, slots=True)
 class Stats:
     """An operation's stats, as of ``now``.
 
@@ -107,6 +131,8 @@ class Stats:
     sections_total: int
     score: int | None
     points: Mapping[str, int] = field(default_factory=dict)
+    activations: tuple[Activation, ...] = ()
+    p2p: int = 0
 
 
 def _get(fields: Mapping[str, str], name: str) -> str:
@@ -142,7 +168,7 @@ def _hours(
     return tuple(out)
 
 
-def operation_stats(  # noqa: PLR0915 - one pass over the operation's QSOs
+def operation_stats(  # noqa: PLR0912, PLR0915 - one pass over the operation's QSOs
     overlay: Overlay | None,
     qsos: Iterable[Logged],
     *,
@@ -169,6 +195,10 @@ def operation_stats(  # noqa: PLR0915 - one pass over the operation's QSOs
     by_mode: Counter[str] = Counter()
     operators: dict[str, OperatorStats] = {}
     sections: set[str] = set()
+    program = overlay.program if overlay is not None else None
+    activations: Counter[tuple[str, str, date]] = Counter()
+    p2p_by: Counter[tuple[str, str, date]] = Counter()
+    p2p = 0
     score = 0
     for q in qsos:
         total += 1
@@ -197,14 +227,20 @@ def operation_stats(  # noqa: PLR0915 - one pass over the operation's QSOs
                 continue
         else:
             band, group = _get(q.fields, "BAND").lower() or "?", _get(q.fields, "MODE") or "?"
-        if per is not None:
-            year = str(q.qso_start.year) if q.qso_start is not None else ""
+        if per is not None and overlay is not None and overlay.dupes is not None:
+            if q.qso_start is None:
+                when = ""
+            elif overlay.dupes.within == "day":
+                when = q.qso_start.astimezone(UTC).date().isoformat()
+            else:
+                when = str(q.qso_start.year)
             key = (
                 _get(q.fields, "CALL"),
                 _get(q.fields, "STATION_CALLSIGN"),
-                year,
+                when,
                 band if "band" in per else "",
                 group if "mode" in per else "",
+                *park_key(q.fields, per),
             )
             if key in seen:
                 dupes += 1
@@ -212,6 +248,18 @@ def operation_stats(  # noqa: PLR0915 - one pass over the operation's QSOs
             seen.add(key)
         by_band_mode[(band, group)] += 1
         by_mode[group] += 1
+        if program is not None and q.qso_start is not None:
+            park = _get(q.fields, "MY_SIG_INFO")
+            if park:
+                where = (
+                    _get(q.fields, "STATION_CALLSIGN") or who,
+                    park,
+                    q.qso_start.astimezone(UTC).date(),
+                )
+                activations[where] += 1
+                if _get(q.fields, "SIG_INFO"):
+                    p2p_by[where] += 1
+                    p2p += 1
         section = section_for(_get(q.fields, "ARRL_SECT"))
         if section is not None:
             sections.add(section.code)
@@ -243,7 +291,16 @@ def operation_stats(  # noqa: PLR0915 - one pass over the operation's QSOs
         sections_total=len(SECTIONS),
         score=score if points else None,
         points=points,
+        activations=tuple(
+            Activation(call, park, day, n, program.goal, p2p_by[(call, park, day)])
+            for (call, park, day), n in sorted(
+                activations.items(), key=lambda kv: (kv[0][2], kv[0][0], kv[0][1]), reverse=True
+            )
+        )
+        if program is not None
+        else (),
+        p2p=p2p,
     )
 
 
-__all__ = ["BandMode", "Hour", "Logged", "OperatorStats", "Stats", "operation_stats"]
+__all__ = ["Activation", "BandMode", "Hour", "Logged", "OperatorStats", "Stats", "operation_stats"]

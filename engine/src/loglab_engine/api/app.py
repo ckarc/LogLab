@@ -357,6 +357,22 @@ class OperatorStatsOut(BaseModel):
     points: int
 
 
+class ActivationOut(BaseModel):
+    """One station callsign's QSOs from one park on one UTC day, toward a POTA activation.
+
+    ``qsos`` leaves dupes out; the park is activated (``done``) once it has
+    ``goal`` of them. ``p2p`` of them were park to park.
+    """
+
+    station_call: str
+    park: str
+    day: date
+    qsos: int
+    goal: int
+    done: bool
+    p2p: int
+
+
 class OperationStatsOut(BaseModel):
     """How the whole group is doing in an operation, for the Operation stats box.
 
@@ -391,6 +407,9 @@ class OperationStatsOut(BaseModel):
     sections_total: int
     score: int | None
     points: dict[str, int]
+    activations: list[ActivationOut] = []
+    p2p: int = 0
+    goal: int | None = None
 
 
 class BandModeCountOut(BaseModel):
@@ -2026,6 +2045,20 @@ def operation_stats_out(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Ope
         sections_total=stats.sections_total,
         score=stats.score,
         points=dict(stats.points),
+        activations=[
+            ActivationOut(
+                station_call=a.station_call,
+                park=a.park,
+                day=a.day,
+                qsos=a.qsos,
+                goal=a.goal,
+                done=a.done,
+                p2p=a.p2p,
+            )
+            for a in stats.activations
+        ],
+        p2p=stats.p2p,
+        goal=found.program.goal if found is not None and found.program is not None else None,
     )
 
 
@@ -2669,7 +2702,14 @@ def _catalog(conn: Conn) -> list[OverlayOut]:
                 }
             )
         )
-    out.sort(key=lambda o: (o.id != EVERYDAY, o.retired, o.is_contest, o.name.lower()))
+    out.sort(
+        key=lambda o: (
+            o.id != EVERYDAY,
+            o.retired,
+            o.is_contest or o.program is not None,
+            o.name.lower(),
+        )
+    )
     return out
 
 
@@ -2786,11 +2826,15 @@ def retire_overlay(
     return found
 
 
-def _year(qso_date: str | None) -> int:
+def _day(qso_date: str | None) -> date:
     try:
-        return datetime.strptime((qso_date or "").strip(), "%Y%m%d").replace(tzinfo=UTC).year
+        return datetime.strptime((qso_date or "").strip(), "%Y%m%d").replace(tzinfo=UTC).date()
     except ValueError:
-        return datetime.now(UTC).year
+        return datetime.now(UTC).date()
+
+
+def _year(qso_date: str | None) -> int:
+    return _day(qso_date).year
 
 
 def _worked_out(worked: Iterable[Worked]) -> list[WorkedOut]:
@@ -2809,7 +2853,9 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
     Two QSOs are dupes when they are with the same call, made as the same
     station callsign, carry the overlay's ``CONTEST_ID``, fall in the same
     UTC year, and agree on whatever the overlay's dupe rule lists (for both
-    Field Days, the band and the mode group). Nothing is stored.
+    Field Days, the band and the mode group). Under a program like POTA they
+    carry its ``MY_SIG`` instead and fall on the same UTC day, and the rule
+    also compares the parks. Nothing is stored.
     """
     _require(conn, who, Permission.VIEW)
     found = _overlay(conn, overlay_id)
@@ -2841,6 +2887,14 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
             station_call=station,
             call=call,
             year=year,
+            exclude=body.exclude,
+        )
+    elif found.program is not None and call:
+        earlier = LogStore(conn).program_qsos(
+            sig=found.program.sig,
+            station_call=station,
+            call=call,
+            day=_day(fields.get("QSO_DATE")),
             exclude=body.exclude,
         )
     result = contest_check(
