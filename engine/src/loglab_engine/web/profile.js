@@ -49,12 +49,12 @@
   });
 
   // -- How far and which way: from this station to the one shown ----------
-  // Both ends are the centres of grid squares (or this station's saved
-  // location), so the distance and heading are worked out, not measured, and
-  // the box says so. With either end unknown, nothing is shown.
+  // The other end is the centre of a grid square, and this end is FieldLab's
+  // GPS fix or else a grid square too, so the distance and heading are worked
+  // out, not measured, and the box says so. With either end unknown, nothing is shown.
   const KM_PER_MI = 1.609344;
   const HOME_KEEP_MS = 5 * 60 * 1000;
-  let home = null; // { at, place: Promise<{lat, lon} | null> }
+  let home = null; // { at, place: Promise<{lat, lon, source} | null> }
 
   function gridPlace(text) {
     const grid = String(text || "").trim().toUpperCase();
@@ -107,6 +107,11 @@
     const amount = unit === "km" ? path.km : path.km / KM_PER_MI;
     $("#profile-distance").textContent = `≈ ${Math.round(amount).toLocaleString()} ${unit}`;
     $("#profile-heading").textContent = `heading ${String(Math.round(path.heading) % 360).padStart(3, "0")}°`;
+    const note = $("#profile-path .profile-path-note");
+    note.textContent = path.gps ? "from GPS to their grid square" : "from grid squares";
+    note.title = path.gps
+      ? "Worked out from this station's GPS position to the centre of their grid square, not measured"
+      : "Worked out from the two stations' grid squares, not measured";
   }
 
   async function findPath(grid, question) {
@@ -116,7 +121,7 @@
     if (!there) return;
     const here = await homePlace();
     if (question !== asked || !here) return;
-    path = pathBetween(here, there);
+    path = { ...pathBetween(here, there), gps: here.source === "gps" };
     showPath();
   }
 
