@@ -29,7 +29,7 @@ from psycopg.types.json import Jsonb
 from loglab_engine.adif import AdifDocument, AdifModelError, Field, Header, Record
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Sequence
 
     from psycopg.rows import TupleRow
 
@@ -262,6 +262,14 @@ class ImportSummary:
     qso_ids: tuple[uuid.UUID, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class Match:
+    """A QSO already in the log that is the same contact as a record being brought in."""
+
+    qso_id: uuid.UUID
+    deleted: bool
+
+
 def _encode_fields(fields: Iterable[Field], where: str) -> list[list[str | None]]:
     out: list[list[str | None]] = []
     for field in fields:
@@ -460,6 +468,58 @@ class LogStore:
         except errors.ObjectNotInPrerequisiteState as error:
             raise ArchivedError(_first_line(error)) from error
         return ImportSummary(import_id, qso_ids)
+
+    def import_of_file(self, file_sha256: str) -> int | None:
+        """The import that brought in the file with this SHA-256, if it was imported."""
+        row = self._conn.execute(
+            "SELECT id FROM log.import_batch WHERE file_sha256 = %s", (file_sha256,)
+        ).fetchone()
+        return None if row is None else int(row[0])
+
+    def already_logged(self, records: Sequence[Record]) -> tuple[Match | None, ...]:
+        """For each record, a QSO in the log that is the same contact, if there is one.
+
+        The same contact means the same call, band and mode, made in the same
+        UTC minute: another program's log file, read again, finds every QSO it
+        brought in before. Times match to the minute because some programs
+        write seconds and others do not. Deleted QSOs count too, so taking a
+        file in again never brings back a QSO someone deleted (Principle VII).
+        A record without a call or a valid date and time matches nothing.
+        """
+        if not records:
+            return ()
+        encoded = [_encode_fields(r.fields, f"record {n}") for n, r in enumerate(records, 1)]
+        rows = self._conn.execute(
+            """
+            WITH wanted AS (
+                SELECT w.position,
+                       nullif(upper(btrim(log.field_value(w.fields, 'CALL'))), '') AS call,
+                       date_trunc('minute', log.derived_qso_start(w.fields)) AS minute,
+                       nullif(lower(btrim(log.field_value(w.fields, 'BAND'))), '') AS band,
+                       nullif(upper(btrim(log.field_value(w.fields, 'MODE'))), '') AS mode
+                FROM jsonb_array_elements(%s) WITH ORDINALITY AS w(fields, position)
+            )
+            SELECT w.position, found.qso_id, found.deleted
+            FROM wanted w
+            CROSS JOIN LATERAL (
+                SELECT q.id AS qso_id, q.deleted
+                FROM log.qso q
+                JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+                WHERE v.call = w.call
+                  AND v.qso_start >= w.minute
+                  AND v.qso_start < w.minute + interval '1 minute'
+                  AND v.band IS NOT DISTINCT FROM w.band
+                  AND v.mode IS NOT DISTINCT FROM w.mode
+                ORDER BY q.deleted, q.entry_seq
+                LIMIT 1
+            ) found
+            """,
+            (Jsonb(encoded),),
+        ).fetchall()
+        out: list[Match | None] = [None] * len(records)
+        for position, qso_id, deleted in rows:
+            out[position - 1] = Match(qso_id, deleted)
+        return tuple(out)
 
     def create_qso(
         self,

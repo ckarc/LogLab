@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import time
 import uuid
 from collections import Counter
@@ -62,7 +63,7 @@ from pydantic import (
 from starlette.concurrency import run_in_threadpool
 
 from loglab_engine import __version__
-from loglab_engine.adif import AdifModelError, Record
+from loglab_engine.adif import AdifDocument, AdifModelError, AdiParseError, Record, parse_adi
 from loglab_engine.adif import Field as AdifField
 from loglab_engine.callbook import (
     Callbook,
@@ -119,6 +120,7 @@ from loglab_engine.rig import Radio, RigBoard, RigMode, RigState, adif_mode, ban
 from loglab_engine.store import (
     Actor,
     ArchivedError,
+    DuplicateImportError,
     IdentityStore,
     LogStore,
     NotAuthorizedError,
@@ -159,6 +161,10 @@ MAX_NAME: Final = 64
 MAX_NOTE: Final = 1000
 MAX_LIST: Final = 500
 MAX_P12_BASE64: Final = 96 * 1024
+# An ADIF file the web client takes in, in base64: about 30 MB of ADIF, or
+# some 100,000 QSOs. Bigger logs go in with ``loglab-log import``.
+MAX_IMPORT_BASE64: Final = 40 * 1024 * 1024
+MAX_IMPORT_WARNINGS: Final = 20
 # The web client loads nothing from anywhere else, so it works offline (Principle V).
 _CSP: Final = (
     "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
@@ -1157,6 +1163,43 @@ def _record(fields: list[AdifFieldModel]) -> Record:
         return Record(tuple(AdifField(f.name, f.value, f.type) for f in fields))
     except AdifModelError as error:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, str(error)) from error
+
+
+class AdifImportIn(_Strict):
+    """An ADIF file to take into the log, in base64, and the operation to log it in.
+
+    With ``operation``, each QSO gets the operation's fields as if it had
+    been typed there (see :class:`OperationRef`), and QSOs made outside the
+    operation's hours are left out.
+    """
+
+    file_name: Annotated[str, StringConstraints(min_length=1, max_length=255)]
+    data_base64: Annotated[str, StringConstraints(min_length=1, max_length=MAX_IMPORT_BASE64)]
+    operation: OperationRef | None = None
+    note: Annotated[str, StringConstraints(max_length=MAX_NOTE)] | None = None
+
+
+class AdifImportOut(BaseModel):
+    """What happened to each QSO in an imported file.
+
+    Every record is counted once: ``added``, ``already_logged``,
+    ``already_deleted``, ``repeated`` (the same contact earlier in the same
+    file), ``outside_hours`` or ``no_time``. ``already_imported`` names the
+    earlier import when this exact file was taken in before, and then
+    nothing is added.
+    """
+
+    file_name: str
+    records: int
+    import_id: int | None
+    added: int
+    already_logged: int
+    already_deleted: int
+    repeated: int
+    outside_hours: int
+    no_time: int
+    already_imported: int | None
+    warnings: list[str]
 
 
 class LotwCertificateIn(_Strict):
@@ -2582,6 +2625,134 @@ def create_qso(
         response.status_code = status.HTTP_200_OK
     sync.wake()
     return _written(version, created=created)
+
+
+def _contact(record: Record) -> tuple[str, datetime, str, str] | None:
+    """What makes two records the same contact (as :meth:`LogStore.already_logged` decides)."""
+    fields = {f.name.upper(): f.value for f in reversed(record.fields)}
+    call = fields.get("CALL", "").strip().upper()
+    made = _made(fields)
+    if not call or made is None:
+        return None
+    return (
+        call,
+        made,
+        fields.get("BAND", "").strip().lower(),
+        fields.get("MODE", "").strip().upper(),
+    )
+
+
+def _in_operation(
+    conn: Conn, who: Actor, ref: OperationRef, records: list[Record], out: AdifImportOut
+) -> list[Record]:
+    """The records made during the operation's hours, each with the operation's fields added."""
+    found, station, op = _station(conn, who, ref, hours=False)
+    kept: list[Record] = []
+    for record in records:
+        made = _made({f.name.upper(): f.value for f in reversed(record.fields)})
+        if made is None:
+            out.no_time += 1
+        elif not op.open_at(made):
+            out.outside_hours += 1
+        else:
+            kept.append(stamp(record, found, station))
+    return kept
+
+
+def _not_yet_logged(store: LogStore, records: list[Record], out: AdifImportOut) -> list[Record]:
+    """The records that are not in the log yet, each contact once."""
+    new: list[Record] = []
+    seen: set[tuple[str, datetime, str, str]] = set()
+    for record, match in zip(records, store.already_logged(records), strict=True):
+        if match is not None:
+            if match.deleted:
+                out.already_deleted += 1
+            else:
+                out.already_logged += 1
+            continue
+        contact = _contact(record)
+        if contact is not None:
+            if contact in seen:
+                out.repeated += 1
+                continue
+            seen.add(contact)
+        new.append(record)
+    return new
+
+
+@api.post("/imports", status_code=status.HTTP_201_CREATED)
+def import_adif(
+    body: AdifImportIn, who: Signed, conn: Conn, response: Response, sync: Sync
+) -> AdifImportOut:
+    """Take in the QSOs of an ADIF file that the log does not already have.
+
+    A QSO already in the log (the same call, band and mode in the same UTC
+    minute) is left alone, so a program's log file can be taken in again and
+    again and only its new QSOs are added (Principle XV). One that was
+    deleted stays deleted (Principle VII). Every field of every QSO taken in
+    is kept as the file has it (Principle IV); the import as a whole is one
+    audited change (Principle VII), all or nothing (Principle XIV).
+    """
+    _require(conn, who, Permission.LOG)
+    try:
+        data = base64.b64decode(body.data_base64, validate=True)
+    except binascii.Error as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "the file is not base64"
+        ) from error
+    try:
+        parsed = parse_adi(data)
+    except AdiParseError as error:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            f"{body.file_name} is not an ADIF file LabLog can read: {error}",
+        ) from error
+    warnings = [
+        f"{'header' if w.record is None else f'QSO {w.record}'}"
+        f"{f' {w.field}' if w.field else ''}: {w.message}"
+        for w in parsed.warnings[:MAX_IMPORT_WARNINGS]
+    ]
+    records = list(parsed.document.records)
+    out = AdifImportOut(
+        file_name=body.file_name,
+        records=len(records),
+        import_id=None,
+        added=0,
+        already_logged=0,
+        already_deleted=0,
+        repeated=0,
+        outside_hours=0,
+        no_time=0,
+        already_imported=None,
+        warnings=warnings,
+    )
+    sha256 = hashlib.sha256(data).hexdigest()
+    store = LogStore(conn)
+    with conn.transaction():
+        out.already_imported = store.import_of_file(sha256)
+        if out.already_imported is not None:
+            response.status_code = status.HTTP_200_OK
+            return out
+        if body.operation is not None:
+            records = _in_operation(conn, who, body.operation, records, out)
+        new = _not_yet_logged(store, records, out)
+        if new:
+            try:
+                summary = store.import_document(
+                    AdifDocument(parsed.document.header, tuple(new)),
+                    file_name=body.file_name,
+                    file_sha256=sha256,
+                    actor=who,
+                    note=body.note,
+                )
+            except DuplicateImportError as error:  # imported meanwhile, from another workstation
+                raise HTTPException(status.HTTP_409_CONFLICT, str(error)) from error
+            out.import_id = summary.import_id
+            out.added = len(summary.qso_ids)
+    if not new:
+        response.status_code = status.HTTP_200_OK
+    sync.wake()
+    return out
 
 
 @api.put("/qsos/{qso_id}")
