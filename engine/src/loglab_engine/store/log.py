@@ -229,12 +229,14 @@ class QsoFilter:
     """Which QSOs :meth:`LogStore.find` lists.
 
     ``call`` keeps those with that call; ``operation`` those logged in that
-    operation (whose ``APP_LOGLAB_OPERATION`` names it); ``include_deleted``
-    adds deleted ones.
+    operation (whose ``APP_LOGLAB_OPERATION`` names it); ``operator`` those
+    that operator made (their ``OPERATOR``, else whoever entered the current
+    version); ``include_deleted`` adds deleted ones.
     """
 
     call: str | None = None
     operation: uuid.UUID | None = None
+    operator: str | None = None
     include_deleted: bool = False
 
 
@@ -802,6 +804,8 @@ class LogStore:
               AND (%(deleted)s OR NOT q.deleted)
               AND (%(operation)s::text IS NULL OR %(operation)s::text
                    = btrim(log.field_value(v.fields, 'APP_LOGLAB_OPERATION')))
+              AND (%(operator)s::text IS NULL OR upper(btrim(%(operator)s::text)) = upper(coalesce(
+                   nullif(btrim(log.field_value(v.fields, 'OPERATOR')), ''), o.callsign)))
             ORDER BY {order_by}
             LIMIT %(limit)s
             """,  # noqa: S608 - constant fragments only; values are parameters
@@ -811,6 +815,7 @@ class LogStore:
                 "limit": max(limit, 0),
                 "field": sort_field,
                 "operation": None if which.operation is None else str(which.operation),
+                "operator": which.operator,
             },
         ).fetchall()
         return tuple(_version(row) for row in rows)
