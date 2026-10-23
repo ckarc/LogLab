@@ -33,6 +33,7 @@
   <script src="/static/onair.js" defer></script>
   <script src="/static/radio.js" defer></script>
   <script src="/static/agents.js" defer></script>
+  <script src="/static/cleanup.js" defer></script>
   <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
 </head>
@@ -386,6 +387,7 @@
         <div class="menu-items">
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
           <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
+          <button type="button" id="cleanup-open" class="link" hidden>Clean up saved lookups</button>
         </div>
         <div id="demo-row" class="demo-row" hidden>
           <label class="inline"><input type="checkbox" id="demo-on"> Demo mode</label>
@@ -485,6 +487,25 @@
     <div class="actions">
       <button type="button" id="agents-close" class="secondary">Close</button>
     </div>
+  </dialog>
+
+  <dialog id="cleanup-dialog" class="card qrz-dialog" aria-labelledby="cleanup-title">
+    <h2 id="cleanup-title">Clean up saved lookups</h2>
+    <p class="hint">LabLog keeps every QRZ.com answer it gets, so a call fills in again with no internet. This clears the ones for calls that were never logged. The log is never touched, and a call in any QSO keeps its lookup. A cleared call is just looked up again the next time someone types it.</p>
+    <label>Saved more than
+      <select id="cleanup-days">
+        <option value="30">30 days ago</option>
+        <option value="90" selected>90 days ago</option>
+        <option value="180">180 days ago</option>
+        <option value="365">a year ago</option>
+      </select>
+    </label>
+    <p id="cleanup-count" class="hint" aria-live="polite"></p>
+    <div class="actions">
+      <button type="button" id="cleanup-clear" class="danger" disabled>Clear them</button>
+      <button type="button" id="cleanup-close" class="secondary">Close</button>
+    </div>
+    <p class="error" role="alert"></p>
   </dialog>
 
   <dialog id="licenses-dialog" class="card qrz-dialog licenses-dialog" aria-labelledby="licenses-title">
