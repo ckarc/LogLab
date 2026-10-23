@@ -279,6 +279,7 @@ LAYOUT = {
     "by_overlay": {},
     "world_qsos": 120,
     "bio_open": True,
+    "stats_open": True,
     "distance_unit": "km",
     "log_mine": False,
 }
@@ -304,7 +305,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
     assert client.get("/api/v1/layout", headers=k9ksu).json() == {
         "layout": {**changed, "tables": {}, "panels": {}, "detail": None, "theme": "auto"}
         | {"operation": None, "by_overlay": {}, "world_qsos": 50}
-        | {"bio_open": False, "distance_unit": "mi", "log_mine": True}
+        | {"bio_open": False, "stats_open": False, "distance_unit": "mi", "log_mine": True}
     }
 
 
@@ -334,6 +335,7 @@ def test_a_layout_belongs_to_the_operator_wherever_they_sign_in(
         ({"version": 1, "modules": [{"id": "log"}], "world_qsos": 0}, "world_qsos"),
         ({"version": 1, "modules": [{"id": "log"}], "world_qsos": 501}, "world_qsos"),
         ({"version": 1, "modules": [{"id": "log"}], "bio_open": "yes"}, "bio_open"),
+        ({"version": 1, "modules": [{"id": "log"}], "stats_open": "yes"}, "stats_open"),
         ({"version": 1, "modules": [{"id": "log"}], "distance_unit": "nm"}, "distance_unit"),
         (
             {"version": 1, "modules": [{"id": "log"}], "tables": {"radar": {"columns": ["call"]}}},

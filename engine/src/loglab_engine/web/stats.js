@@ -18,6 +18,16 @@
   const GROUPS = ["CW", "Digital", "Phone"];
   let asking = null;
 
+  // The hourly chart and the tables fold away under the tiles. They start
+  // folded; whether the operator last left them open is kept with their
+  // layout, on any workstation. The same element is kept across refreshes so
+  // a refresh never folds or unfolds it.
+  const more = el("details", { className: "stat-more" }, el("summary", { textContent: "Each hour, bands and modes, operators" }));
+  more.addEventListener("toggle", () => {
+    if (more.open !== (LogLab.layout().stats_open === true)) LogLab.useLayout({ stats_open: more.open });
+  });
+  document.addEventListener("loglab:layout-loaded", () => { more.open = LogLab.layout().stats_open === true; });
+
   const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const hhmm = (iso) => `${iso.slice(11, 13)}${iso.slice(14, 16)}Z`;
   const shown = () => !box.classList.contains("off") && !$("#app").hidden && document.visibilityState === "visible";
@@ -117,7 +127,10 @@
       const part = id === "hourly" ? hourly(s) : id === "band_mode" ? bandMode(s) : id === "operators" ? operators(s) : null;
       if (part) panels.append(part);
     }
-    parts.push(panels);
+    if (panels.children.length) {
+      more.replaceChildren(more.firstChild, panels);
+      parts.push(more);
+    }
     const notes = [];
     if (s.outside) notes.push(`${plural(s.outside, "QSO")} outside the operation's hours`);
     if (s.not_counted) notes.push(`${plural(s.not_counted, "QSO")} on a band or mode that doesn't count`);

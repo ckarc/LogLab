@@ -693,7 +693,9 @@ class Layout(_Strict):
     ``log_mine`` is whether the Log, in an operation, shows only the
     operator's own QSOs rather than everyone's.
     ``bio_open`` is whether the station profile shows a biography opened
-    (closed until the operator opens one). ``distance_unit`` is how the
+    (closed until the operator opens one). ``stats_open`` is whether the
+    Operation stats box shows its hourly chart and tables unfolded (folded
+    until the operator opens them). ``distance_unit`` is how the
     station profile gives the distance to a station, in miles or kilometres.
     """
 
@@ -709,6 +711,7 @@ class Layout(_Strict):
     )
     world_qsos: Annotated[int, Field(ge=1, le=MAX_PATHS)] = 50
     bio_open: bool = False
+    stats_open: bool = False
     log_mine: bool = True
     distance_unit: Literal["mi", "km"] = "mi"
 
