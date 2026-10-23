@@ -83,6 +83,8 @@ from loglab_engine.contests import check as contest_check
 from loglab_engine.contests.overlay import Band, ModeName, StatId
 from loglab_engine.contests.stamp import Station, stamp, stamp_fields
 from loglab_engine.contests.stats import Logged, operation_stats
+from loglab_engine.demo import NAME as DEMO_NAME
+from loglab_engine.demo import Demo
 from loglab_engine.lotw import (
     CertificateError,
     LocationError,
@@ -105,6 +107,7 @@ from loglab_engine.reference import (
     distance_km,
     grid_place,
     record_place,
+    section_for,
     tally_sections,
     tally_zones,
 )
@@ -407,6 +410,31 @@ class OnAirOut(BaseModel):
     from_radio: bool = False
     frequency_hz: int | None = None
     transmitting: bool | None = None
+    pretend: bool = False
+
+
+class DemoIn(_Strict):
+    """Turn demo mode on or off."""
+
+    on: bool
+
+
+class DemoOut(BaseModel):
+    """Whether demo mode is on: pretend operators logging made-up QSOs (Principle XX).
+
+    ``operation`` is the practice operation they log in; ``qsos`` how many
+    they have logged since it was turned on; ``problem`` why it stopped by
+    itself, if it did.
+    """
+
+    on: bool
+    operation: uuid.UUID | None
+    operation_name: str | None
+    started_by: str | None
+    started_at: datetime | None
+    qsos: int
+    stations: list[str]
+    problem: str | None
 
 
 class RadioOut(BaseModel):
@@ -1809,6 +1837,7 @@ def _on_air_out(
                 from_radio=r.station in radios,
                 frequency_hz=radios[r.station].frequency_hz if r.station in radios else None,
                 transmitting=radios[r.station].ptt if r.station in radios else None,
+                pretend=r.pretend,
             )
             for r in reports
         ],
@@ -1866,6 +1895,82 @@ def leave_on_air(operation_id: uuid.UUID, who: Signed, board: Board) -> None:
     """Take this workstation off the On air list, as when it leaves the operation."""
     del operation_id  # a session is on the air in one operation at a time
     board.leave(who.session_id)
+
+
+# -- Demo mode -----------------------------------------------------------------
+
+
+def _demo(request: Request) -> Demo:
+    demo: Demo = request.app.state.demo
+    return demo
+
+
+DemoMode = Annotated[Demo, Depends(_demo)]
+
+
+def _demo_out(demo: Demo) -> DemoOut:
+    state = demo.state()
+    return DemoOut(
+        on=state.on,
+        operation=state.operation,
+        operation_name=state.operation_name,
+        started_by=state.started_by,
+        started_at=state.started_at,
+        qsos=state.qsos,
+        stations=list(state.stations),
+        problem=state.problem,
+    )
+
+
+def _demo_operation(conn: Conn, who: Actor) -> Operation:
+    """The open practice operation demo mode logs in, set up now if there is none."""
+    operations = OperationStore(conn)
+    for op in operations.list():
+        if op.practice and op.name == DEMO_NAME and op.archived_at is None:
+            return op
+    found = LicenseStore(conn).find(who.operator)
+    section = section_for(found.state) if found is not None and found.state else None
+    return operations.create(
+        who,
+        OperationSetup(
+            overlay="arrl-fd",
+            name=DEMO_NAME,
+            station_call=who.operator,
+            gota_call=None,
+            sent={"class": "3A", "section": section.code if section is not None else "DX"},
+            practice=True,
+        ),
+    )
+
+
+@api.get("/demo")
+def get_demo(who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
+    """Whether demo mode is on, and where."""
+    _require(conn, who, Permission.VIEW)
+    return _demo_out(demo)
+
+
+@api.put("/demo")
+def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
+    """Turn demo mode on or off (administrators).
+
+    On, pretend operators Q1PRE, Q2PRE and Q3PRE go on the air at stations
+    demo-1 to demo-3 with pretend radios, in the practice operation Demo
+    Field Day (set up now if need be), and log made-up QSOs with Q calls,
+    each marked pretend, in this administrator's session (Principles VII,
+    XIII and XX). Off, they leave the air; their QSOs stay in the practice
+    operation, which never uploads to LoTW or QRZ.com.
+    """
+    _require(conn, who, Permission.ADMIN)
+    if not body.on:
+        demo.stop()
+        return _demo_out(demo)
+    op = _demo_operation(conn, who)
+    found = _find(conn, op.overlay, include_retired=True)
+    if found is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, f"the overlay {op.overlay} is missing")
+    demo.start(who, op, found)
+    return _demo_out(demo)
 
 
 # -- The station's radio, through its Station Agent ---------------------------
@@ -2987,6 +3092,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
     app.state.pairings = PairingDesk()
+    app.state.demo = Demo(database, app.state.on_air, app.state.rig)
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)
     app.middleware("http")(_security_headers)
