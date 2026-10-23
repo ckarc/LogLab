@@ -1631,9 +1631,8 @@
     }
   }
 
-  // Empty New QSO for the next contact. After a store the form keeps the
-  // band and mode; Esc (cleared) does the same but logs nothing, and also
-  // forgets the station the profile box was showing.
+  // Empty New QSO for the next contact, keeping the band and mode. Esc
+  // (cleared) does the same as a store but logs nothing.
   function resetEntry({ cleared = false } = {}) {
     const form = $("#entry");
     const { date, time } = utcNow();
@@ -1851,6 +1850,8 @@
     }
     logTable.render(qsos, (row, qso) => {
       if (qso.deleted) row.className = "deleted";
+      row.dataset.qso = qso.id;
+      row.classList.toggle("selected", Boolean(current && current.id === qso.id));
       row.addEventListener("click", () => openDetail(qso.id));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
@@ -2074,12 +2075,24 @@
     $("#edit button[type=submit]").hidden = qso.deleted;
     $("#detail-fields").hidden = qso.deleted;
     renderHistory(history);
+    selectRow();
     $("#detail").scrollIntoView({ behavior: "smooth", block: "start" });
   }
 
   function closeDetail() {
     current = null;
     $("#detail").hidden = true;
+    selectRow();
+  }
+
+  // The Log row open in QSO detail is highlighted, and the station profile
+  // shows its call while New QSO's Call box is empty (profile.js).
+  function selectRow() {
+    for (const row of document.querySelectorAll("#log tbody tr")) {
+      row.classList.toggle("selected", Boolean(current && row.dataset.qso === String(current.id)));
+    }
+    const call = current && !current.deleted ? current.call || "" : "";
+    document.dispatchEvent(new CustomEvent("loglab:qso-selected", { detail: { call } }));
   }
 
   function show(f) {
