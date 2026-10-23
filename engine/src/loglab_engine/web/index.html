@@ -19,6 +19,7 @@
   <link rel="stylesheet" href="/static/licenses.css">
   <link rel="stylesheet" href="/static/radio.css">
   <link rel="stylesheet" href="/static/agents.css">
+  <link rel="stylesheet" href="/static/import.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
   <script src="/static/lookup.js" defer></script>
@@ -34,6 +35,7 @@
   <script src="/static/radio.js" defer></script>
   <script src="/static/agents.js" defer></script>
   <script src="/static/licenses.js" defer></script>
+  <script src="/static/import.js" defer></script>
 </head>
 <body>
   <header class="bar">
@@ -342,6 +344,7 @@
         <div class="menu-items">
           <button type="button" id="op-new" class="link">Set up an operation</button>
           <button type="button" id="op-edit" class="link" hidden>Change or end this operation</button>
+          <button type="button" id="import-open" class="link">Import an ADIF file</button>
         </div>
         <p id="op-error" class="error" role="alert"></p>
       </div>
@@ -414,6 +417,27 @@
         <button type="button" id="op-archive" class="danger" hidden>Archive</button>
         <button type="button" id="op-cancel" class="secondary">Cancel</button>
       </div>
+      <p class="error" role="alert"></p>
+    </form>
+  </dialog>
+
+  <dialog id="import-dialog" class="card qrz-dialog import-dialog" aria-labelledby="import-title">
+    <h2 id="import-title">Import an ADIF file</h2>
+    <p class="hint">Bring in the QSOs from another program's log, such as WSJT-X's wsjtx_log.adi. QSOs LabLog already has (the same call, band and mode in the same UTC minute) are left alone, so you can import the same program's log again later and only its new QSOs come in. A QSO you deleted stays deleted. Every field in the file is kept as it is.</p>
+    <form id="import-form" autocomplete="off">
+      <label>ADIF file <input name="file" type="file" accept=".adi,.adif,.txt" required></label>
+      <fieldset id="import-where" class="import-where" hidden>
+        <legend>Log them in</legend>
+        <label class="inline"><input type="radio" name="where" value="operation" checked> <span id="import-op-name"></span>: only QSOs made during its hours, logged as if typed there</label>
+        <label class="inline"><input type="radio" name="where" value="none"> No operation: older QSOs, kept just as the file has them</label>
+      </fieldset>
+      <p class="hint">If your QRZ.com logbook is set up, new QSOs are copied there like typed ones. Nothing goes to LoTW until you press Send there.</p>
+      <div class="actions">
+        <button type="submit">Import</button>
+        <button type="button" id="import-close" class="secondary">Close</button>
+      </div>
+      <p id="import-result" class="notice" aria-live="polite"></p>
+      <ul id="import-warnings" class="import-warnings"></ul>
       <p class="error" role="alert"></p>
     </form>
   </dialog>
