@@ -318,9 +318,32 @@ tr.deleted td { color: var(--deleted); text-decoration: line-through; }
   pointer-events: none;
 }
 
-table.fields td { padding: 4px 6px; border-bottom: none; }
-table.fields td:first-child { width: 30%; }
-table.fields td:last-child { width: 1%; }
+/* A QSO's fields in its detail window: boxes in columns, like New QSO. */
+.field-grid { grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 12px 14px; }
+.field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.field-head { display: flex; align-items: baseline; gap: 6px; font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.02em; min-width: 0; }
+.field-head .field-label { color: var(--muted); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field-head .field-adif { margin-left: 0; font-size: 10px; font-weight: 400; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.field-head .field-remove { margin-left: auto; font-size: 15px; line-height: 1; color: var(--muted); opacity: 0.6; }
+.field-head .field-remove:hover { color: var(--danger); opacity: 1; }
+.field-group { grid-column: 1 / -1; margin: 6px 0 -4px; font-size: 12px; font-weight: 600; color: var(--muted); }
+
+.detail-dialog {
+  width: min(1100px, calc(100vw - 32px));
+  padding: 22px 24px;
+  color: var(--text);
+  background: var(--panel);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  box-shadow: var(--shadow);
+}
+.detail-dialog::backdrop { background: rgba(10, 14, 30, 0.35); backdrop-filter: blur(4px); }
+.detail-dialog > h2 { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 0; }
+
+/* The pencil at the end of each Log row opens that QSO. */
+#log .edit-col { width: 1%; text-align: right; padding-left: 4px; padding-right: 8px; }
+#log .edit-row { font-size: 16px; line-height: 1; padding: 2px 4px; color: var(--muted); }
+#log .edit-row:hover, #log tr.selected .edit-row { color: var(--accent); }
 
 /* -- Tables the operator shapes ---------------------------------------- */
 
