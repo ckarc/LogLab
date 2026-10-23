@@ -17,6 +17,7 @@
   <link rel="stylesheet" href="/static/profile.css">
   <link rel="stylesheet" href="/static/stats.css">
   <link rel="stylesheet" href="/static/licenses.css">
+  <link rel="stylesheet" href="/static/parks.css">
   <link rel="stylesheet" href="/static/radio.css">
   <link rel="stylesheet" href="/static/agents.css">
   <link rel="stylesheet" href="/static/import.css">
@@ -37,6 +38,7 @@
   <script src="/static/cleanup.js" defer></script>
   <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
+  <script src="/static/parks.js" defer></script>
   <script src="/static/import.js" defer></script>
 </head>
 <body>
@@ -388,6 +390,7 @@
           <button type="button" class="link" data-menu-opens="qrz-open">QRZ.com lookup and logbook</button>
           <button type="button" class="link" data-menu-opens="lotw-open">LoTW</button>
           <button type="button" class="link" id="licenses-open">US and Canada call lists</button>
+          <button type="button" class="link" id="parks-open">POTA park list</button>
         </div>
       </div>
     </details>
@@ -559,6 +562,23 @@
     </div>
     <p class="error" role="alert"></p>
     <div id="licenses-credits" class="licenses-credits"></div>
+  </dialog>
+
+  <dialog id="parks-dialog" class="card qrz-dialog parks-dialog" aria-labelledby="parks-title">
+    <h2 id="parks-title">POTA park list</h2>
+    <p class="hint">LabLog keeps its own copy of the Parks on the Air park list, so a park reference fills in with no internet. It loads a newer list from pota.app about once a week, only on the shop line, never on Starlink or the phone.</p>
+    <p id="parks-state" class="parks-state"></p>
+    <p id="parks-problem" class="hint"></p>
+    <label class="parks-find">Find a park
+      <input id="parks-search" type="search" placeholder="Like US-1234 or Devil's Lake" spellcheck="false" autocomplete="off">
+    </label>
+    <ul id="parks-found" class="parks-found"></ul>
+    <div class="actions">
+      <button type="button" id="parks-check" class="secondary">Check for a newer list now</button>
+      <button type="button" id="parks-close" class="secondary">Close</button>
+    </div>
+    <p class="error" role="alert"></p>
+    <p id="parks-credit" class="hint parks-credit"></p>
   </dialog>
 
   <dialog id="lotw-dialog" class="card qrz-dialog lotw-dialog">

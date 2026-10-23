@@ -1,0 +1,8 @@
+/* SPDX-FileCopyrightText: 2026 LogLab contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* The POTA park list dialog (parks.js). */
+.parks-find { display: flex; flex-direction: column; gap: 4px; margin: 12px 0 4px; }
+.parks-found { list-style: none; margin: 8px 0; padding: 0; max-height: 16em; overflow-y: auto; }
+.parks-found li { margin: 6px 0; }
+.parks-credit { margin-top: 16px; padding-top: 8px; border-top: 1px solid var(--glass-line); font-size: 0.8em; }

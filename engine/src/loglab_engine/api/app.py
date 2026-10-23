@@ -117,6 +117,7 @@ from loglab_engine.reference import (
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.reference import Place as MapPlace
 from loglab_engine.reference.licenses import FCC_CREDIT, ISED_CREDIT
+from loglab_engine.reference.parks import PARKS_CREDIT, Park
 from loglab_engine.reference.refresh import Downloads, HttpDownloads, Refresher
 from loglab_engine.rig import Radio, RigBoard, RigMode, RigState, adif_mode, band_for
 from loglab_engine.store import (
@@ -149,6 +150,7 @@ from loglab_engine.store.operation import (
     OperationStore,
 )
 from loglab_engine.store.overlay import OverlayStore
+from loglab_engine.store.parks import ParkStore
 from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 
 if TYPE_CHECKING:
@@ -819,6 +821,34 @@ class LicensesOut(BaseModel):
 
     sources: list[LicenseSourceOut]
     problem: str | None
+
+
+class ParkOut(BaseModel):
+    """One Parks on the Air park, from the park list the Engine keeps."""
+
+    reference: str
+    name: str
+    active: bool
+    locations: list[str]
+    latitude: float | None
+    longitude: float | None
+    grid: str | None
+
+
+class ParksOut(BaseModel):
+    """Parks that match a search."""
+
+    parks: list[ParkOut]
+
+
+class ParkListOut(BaseModel):
+    """How current the park list is, and the last refresh problem."""
+
+    parks: int
+    published: datetime | None
+    imported: datetime | None
+    problem: str | None
+    credit: str
 
 
 class QrzLoginOut(BaseModel):
@@ -3214,6 +3244,63 @@ def get_licenses(request: Request, who: Signed, conn: Conn) -> LicensesOut:
 @api.post("/licenses/refresh", status_code=status.HTTP_202_ACCEPTED)
 def refresh_licenses(request: Request, who: Signed, conn: Conn) -> None:
     """Check for newer license lists now, in the background (admins only)."""
+    _require(conn, who, Permission.ADMIN)
+    refresher: Refresher = request.app.state.licenses
+    refresher.wake()
+
+
+def _park_out(park: Park) -> ParkOut:
+    return ParkOut(
+        reference=park.reference,
+        name=park.name,
+        active=park.active,
+        locations=[] if park.locations is None else park.locations.split(","),
+        latitude=park.latitude,
+        longitude=park.longitude,
+        grid=park.grid,
+    )
+
+
+ParkSearch = Annotated[str, Query(min_length=1, max_length=100)]
+
+
+@api.get("/parks")
+def search_parks(who: Signed, conn: Conn, q: ParkSearch, limit: int = 20) -> ParksOut:
+    """Parks whose reference or name matches ``q``, from the local list (Principle V)."""
+    _require(conn, who, Permission.VIEW)
+    return ParksOut(parks=[_park_out(p) for p in ParkStore(conn).search(q, limit)])
+
+
+@api.get("/parks/{reference}")
+def get_park(who: Signed, conn: Conn, reference: str) -> ParkOut:
+    """One park by its reference, like ``US-1234``; 404 if the local list does not have it."""
+    _require(conn, who, Permission.VIEW)
+    park = ParkStore(conn).find(reference)
+    if park is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such park in the park list")
+    return _park_out(park)
+
+
+@api.get("/park-list")
+def get_park_list(request: Request, who: Signed, conn: Conn) -> ParkListOut:
+    """How current the POTA park list is (Principle VI)."""
+    _require(conn, who, Permission.VIEW)
+    refresher: Refresher = request.app.state.licenses
+    report = refresher.last_report()
+    problems = [] if report is None else report.park_problems
+    state = ParkStore(conn).state()
+    return ParkListOut(
+        parks=state.parks,
+        published=state.published,
+        imported=state.imported,
+        problem=problems[0] if problems else None,
+        credit=PARKS_CREDIT,
+    )
+
+
+@api.post("/park-list/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_park_list(request: Request, who: Signed, conn: Conn) -> None:
+    """Check for a newer park list now, in the background (admins only)."""
     _require(conn, who, Permission.ADMIN)
     refresher: Refresher = request.app.state.licenses
     refresher.wake()
