@@ -6,13 +6,15 @@
 ``loglab-engine serve`` listens on this machine only by default. To reach it
 from other computers on the local network, give ``--host 0.0.0.0``; it needs
 no internet connection (Principle V). While it runs, it keeps the US and
-Canadian license lists current whenever there is internet (unless given
-``--no-license-refresh``).
+Canadian license lists and the POTA park list current whenever there is
+internet (unless given ``--no-license-refresh``).
 
 ``loglab-engine licenses status`` says how current those lists are;
 ``loglab-engine licenses import`` loads files downloaded elsewhere, for a
 station that is never online; ``loglab-engine licenses refresh`` downloads
-whatever is newer now.
+whatever is newer now. ``loglab-engine parks status`` and ``loglab-engine
+parks import FILE`` do the same for the Parks on the Air park list
+(``all_parks_ext.csv`` from pota.app).
 
 Exit codes: 0 stopped normally, 2 refused or failed to start.
 """
@@ -39,6 +41,7 @@ from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.reference.refresh import HttpDownloads, Refresher
 from loglab_engine.store import connect, default_database
 from loglab_engine.store.licenses import COUNTRY, ImportResult, Kind, LicenseStore
+from loglab_engine.store.parks import ParkImport, ParkStore
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -90,7 +93,8 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--no-license-refresh",
         action="store_true",
-        help="never download the FCC and ISED license lists (load them with 'licenses import')",
+        help="never download the FCC and ISED license lists or the POTA park list"
+        " (load them with 'licenses import' and 'parks import')",
     )
     licenses = commands.add_parser("licenses", help="the US and Canadian license lists")
     actions = licenses.add_subparsers(dest="action", required=True)
@@ -106,7 +110,21 @@ def _parser() -> argparse.ArgumentParser:
         help="an FCC daily change file, l_am_<day>.zip (repeat, oldest first)",
     )
     load.add_argument("--canada", type=Path, help="ISED's amateur_delim.zip")
+    parks = commands.add_parser("parks", help="the Parks on the Air park list")
+    park_actions = parks.add_subparsers(dest="action", required=True)
+    park_actions.add_parser("status", help="how current the park list is")
+    park_actions.add_parser("refresh", help="download and load whatever is newer, now")
+    park_load = park_actions.add_parser("import", help="load a park list downloaded elsewhere")
+    park_load.add_argument("file", type=Path, help="pota.app's all_parks_ext.csv")
     return parser
+
+
+def _parks_said(result: ParkImport) -> str:
+    line = f"loaded {result.records} parks"
+    if result.skipped:
+        line += f" ({result.skipped} unreadable parks skipped"
+        line += "".join(f"; {e}" for e in result.examples) + ")"
+    return line
 
 
 def _said(result: ImportResult) -> str:
@@ -122,9 +140,11 @@ def _refresh(database: str, out: TextIO) -> None:
     report = Refresher(database, HttpDownloads(f"LabLog/{__version__}")).run_once()
     for result in report.imported:
         out.write(_said(result) + "\n")
-    for problem in report.problems:
+    for parks in report.parks:
+        out.write(_parks_said(parks) + "\n")
+    for problem in dict.fromkeys(report.problems + report.park_problems):
         out.write(f"not loaded: {problem}\n")
-    if not report.imported and not report.problems:
+    if not (report.imported or report.parks or report.problems or report.park_problems):
         out.write("the lists are already current\n")
 
 
@@ -167,6 +187,26 @@ def _licenses(args: argparse.Namespace, database: str, out: TextIO) -> None:
             _status(store, out)
 
 
+def _parks(args: argparse.Namespace, database: str, out: TextIO) -> None:
+    if args.action == "refresh":
+        _refresh(database, out)
+        return
+    with connect(database) as conn:
+        store = ParkStore(conn)
+        if args.action == "import":
+            out.write(_parks_said(store.import_file(args.file)) + "\n")
+            return
+        state = store.state()
+        line = f"Parks on the Air: {state.parks} parks"
+        if state.imported is None:
+            line += ", never loaded"
+        else:
+            line += f", loaded {state.imported:%Y-%m-%d %H:%M} UTC"
+            if state.published is not None:
+                line += f" from the list published {state.published:%Y-%m-%d}"
+        out.write(line + "\n")
+
+
 def main(
     argv: Sequence[str] | None = None,
     out: TextIO = sys.stdout,
@@ -184,9 +224,9 @@ def main(
     except psycopg.Error as error:
         err.write(f"database error: {str(error).strip()}\n")
         return EXIT_REFUSED
-    if args.command == "licenses":
+    if args.command in {"licenses", "parks"}:
         try:
-            _licenses(args, database, out)
+            (_licenses if args.command == "licenses" else _parks)(args, database, out)
         except (RefusedError, LicenseFileError) as error:
             err.write(f"refused: {error}\n")
             return EXIT_REFUSED

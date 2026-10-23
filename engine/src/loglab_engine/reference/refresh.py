@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Keeping the US and Canadian license lists current, whenever there is internet.
+"""Keeping the license lists and the POTA park list current, whenever there is internet.
 
 Every few hours the Engine asks the FCC and ISED, by a small HEAD request,
 when their files were last published, and downloads only what is newer than
@@ -10,13 +10,16 @@ what it already has (Principle V: fetch each thing once):
 * the FCC's weekly full list, ``l_amat.zip``, replacing the US list;
 * each of the FCC's daily change files published since that full list,
   applied in the order they were published;
-* ISED's list, ``amateur_delim.zip``, replacing the Canadian list.
+* ISED's list, ``amateur_delim.zip``, replacing the Canadian list;
+* Parks on the Air's park list, ``all_parks_ext.csv`` (a few MB), when
+  pota.app says it is newer, or, if pota.app does not say, once a week.
 
 With no internet the check simply fails and is tried again later; lookups
 keep using the list already loaded. In FieldLab, nothing is fetched while the
 gateway says the internet is Starlink or another metered link: the full US
 list alone is about 143 MB, and Starlink has a data budget. A station that is never online loads the
-files by hand with ``loglab-engine licenses import``.
+files by hand with ``loglab-engine licenses import`` and
+``loglab-engine parks import``.
 """
 
 from __future__ import annotations
@@ -28,8 +31,8 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from dataclasses import dataclass, field
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Final, Protocol
 
@@ -38,6 +41,7 @@ import psycopg
 from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.store import connect
 from loglab_engine.store.licenses import ImportResult, Kind, LicenseStore, Source
+from loglab_engine.store.parks import ParkImport, ParkStore
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -46,6 +50,8 @@ FCC_FULL_URL: Final = "https://data.fcc.gov/download/pub/uls/complete/l_amat.zip
 FCC_DAILY_URL: Final = "https://data.fcc.gov/download/pub/uls/daily/l_am_{day}.zip"
 FCC_DAYS: Final = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 ISED_URL: Final = "https://apc-cap.ic.gc.ca/datafiles/amateur_delim.zip"
+PARKS_URL: Final = "https://pota.app/all_parks_ext.csv"
+PARKS_EVERY: Final = timedelta(days=7)
 
 MAX_FULL_DOWNLOAD: Final = 1024 * 1024 * 1024
 MAX_SMALL_DOWNLOAD: Final = 64 * 1024 * 1024
@@ -150,6 +156,8 @@ class RefreshReport:
 
     imported: list[ImportResult]
     problems: list[str]
+    parks: list[ParkImport] = field(default_factory=list)
+    park_problems: list[str] = field(default_factory=list)
 
 
 def _newer(remote: datetime | None, have: tuple[datetime | None, datetime] | None) -> bool:
@@ -161,13 +169,14 @@ def _newer(remote: datetime | None, have: tuple[datetime | None, datetime] | Non
 
 
 class Refresher:
-    """Checks for newer license files, downloads them, and loads them."""
+    """Checks for newer license files and park lists, downloads them, and loads them."""
 
     def __init__(
         self,
         database: str,
         downloads: Downloads,
         today: Callable[[], date] = lambda: datetime.now(UTC).date(),
+        now: Callable[[], datetime] = lambda: datetime.now(UTC),
         hold: Callable[[], str | None] = lambda: None,
     ) -> None:
         """Use the database ``database``, reaching the agencies through ``downloads``.
@@ -178,6 +187,7 @@ class Refresher:
         self._database = database
         self.downloads = downloads
         self._today = today
+        self._now = now
         self._hold = hold
         self._thread: threading.Thread | None = None
         self._wake = threading.Event()
@@ -212,6 +222,8 @@ class Refresher:
                     self._last = report
                 for problem in report.problems:
                     _log.info("license refresh: %s", problem)
+                for problem in report.park_problems:
+                    _log.info("park list refresh: %s", problem)
             self._wake.wait(timeout=CHECK_EVERY_SECONDS)
 
     def run_once(self) -> RefreshReport:
@@ -220,11 +232,13 @@ class Refresher:
         held = self._hold()
         if held is not None:
             report.problems.append(held)
+            report.park_problems.append(held)
             return report
         with connect(self._database) as conn:
             locked = conn.execute("SELECT pg_try_advisory_lock(%s)", (_LOCK_KEY,)).fetchone()
             if locked is None or locked[0] is not True:
                 report.problems.append("another refresh is running")
+                report.park_problems.append("another refresh is running")
                 return report
             store = LicenseStore(conn)
             with tempfile.TemporaryDirectory(prefix="loglab-licenses-") as work:
@@ -234,6 +248,10 @@ class Refresher:
                         step(store, folder, report)
                     except (UnreachableError, LicenseFileError) as error:
                         report.problems.append(str(error))
+                try:
+                    self._parks(ParkStore(conn), folder, report)
+                except (UnreachableError, LicenseFileError) as error:
+                    report.park_problems.append(str(error))
         return report
 
     def _load(
@@ -316,3 +334,19 @@ class Refresher:
                 load=lambda path, when: store.import_ised(path, published=when),
             )
         )
+
+    def _parks(self, store: ParkStore, folder: Path, report: RefreshReport) -> None:
+        have = store.state()
+        published = self.downloads.published(PARKS_URL)
+        if have.imported is not None:
+            if published is not None and have.published is not None:
+                if published <= have.published:
+                    return
+            elif self._now() - have.imported < PARKS_EVERY:
+                return
+        path = folder / PARKS_URL.rsplit("/", 1)[-1]
+        try:
+            fetched = self.downloads.fetch(PARKS_URL, path, MAX_SMALL_DOWNLOAD)
+            report.parks.append(store.import_file(path, published=published or fetched))
+        finally:
+            path.unlink(missing_ok=True)
