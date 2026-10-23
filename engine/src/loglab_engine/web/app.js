@@ -194,6 +194,7 @@
     lookup: (call) => lookupOnce(call),
     forgetLookups: () => lookups.clear(), // the QRZ.com login changed, or a refresh was asked for
     setDefaultLayout: (saved) => { overlayDefault = saved; },
+    scrollRows: (wrap, table, count) => scrollRows(wrap, table, count),
   });
 
   function describe(data) {
@@ -1965,27 +1966,29 @@
       row.addEventListener("click", () => selectQso(selected && selected.id === qso.id ? null : qso));
     });
     $("#count").textContent = `${qsos.length === 100 ? "first 100" : qsos.length} shown, ${logTable.describeSort()}`;
-    fitLog();
     // Other modules that show the log (map.js) follow it.
     document.dispatchEvent(new CustomEvent("loglab:log-loaded"));
   }
 
-  // The Log shows ten rows and scrolls the rest inside the box, under a
-  // heading row that stays put. Measured from the rows themselves, so it
-  // holds at any box size and with tags like "pretend" in a row.
-  const LOG_ROWS = 10;
-  function fitLog() {
-    const wrap = $("#log-wrap");
-    const rows = [...$("#log tbody").rows].slice(0, LOG_ROWS);
-    if (!rows.length || !$("#log thead").offsetHeight) {
-      wrap.style.maxHeight = "";
-      return;
-    }
-    const height = $("#log thead").offsetHeight + rows.reduce((sum, row) => sum + row.offsetHeight, 0);
-    wrap.style.maxHeight = `${height + 2}px`;
+  // A table that shows so many rows and scrolls the rest inside its box,
+  // under a heading row that stays put: the Log shows ten, On air three
+  // (onair.js). Measured from the rows themselves, so it holds at any box
+  // size and with tags like "pretend" in a row, and measured again whenever
+  // the table changes size: new rows, a box shown again, a column added.
+  function scrollRows(wrap, table, count) {
+    wrap.classList.add("rows-wrap");
+    const fit = () => {
+      const head = table.tHead ? table.tHead.offsetHeight : 0;
+      const rows = [...table.tBodies[0].rows].slice(0, count);
+      if (!rows.length || !table.offsetHeight) {
+        wrap.style.maxHeight = "";
+        return;
+      }
+      wrap.style.maxHeight = `${head + rows.reduce((sum, row) => sum + row.offsetHeight, 0) + 2}px`;
+    };
+    new ResizeObserver(fit).observe(table);
   }
-  // Again whenever the table changes size: a box shown again, a column added.
-  new ResizeObserver(() => fitLog()).observe($("#log"));
+  scrollRows($("#log-wrap"), $("#log"), 10);
 
   // -- One QSO: fields, edit, delete, restore, history -------------------
 

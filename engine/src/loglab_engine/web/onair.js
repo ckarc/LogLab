@@ -15,6 +15,7 @@
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
   const LogLab = window.LogLab;
+  LogLab.scrollRows($("#onair-wrap"), $("#onair-list"), 3); // three stations, then it scrolls
   const box = $("#onair");
   const EVERY_MS = 30000;
   let reportedTo = null; // the operation this browser last said it was in
