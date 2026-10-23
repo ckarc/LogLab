@@ -194,6 +194,50 @@
     }
   });
 
-  $("#qrz-open").addEventListener("click", () => { loadBook(); open(); });
+  // -- When stored profiles are re-checked (an admin setting) --------------
+
+  const refresh = $("#qrz-refresh-form");
+  const NETWORKS = { starlink: "Starlink", other: "not Starlink", none: "no internet", unknown: "couldn't tell" };
+
+  function refreshProblem(text) { $(".error", refresh).textContent = text; }
+
+  function showRefresh(state, saved) {
+    const admin = (window.LogLab.session()?.permissions || []).includes("admin");
+    refresh.mode.value = state.mode;
+    refresh.mode.disabled = !admin;
+    const parts = [];
+    if (saved) parts.push("Saved.");
+    if (state.last_checked_at) {
+      const when = new Date(state.last_checked_at).toISOString().slice(11, 16);
+      const network = NETWORKS[state.network] ? ` (network: ${NETWORKS[state.network]})` : "";
+      parts.push(`Last check ${when} UTC${network}: ${state.message}`);
+    }
+    if (!admin) parts.push("Only an admin can change this.");
+    const line = $("#qrz-refresh-state");
+    line.textContent = parts.join(" ");
+    line.classList.toggle("done", saved);
+  }
+
+  async function loadRefresh() {
+    refreshProblem("");
+    try {
+      showRefresh(await window.LogLab.api("GET", "/callbook/refresh"), false);
+    } catch (e) {
+      refreshProblem(e.message);
+    }
+  }
+
+  refresh.mode.addEventListener("change", async () => {
+    refreshProblem("");
+    try {
+      showRefresh(await window.LogLab.api("PUT", "/callbook/refresh", { mode: refresh.mode.value }), true);
+    } catch (e) {
+      refreshProblem(e.message);
+      loadRefresh();
+    }
+  });
+  refresh.addEventListener("submit", (event) => event.preventDefault());
+
+  $("#qrz-open").addEventListener("click", () => { loadBook(); loadRefresh(); open(); });
   $("#qrz-close").addEventListener("click", () => dialog.close());
 })();

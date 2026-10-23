@@ -487,6 +487,8 @@ dialog.card:modal { margin: 16px auto auto; max-height: calc(100vh - 32px); over
 .menu-body > .error:empty { display: none; }
 .menu-items { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
 .segmented { display: flex; gap: 6px; flex-wrap: wrap; }
+.log-whose { display: inline-flex; vertical-align: middle; margin-left: 12px; }
+.log-whose[hidden] { display: none; }
 .segmented [aria-pressed="true"] { color: var(--accent-text); background: linear-gradient(135deg, var(--accent), var(--accent-2)); border-color: transparent; }
 .menu-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding-top: 14px; border-top: 1px solid var(--glass-line); }
 .menu-foot .hint { margin: 0; font-size: 13px; }
