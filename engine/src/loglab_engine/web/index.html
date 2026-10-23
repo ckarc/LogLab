@@ -505,17 +505,32 @@
       <h2>Logbook of the World</h2>
       <button type="button" id="lotw-close" class="secondary small">Close</button>
     </div>
-    <p class="hint">LabLog signs your QSOs with your own LoTW callsign certificate and sends them when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here until you send them.</p>
+    <p class="hint">Nothing goes to LoTW as you log. When you're ready, LabLog gathers your waiting QSOs into a numbered batch for you to check, and sends that batch, signed with your own LoTW callsign certificate, only when you press Send. Logging never waits for LoTW: with no internet, QSOs simply wait here.</p>
     <p id="lotw-state" class="notice" aria-live="polite"></p>
 
     <section id="lotw-actions" class="lotw-part" hidden>
       <div class="actions">
-        <button type="button" id="lotw-send">Send to LoTW</button>
+        <button type="button" id="lotw-prepare">Prepare a batch</button>
         <button type="button" id="lotw-fetch" class="secondary">Fetch confirmations</button>
+      </div>
+      <div id="lotw-batch" class="lotw-batch" hidden>
+        <h3 id="lotw-batch-title"></h3>
+        <p class="hint">Check these QSOs. Nothing has gone to LoTW yet. A QSO you edit before sending stays behind for a later batch.</p>
+        <div class="lotw-batch-table"><table class="lotw-qsos"><thead><tr><th>Date (UTC)</th><th>Time</th><th>Call</th><th>Band</th><th>Mode</th></tr></thead><tbody></tbody></table></div>
+        <div class="actions">
+          <button type="button" id="lotw-send">Send this batch to LoTW</button>
+          <button type="button" id="lotw-cancel" class="secondary">Cancel batch</button>
+        </div>
       </div>
       <p id="lotw-result" class="hint" aria-live="polite"></p>
       <ul id="lotw-skipped" class="lotw-skipped"></ul>
     </section>
+
+    <details id="lotw-history-part" class="lotw-part" hidden>
+      <summary>Past batches</summary>
+      <p class="hint">LoTW doesn't number uploads or QSOs, so LabLog numbers its batches. Open one to see exactly what went in it.</p>
+      <div id="lotw-history"></div>
+    </details>
 
     <details id="lotw-cert-part" class="lotw-part">
       <summary>Callsign certificate</summary>
