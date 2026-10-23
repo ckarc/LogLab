@@ -102,6 +102,7 @@ from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
 from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
+from loglab_engine.personal import personal_stats
 from loglab_engine.reference import (
     SECTIONS,
     ZONE_FIELDS,
@@ -388,6 +389,50 @@ class OperationStatsOut(BaseModel):
     sections_total: int
     score: int | None
     points: dict[str, int]
+
+
+class BandModeCountOut(BaseModel):
+    """The operator's QSOs on one band in one mode."""
+
+    band: str
+    mode: str
+    qsos: int
+
+
+class CountryOut(BaseModel):
+    """A country the operator has worked, as their log names it.
+
+    ``dxcc`` is the DXCC entity number, ``null`` when the log names a country
+    that is not on the DXCC list.
+    """
+
+    name: str
+    dxcc: int | None
+    qsos: int
+
+
+class PersonalStatsOut(BaseModel):
+    """The signed-in operator's own stats, for everyday logging.
+
+    ``today``, ``week`` (from Monday) and ``year`` start at UTC midnight.
+    States and countries are counted from each QSO's ``STATE``, ``DXCC`` and
+    ``COUNTRY`` as logged, never guessed from the call; ``no_country`` QSOs
+    name no country.
+    """
+
+    operator: str
+    now: datetime
+    today: int
+    week: int
+    year: int
+    total: int
+    last_qso: datetime | None
+    by_band_mode: list[BandModeCountOut]
+    states: list[str]
+    states_needed: list[str]
+    states_total: int
+    countries: list[CountryOut]
+    no_country: int
 
 
 class OnAirOut(BaseModel):
@@ -1951,6 +1996,34 @@ def operation_stats_out(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Ope
         sections_total=stats.sections_total,
         score=stats.score,
         points=dict(stats.points),
+    )
+
+
+@api.get("/stats/personal")
+def personal_stats_out(who: Signed, conn: Conn) -> PersonalStatsOut:
+    """The signed-in operator's own stats: today, this week and year, bands, states, countries.
+
+    Every QSO they made counts, in any operation or none; deleted and pretend
+    QSOs do not.
+    """
+    _require(conn, who, Permission.VIEW)
+    stats = personal_stats(LogStore(conn).operator_qsos(who.operator), now=datetime.now(UTC))
+    return PersonalStatsOut(
+        operator=who.operator,
+        now=stats.now,
+        today=stats.today,
+        week=stats.week,
+        year=stats.year,
+        total=stats.total,
+        last_qso=stats.last_qso,
+        by_band_mode=[
+            BandModeCountOut(band=b.band, mode=b.mode, qsos=b.qsos) for b in stats.by_band_mode
+        ],
+        states=list(stats.states),
+        states_needed=list(stats.states_needed),
+        states_total=stats.states_total,
+        countries=[CountryOut(name=c.name, dxcc=c.dxcc, qsos=c.qsos) for c in stats.countries],
+        no_country=stats.no_country,
     )
 
 

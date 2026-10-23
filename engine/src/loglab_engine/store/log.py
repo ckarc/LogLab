@@ -225,6 +225,23 @@ class QsoVersion:
 
 
 @dataclass(frozen=True, slots=True)
+class Worked:
+    """What an operator's personal stats need from one of their QSOs, as logged.
+
+    ``band`` is lower case and ``mode`` the ``SUBMODE`` when there is one
+    (FT4 rather than MFSK), else the ``MODE``; ``state``, ``dxcc`` and
+    ``country`` are the QSO's own fields, empty when it has none.
+    """
+
+    qso_start: datetime | None
+    band: str
+    mode: str
+    state: str
+    dxcc: str
+    country: str
+
+
+@dataclass(frozen=True, slots=True)
 class QsoFilter:
     """Which QSOs :meth:`LogStore.find` lists.
 
@@ -1021,6 +1038,36 @@ class LogStore:
             (str(operation_id),),
         ).fetchall()
         return tuple(_version(row) for row in rows)
+
+    def operator_qsos(self, operator: str) -> tuple[Worked, ...]:
+        """Every current QSO ``operator`` made, oldest first, for their personal stats.
+
+        A QSO is theirs as :class:`QsoFilter` says (its ``OPERATOR``, else
+        whoever entered the current version), whatever operation it was
+        logged in. Deleted QSOs and pretend ones (``APP_LOGLAB_PRETEND`` = Y)
+        are left out: they are not contacts.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT v.qso_start, coalesce(v.band, ''),
+                   coalesce(nullif(upper(btrim(log.field_value(v.fields, 'SUBMODE'))), ''),
+                            v.mode, ''),
+                   coalesce(upper(btrim(log.field_value(v.fields, 'STATE'))), ''),
+                   coalesce(btrim(log.field_value(v.fields, 'DXCC')), ''),
+                   coalesce(upper(btrim(log.field_value(v.fields, 'COUNTRY'))), '')
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            JOIN log.changeset c ON c.id = v.changeset_id
+            JOIN log.operator o ON o.id = c.operator_id
+            WHERE NOT q.deleted
+              AND coalesce(upper(btrim(log.field_value(v.fields, 'APP_LOGLAB_PRETEND'))), '') <> 'Y'
+              AND upper(btrim(%s)) = upper(coalesce(
+                  nullif(btrim(log.field_value(v.fields, 'OPERATOR')), ''), o.callsign))
+            ORDER BY v.qso_start, q.entry_seq
+            """,
+            (operator,),
+        ).fetchall()
+        return tuple(Worked(*row) for row in rows)
 
     def field_counts(self, name: str, operation: uuid.UUID | None = None) -> dict[str, int]:
         """How many current QSOs carry each value of the ADIF field ``name``.
