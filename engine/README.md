@@ -214,6 +214,12 @@ own reference is at `/api/docs`.
   instead, and re-checking runs only on `wan1`, the shop link, never on
   Starlink or the phone tether. The Engine only reads the bus, with an MQTT
   client of its own; with no fresh word from it, the address check decides.
+- **Clean up saved lookups** (Menu → Admin, admins only;
+  `GET`/`POST /api/v1/callbook/cleanup`, `{"days": 90}`) clears the kept
+  QRZ.com answers, photos and biographies of calls that no QSO names (deleted
+  ones count as named) and that were fetched more than the chosen number of
+  days ago (at least 7). It shows how many first, and asks before clearing.
+  The log is never touched; a cleared call is looked up again if typed.
 - **Logbook of the World** is optional. The **LoTW** link in the Log box
   says how many QSOs wait to be sent and opens the set-up: each operator
   saves their own callsign certificate (the `.p12` file TrustedQSL saves,
