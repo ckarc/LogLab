@@ -234,6 +234,14 @@ an hourly chart, bands and modes, and each operator's totals. Every
 workstation sees the same numbers. The score is QSO points only; power
 multipliers and bonuses aren't counted yet.
 
+With no operation picked (everyday logging), it shows your own stats instead:
+your QSOs today, this week and this year (UTC; weeks start Monday), all
+time, the US states and the countries you've worked. Open its bar for bands
+and modes, the states (and, near the end, the ones you still need) and the
+countries. States and countries come from each QSO's State, DXCC and Country
+as logged; a QSO that names no country isn't counted, since LabLog doesn't
+guess a country from the call.
+
 If you don't see it, turn it on under **Menu > Appearance and layout >
 Choose which boxes show**.
 
