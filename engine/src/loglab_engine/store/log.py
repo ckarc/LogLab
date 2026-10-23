@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, cast
 
@@ -1020,6 +1020,40 @@ class LogStore:
                 "station": station_call,
                 "exclude": exclude,
             },
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
+    def program_qsos(
+        self,
+        *,
+        sig: str,
+        station_call: str,
+        call: str,
+        day: date,
+        exclude: uuid.UUID | None = None,
+    ) -> tuple[QsoVersion, ...]:
+        """Current QSOs with ``call``, made as ``station_call`` for program ``sig`` on ``day``.
+
+        These are the QSOs a new one could be a dupe of under a program like
+        POTA: the program is the ADIF ``MY_SIG`` and the day that of the QSO's
+        UTC start. ``exclude`` leaves one QSO out (the one being edited).
+        Deleted QSOs never count.
+        """
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE NOT q.deleted
+              AND v.call = upper(btrim(%(call)s))
+              AND upper(btrim(log.field_value(v.fields, 'MY_SIG'))) = upper(btrim(%(sig)s))
+              AND (v.qso_start AT TIME ZONE 'UTC')::date = %(day)s
+              AND {_STATION_CALL} = upper(btrim(%(station)s))
+              AND (%(exclude)s::uuid IS NULL OR q.id <> %(exclude)s::uuid)
+            ORDER BY v.qso_start, q.entry_seq
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"call": call, "sig": sig, "day": day, "station": station_call, "exclude": exclude},
         ).fetchall()
         return tuple(_version(row) for row in rows)
 

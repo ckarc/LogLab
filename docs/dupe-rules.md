@@ -1,7 +1,7 @@
 # What counts as a dupe
 
 Research for LabLog's contest overlays, 18 October 2026. Each rule here is encoded in
-the overlay files in `engine/src/loglab_engine/contests/templates/`. Dupe checks run only in contest overlays; Everyday never checks.
+the overlay files in `engine/src/loglab_engine/contests/templates/`. Dupe checks run only in contest overlays and in program overlays like POTA; Everyday never checks.
 
 ## ARRL Field Day
 
@@ -54,6 +54,34 @@ So a QSO is a Winter Field Day dupe under the same four tests as Field Day:
 same call, same band, same mode group, same station callsign, during the same
 Winter Field Day. The difference from Field Day is which bands count, and that
 FT8, FT4 and the other WSJT modes don't count at all.
+
+## Parks on the Air (activator)
+
+Sources, read 23 October 2026: the [POTA Activator Guide](https://docs.pota.app/docs/activator_reference/activator_guide-english.html)
+and [Logging Made Easy](https://docs.pota.app/docs/activator_reference/logging_made_easy.html).
+
+What POTA says:
+
+- An activation is at least 10 QSOs from one park, all within one UTC day.
+- "Duplicate QSOs waste a bit of time, but there is no penalty for including
+  them in the logs submitted to POTA."
+- The park goes in `MY_SIG_INFO` (like `US-1234`); the other station's park, for
+  a park-to-park contact, in `SIG_INFO`.
+- A club call's log carries the on-air call in `STATION_CALLSIGN` and each
+  operator in `OPERATOR`; the club and the operators all get activation credit.
+  An operator who also gives their own call submits a separate log for it.
+- For a two-fer, the same contacts are logged once per park, with entries
+  identical apart from the park.
+
+So under the POTA activator overlay a QSO is a dupe when the log already has a
+QSO with the same call, on the same band, in the same mode group (CW, Phone,
+Digital), made as the same station callsign, from the same park
+(`MY_SIG_INFO`), with the other station in the same park (`SIG_INFO`), on the
+same UTC day. A park-to-park contact with a station that has moved to another
+park is new. As in the contests, a dupe is only warned about.
+
+The activation count is per station callsign, park and UTC day, with dupes
+left out: a club call worked by several operators counts as one station.
 
 ## Decisions LabLog makes where the rules are silent
 

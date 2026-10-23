@@ -112,16 +112,30 @@ class Bands(_Strict):
         return None if band in self.excluded else band
 
 
+DupePer = Literal["band", "mode", "my_park", "their_park"]
+
+
 class Dupes(_Strict):
     """What makes two QSOs the same contact.
 
     Two QSOs are dupes when they are with the same call, made as the same
-    station callsign, in the same contest in the same calendar year, and agree
-    on everything listed in ``per``.
+    station callsign, in the same contest (or program, like POTA) in the same
+    UTC calendar year (or, ``within`` a ``day``, the same UTC day), and agree
+    on everything listed in ``per``: the band, the mode group, the park the
+    station was in (``my_park``, ADIF ``MY_SIG_INFO``) and the park the other
+    station was in (``their_park``, ADIF ``SIG_INFO``).
     """
 
-    per: Annotated[tuple[Literal["band", "mode"], ...], Field(max_length=2)]
+    per: Annotated[tuple[DupePer, ...], Field(max_length=4)]
     rule: Text
+    within: Literal["year", "day"] = "year"
+
+    @model_validator(mode="after")
+    def _once(self) -> Self:
+        if len(self.per) != len(set(self.per)):
+            msg = "each dupe rule part may appear only once"
+            raise ValueError(msg)
+        return self
 
 
 class ExchangePart(_Strict):
@@ -129,7 +143,8 @@ class ExchangePart(_Strict):
 
     ``field`` is the ADIF field it is logged in. A value must match
     ``pattern``, or be a section code when ``sections`` is set, or be one of
-    ``also``.
+    ``also``. An ``optional`` received part may be left out, like the other
+    station's park, which only a park-to-park contact has.
     """
 
     key: Key
@@ -138,6 +153,7 @@ class ExchangePart(_Strict):
     hint: Annotated[str, StringConstraints(max_length=200)] = ""
     pattern: Annotated[str, StringConstraints(min_length=1, max_length=200)] | None = None
     sections: bool = False
+    optional: bool = False
     also: Annotated[
         tuple[Annotated[str, StringConstraints(pattern=r"^[A-Z]{1,8}$")], ...], Field(max_length=10)
     ] = ()
@@ -234,7 +250,17 @@ class Entry(_Strict):
         return self
 
 
-StatId = Literal["rate", "hourly", "band_mode", "operators", "dupes", "sections", "score"]
+StatId = Literal[
+    "rate",
+    "hourly",
+    "band_mode",
+    "operators",
+    "dupes",
+    "sections",
+    "score",
+    "activation",
+    "p2p",
+]
 STAT_IDS: Final[tuple[StatId, ...]] = (
     "rate",
     "hourly",
@@ -243,6 +269,8 @@ STAT_IDS: Final[tuple[StatId, ...]] = (
     "dupes",
     "sections",
     "score",
+    "activation",
+    "p2p",
 )
 
 
@@ -252,11 +280,13 @@ class Stats(_Strict):
     ``show`` picks from the stats the Engine can work out, in the order the
     box shows them: the QSO rate (``rate``), QSOs in each hour (``hourly``),
     QSOs by band and mode (``band_mode``), each operator's QSOs
-    (``operators``), dupes (``dupes``), sections worked (``sections``), and a
-    rough score (``score``). The score is the contest's QSO points: each
-    counting QSO that is not a dupe earns the ``points`` of its mode group,
-    and a satellite QSO only with ``satellite_points``. Power multipliers and
-    bonus points are not part of it.
+    (``operators``), dupes (``dupes``), sections worked (``sections``), a
+    rough score (``score``), and for a program like POTA, each park's progress
+    toward an activation (``activation``) and park-to-park contacts
+    (``p2p``). The score is the contest's QSO points: each counting QSO
+    that is not a dupe earns the ``points`` of its mode group, and a
+    satellite QSO only with ``satellite_points``. Power multipliers and bonus
+    points are not part of it.
     """
 
     show: Annotated[tuple[StatId, ...], Field(max_length=len(STAT_IDS))]
@@ -274,12 +304,29 @@ class Stats(_Strict):
         return self
 
 
+class Program(_Strict):
+    """An awards program an overlay logs for, like Parks on the Air, rather than a contest.
+
+    Its QSOs carry no ``CONTEST_ID``; the station's own reference (its park)
+    is its sent exchange, logged in ``MY_SIG`` and ``MY_SIG_INFO``, and the
+    other station's, when it has one, in ``SIG`` and ``SIG_INFO``. ``role``
+    says which end the overlay logs: the ``activator`` in the park. An
+    activation needs ``goal`` QSOs from one reference in one UTC day.
+    """
+
+    sig: Literal["POTA"]
+    role: Literal["activator"]
+    goal: Annotated[int, Field(ge=1, le=1000)]
+
+
 class Overlay(_Strict):
     """One operation overlay.
 
     ``contest_id`` is the ADIF ``CONTEST_ID`` its QSOs carry; the everyday
-    overlay has none, no exchange, and never checks for dupes. ``gota`` says
-    the contest has a GOTA station, with a callsign of its own.
+    overlay has none, no exchange, and never checks for dupes. An overlay for
+    a ``program``, like POTA, has no ``CONTEST_ID`` either, but has bands,
+    modes, an exchange and its own dupe rule. ``gota`` says the contest has a
+    GOTA station, with a callsign of its own.
     """
 
     format: Literal[1]
@@ -296,11 +343,19 @@ class Overlay(_Strict):
     layout: Layout | None = None
     gota: bool = False
     stats: Stats | None = None
+    program: Program | None = None
 
     @model_validator(mode="after")
     def _contest_is_whole(self) -> Self:
         contest = (self.contest_id, self.rules, self.bands, self.modes, self.exchange)
-        if self.contest_id is None:
+        if self.program is not None:
+            if self.contest_id is not None or self.gota:
+                msg = "a program overlay has no contest_id and no GOTA station"
+                raise ValueError(msg)
+            if any(part is None for part in contest[1:]):
+                msg = "a program overlay needs rules, bands, modes and an exchange"
+                raise ValueError(msg)
+        elif self.contest_id is None:
             if any(part is not None for part in (*contest, self.dupes)):
                 msg = (
                     "an overlay without a contest_id has no rules, bands, modes, dupes or exchange"
@@ -316,12 +371,26 @@ class Overlay(_Strict):
             if "score" in self.stats.show and self.contest_id is None:
                 msg = "a score can be shown only by a contest overlay"
                 raise ValueError(msg)
+            if {"activation", "p2p"} & set(self.stats.show) and self.program is None:
+                msg = "activations and park-to-park contacts are shown only for a program"
+                raise ValueError(msg)
+        by_day_or_park = self.dupes is not None and (
+            self.dupes.within != "year" or bool({"my_park", "their_park"} & set(self.dupes.per))
+        )
+        if by_day_or_park and self.program is None:
+            msg = "only a program overlay checks dupes by day or by park"
+            raise ValueError(msg)
         return self
 
     @property
     def is_contest(self) -> bool:
-        """Whether this overlay is a contest (and so may check for dupes)."""
+        """Whether this overlay is a contest."""
         return self.contest_id is not None
+
+    @property
+    def checks_dupes(self) -> bool:
+        """Whether QSOs logged under this overlay are checked for dupes."""
+        return self.dupes is not None and (self.is_contest or self.program is not None)
 
     @property
     def shown_stats(self) -> tuple[StatId, ...]:
@@ -362,7 +431,7 @@ def overlays() -> tuple[Overlay, ...]:
         for entry in files(__package__).joinpath(TEMPLATES).iterdir()
         if entry.name.endswith(".json")
     ]
-    found.sort(key=lambda o: (o.is_contest, o.name))
+    found.sort(key=lambda o: (o.is_contest or o.program is not None, o.name))
     if not found or found[0].id != EVERYDAY:
         raise OverlayError(f"the {EVERYDAY} overlay is missing")
     return tuple(found)

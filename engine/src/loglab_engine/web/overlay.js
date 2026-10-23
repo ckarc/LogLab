@@ -356,13 +356,22 @@
       const label = document.createElement("label");
       const input = document.createElement("input");
       input.name = `sent.${part.key}`;
-      input.required = true;
+      input.required = !part.optional;
       input.maxLength = 40;
       input.spellcheck = false;
       input.autocapitalize = "characters";
       input.placeholder = part.hint;
       input.value = values[part.key] || "";
       label.append(`${part.label} `, input);
+      // A park reference shows the park's name from LabLog's own park list.
+      if (chosen.program && part.key === "park") {
+        const name = document.createElement("span");
+        name.className = "park-name hint";
+        name.setAttribute("aria-live", "polite");
+        label.append(name);
+        input.addEventListener("input", () => window.LogLabParks.nameInto(input.value, name));
+        window.LogLabParks.nameInto(input.value, name);
+      }
       box.append(label);
     }
   }
@@ -465,7 +474,7 @@
 
   function check() {
     clearTimeout(checkTimer);
-    if (!overlay || !overlay.contest_id) return clearNote();
+    if (!overlay || !overlay.dupes) return clearNote();
     checkTimer = setTimeout(runCheck, CHECK_AFTER_MS);
   }
 
@@ -512,7 +521,7 @@
     timeTyped = false;
     clearNote();
   });
-  for (const name of ["CALL", "BAND", "MODE", "CLASS", "ARRL_SECT"]) {
+  for (const name of ["CALL", "BAND", "MODE", "CLASS", "ARRL_SECT", "SIG_INFO"]) {
     for (const type of ["input", "change"]) form[name].addEventListener(type, check);
   }
   for (const name of ["QSO_DATE", "TIME_ON"]) form[name].addEventListener("input", () => { timeTyped = true; });
