@@ -156,6 +156,20 @@
   // profile.js (the station profile) also shows callsigns and a QSO table.
   // overlay.js (operation overlays) also reads and changes the layout, reads
   // the New QSO form, and gives the page its overlay's default layout.
+  const LOOKUP_KEEP_MS = 60000;
+  const lookups = new Map(); // call -> { at, answer: Promise }
+  function lookupOnce(call) {
+    const now = Date.now();
+    for (const [key, held] of lookups) if (now - held.at > LOOKUP_KEEP_MS) lookups.delete(key);
+    let held = lookups.get(call);
+    if (!held) {
+      held = { at: now, answer: api("GET", `/lookup?call=${encodeURIComponent(call)}`) };
+      // A failed question is asked again next time, not remembered.
+      held.answer.catch(() => lookups.delete(call));
+      lookups.set(call, held);
+    }
+    return held.answer;
+  }
   let overlayDefault = null; // the operator's overlay's starting layout, if it has one
   window.LogLab = Object.freeze({
     api,
@@ -173,6 +187,10 @@
     // A table of anything else, with columns of its own (ft8.js).
     table: (options) => makeTable(options),
     openQso: (id) => openDetail(id),
+    // Who a call is (profile.js and lookup.js both ask): one question per call
+    // for a minute, so the profile box and the form fill share one answer.
+    lookup: (call) => lookupOnce(call),
+    forgetLookups: () => lookups.clear(), // the QRZ.com login changed, or a refresh was asked for
     setDefaultLayout: (saved) => { overlayDefault = saved; },
   });
 

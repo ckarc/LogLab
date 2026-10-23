@@ -19,7 +19,7 @@
   const CALL = /^[A-Z0-9]+(\/[A-Z0-9]+)*$/;
   // A call worth asking about: a digit with a letter after it, like K9K or N0OY.
   const LOOKS_COMPLETE = /[0-9][A-Z]/;
-  const PAUSE_MS = 600;
+  const PAUSE_MS = 1000; // a call is looked up once typing stops this long, or on Tab
   const LIMIT = 100;
   const FACTS = [["qth", "QTH"], ["state", "State"], ["country", "Country"], ["grid", "Grid"]];
   const QUIET = {
@@ -130,7 +130,8 @@
   async function lookUp(call, question, refresh = false) {
     let found;
     try {
-      found = await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
+      found = refresh ? await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}&refresh=true`)
+        : await window.LogLab.lookup(call);
     } catch {
       found = { status: "unreachable", message: "The Engine can't be reached right now." };
     }
@@ -220,6 +221,7 @@
     if (!shown) return;
     asked += 1;
     $("#profile-source").textContent = "Asking QRZ.com…";
+    window.LogLab.forgetLookups();
     lookUp(shown, asked, true);
   });
 
