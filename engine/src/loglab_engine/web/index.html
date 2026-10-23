@@ -33,6 +33,7 @@
   <script src="/static/onair.js" defer></script>
   <script src="/static/radio.js" defer></script>
   <script src="/static/agents.js" defer></script>
+  <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
 </head>
 <body>
@@ -386,6 +387,12 @@
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
           <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
         </div>
+        <div id="demo-row" class="demo-row" hidden>
+          <label class="inline"><input type="checkbox" id="demo-on"> Demo mode</label>
+          <p id="demo-status" class="hint">Pretend operators go on the air and log made-up QSOs in a practice operation, so every box has something to show. Nothing is uploaded.</p>
+          <button type="button" id="demo-watch" class="link" hidden>Watch it here</button>
+        </div>
+        <p id="demo-error" class="error" role="alert"></p>
       </div>
     </details>
 

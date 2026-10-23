@@ -615,3 +615,7 @@ body.arranging .module.placing { outline: 2px dashed var(--accent); background: 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
 }
+
+/* Demo mode, under Admin in the Menu (demo.js). */
+.demo-row { margin-top: 10px; }
+.demo-row .hint { margin: 4px 0; }
