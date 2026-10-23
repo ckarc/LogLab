@@ -32,21 +32,20 @@
   border-radius: 14px;
   border: 1px solid var(--glass-line);
 }
-.profile-bio { margin: 12px 0 14px; }
-.profile-bio summary { cursor: pointer; font-weight: 600; font-size: 14px; }
-/* The biography is the station's own words: set in from the left and in a
-   softer colour of its own, so it reads apart from the labels and facts above. */
+.profile-bio { margin: 12px 0 14px; font-size: 14px; }
+/* The biography opens in a window of its own, wide and in large type. It is
+   the station's own words: set in from the left and in a softer colour of
+   its own, so it reads apart from the rest of LabLog. */
+.bio-dialog { width: min(820px, calc(100vw - 32px)); padding: 28px 32px; }
+.bio-dialog h2 { margin: 0 0 16px; }
 #profile-bio {
-  max-height: 240px;
-  overflow: auto;
-  margin: 8px 0 0 6px;
-  padding: 2px 6px 2px 14px;
-  border-left: 2px solid var(--glass-line);
-  font-size: 14px;
-  line-height: 1.5;
-  color: color-mix(in srgb, var(--text) 72%, var(--accent));
+  padding: 2px 6px 2px 18px;
+  border-left: 3px solid var(--glass-line);
+  font-size: 18px;
+  line-height: 1.65;
+  color: color-mix(in srgb, var(--text) 80%, var(--accent));
 }
-#profile-bio p { margin: 0 0 8px; }
+#profile-bio p { margin: 0 0 12px; }
 @media (max-width: 600px) {
   .profile-photo { width: 96px; }
 }
