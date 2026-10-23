@@ -7,8 +7,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import psycopg
 import pytest
 from fastapi.testclient import TestClient
+from psycopg.types.json import Jsonb
 
 from loglab_engine.api import create_app
 from loglab_engine.store import IdentityStore, Permission
@@ -463,3 +465,28 @@ def test_a_layout_keeps_each_overlays_arrangement(
     assert saved["by_overlay"]["arrl-fd"]["modules"][0]["side"] == "right"
     bad = {"modules": [{"id": "log"}], "by_overlay": {"Not An Id": kept}}
     assert client.put("/api/v1/layout", headers=k9ksu, json=bad).status_code == 422
+
+
+def test_a_layout_saved_with_the_ft8_boxes_keeps_everything_else(
+    client: TestClient, k9ksu: dict[str, str], database: str
+) -> None:
+    """The FT8 box and waterfall are gone; a layout saved while they existed still opens."""
+    assert client.put("/api/v1/layout", headers=k9ksu, json=LAYOUT).status_code == 200
+    ft8 = {"id": "ft8", "width": "half", "side": "right"}
+    log_table = {"columns": ["call", "band"], "sort": "call", "descending": False}
+    old = {
+        "modules": [{"id": "log", "width": "half", "side": "left"}, {"id": "waterfall"}, ft8],
+        "tables": {"log": log_table, "ft8": {"columns": ["call"]}},
+        "by_overlay": {"arrl-fd": {"modules": [ft8, {"id": "map"}]}},
+    }
+    with psycopg.connect(conninfo(database), autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO workspace.layout (operator_id, session_id, layout)"
+            " SELECT operator_id, session_id, %s FROM workspace.layout",
+            [Jsonb(old)],
+        )
+    saved = client.get("/api/v1/layout", headers=k9ksu).json()["layout"]
+    assert [m["id"] for m in saved["modules"]] == ["log"]
+    assert saved["modules"][0]["width"] == "half"
+    assert saved["tables"] == {"log": log_table}
+    assert [m["id"] for m in saved["by_overlay"]["arrl-fd"]["modules"]] == ["map"]
