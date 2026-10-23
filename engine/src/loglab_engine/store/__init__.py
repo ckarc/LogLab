@@ -29,6 +29,7 @@ from loglab_engine.store.log import (
     QsoVersion,
     StaleVersionError,
     StoreError,
+    Worked,
 )
 from loglab_engine.store.migrate import (
     AppliedMigration,
@@ -67,6 +68,7 @@ __all__ = [
     "SignInError",
     "StaleVersionError",
     "StoreError",
+    "Worked",
     "WorkspaceStore",
     "applied_migrations",
     "connect",
