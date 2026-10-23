@@ -187,7 +187,6 @@
       return p;
     }));
     $("#profile-bio-part").hidden = false;
-    more.show(); // the bar names the biography too
   }
 
   function fact(label, value) {
@@ -308,7 +307,7 @@
   // The biography and the QSOs worked before fold away under the name and
   // photo, behind a bar that says how many and opens them over the page
   // (app.js, expander).
-  const more = window.LogLab.expander({
+  window.LogLab.expander({
     id: "profile",
     box: $("#profile"),
     part: $("#profile-more"),
@@ -319,14 +318,23 @@
     },
   });
 
-  // The biography opens large in a window of its own, to read it easily;
-  // Esc, Close or a click outside closes it.
+  // A click anywhere in the biography (or Enter on it) opens it large in a
+  // window of its own, to read it easily; Esc, Close or a click outside
+  // closes it.
   const bioDialog = $("#bio-dialog");
-  $("#profile-bio-open").addEventListener("click", () => {
+  const readBio = () => {
     const name = $("#profile-name").textContent.trim();
     $("#bio-title").textContent = [$("#profile-call").textContent.trim(), name].filter(Boolean).join(" · ");
+    $("#bio-dialog-text").replaceChildren(...[...$("#profile-bio").childNodes].map((node) => node.cloneNode(true)));
     bioDialog.showModal();
     bioDialog.scrollTop = 0;
+  };
+  $("#profile-bio").addEventListener("click", readBio);
+  $("#profile-bio").addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      readBio();
+    }
   });
   $("#bio-close").addEventListener("click", () => bioDialog.close());
   bioDialog.addEventListener("click", (event) => { if (event.target === bioDialog) bioDialog.close(); }); // the backdrop
