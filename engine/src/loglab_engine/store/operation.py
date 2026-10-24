@@ -5,7 +5,7 @@
 
 The API validates an operation's overlay and exchange before it arrives here
 (Principle XII); the database checks that only a signed-in administrator
-sets one up (Principle XIII). An operation is never erased: it is ended, and
+sets one up (Principle XXI). An operation is never erased: it is ended, and
 once its log is submitted it can be archived, after which neither it nor its
 QSOs ever change.
 """

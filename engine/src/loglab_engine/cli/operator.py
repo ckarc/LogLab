@@ -5,7 +5,7 @@
 
 Set up the first administrator, sign in at a station and out again, and, as an
 administrator, add operators, grant and revoke permissions, disable accounts,
-and make the station keys Station Agents sign in with (Principle XIII).
+and make the station keys Station Agents sign in with (Principle XXI).
 Everything works with no internet connection (Principle V).
 
 Signing in keeps the session's token in a file only you can read
@@ -292,7 +292,7 @@ def _agent_key(
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="loglab-operator",
-        description="LabLog operator accounts and sign-in (Principle XIII).",
+        description="LabLog operator accounts and sign-in (Principle XXI).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(

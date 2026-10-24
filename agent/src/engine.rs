@@ -8,7 +8,7 @@
 //! never sends anything back that the Agent would apply to the radio.
 //!
 //! The Agent signs in as a registered station with the station key an
-//! administrator gave it (Principle XIII).
+//! administrator gave it (Principle XXI).
 //!
 //! It also hands the Engine the QSOs a program on this computer logged
 //! (WSJT-X, say). The Engine logs each as the operator signed in at this

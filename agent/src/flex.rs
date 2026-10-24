@@ -20,8 +20,8 @@
 //! names it in the reading's VFO field, such as "Slice A".
 //!
 //! Only questions are ever sent. [`Ask`] is the whole list of what the Agent
-//! may say to the radio, and none of it tunes the radio or keys it
-//! (Principle XI). Every line from the radio is checked before it is believed
+//! may say to the radio, and none of it tunes the radio or keys it.
+//! Every line from the radio is checked before it is believed
 //! (Principle XII): lines are capped in size, the number of slices is capped,
 //! and frequencies and widths must be in range.
 

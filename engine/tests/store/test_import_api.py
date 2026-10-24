@@ -186,7 +186,7 @@ def test_a_file_that_is_not_adif_is_refused(client: TestClient, k9ksu: dict[str,
 def test_importing_needs_the_logging_permission(
     client: TestClient, identity: IdentityStore, shack: Actor
 ) -> None:
-    """Someone who may only view can't add QSOs this way either (Principle XIII)."""
+    """Someone who may only view can't add QSOs this way either (Principle XXI)."""
     identity.add_operator(shack, "W0VUE", VISITOR_SECRET, [Permission.VIEW])
     viewer = _sign_in(client, "W0VUE", VISITOR_SECRET, "fd-2")
     body = {"file_name": "x.adi", "data_base64": base64.b64encode(FIRST.encode()).decode()}

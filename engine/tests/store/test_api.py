@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""The Engine's HTTP API: signed in (XIII), validated (XII), audited (VII), UTC (VIII)."""
+"""The Engine's HTTP API: signed in (XXI), validated (XII), audited (VII), UTC (VIII)."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ def test_everything_else_needs_a_signed_in_operator(
     method: str,
     path: str,
 ) -> None:
-    """No token, a malformed one, or a made-up one: refused (Principle XIII)."""
+    """No token, a malformed one, or a made-up one: refused (Principle XXI)."""
     for headers in ({}, {"Authorization": "Basic abc"}, {"Authorization": "Bearer made-up"}):
         response = client.request(method, path, headers=headers, json={"fields": W1AW})
         assert response.status_code == 401, (headers, response.text)
@@ -417,7 +417,7 @@ def test_a_bad_layout_is_refused(
 
 
 def test_a_layout_needs_a_signed_in_operator(client: TestClient) -> None:
-    """No session, no layout (Principle XIII)."""
+    """No session, no layout (Principle XXI)."""
     assert client.get("/api/v1/layout").status_code == 401
     assert client.put("/api/v1/layout", json=LAYOUT).status_code == 401
 

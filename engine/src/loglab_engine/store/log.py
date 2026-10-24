@@ -186,7 +186,7 @@ def check_station(station: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """A signed-in operator at a station, making a change in their session (Principle XIII).
+    """A signed-in operator at a station, making a change in their session (Principle XXI).
 
     Get one from :meth:`loglab_engine.store.IdentityStore.authenticate`. The
     database checks every change against the session, so an actor that was
@@ -407,7 +407,7 @@ class LogStore:
         except errors.InsufficientPrivilege as error:
             raise NotAuthorizedError(error.diag.message_primary or str(error)) from error
         if row is None:
-            msg = f"{actor.operator} at {actor.station} is not signed in (Principle XIII)"
+            msg = f"{actor.operator} at {actor.station} is not signed in (Principle XXI)"
             raise NotAuthorizedError(msg)
         changeset_id: int = row[0]
         return changeset_id

@@ -6,7 +6,7 @@
 Migrate the schema, import ADI files, look at QSOs and their history, edit,
 delete, and restore them through the audited path (Principle VII), and export
 ADI. Every change is made by the operator signed in with ``loglab-operator
-sign-in``, at their station (Principle XIII). All times are shown in UTC
+sign-in``, at their station (Principle XXI). All times are shown in UTC
 (Principle VIII).
 
 A QSO is logged once the Engine has committed it to the database (Principle XV).

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Clearing old kept lookups of calls never logged: admins only, the log untouched (VI, XIII)."""
+"""Clearing old kept lookups of calls never logged: admins only, the log untouched (VI, XXI)."""
 
 from __future__ import annotations
 
@@ -99,7 +99,7 @@ def test_only_old_lookups_of_never_logged_calls_are_counted_and_cleared(
 def test_only_an_admin_may_count_or_clear_and_only_offered_ages(
     client: TestClient, k9ksu: dict[str, str], visitor: Actor, conn: psycopg.Connection[TupleRow]
 ) -> None:
-    """The clean-up is an admin's tool (Principle XIII)."""
+    """The clean-up is an admin's tool (Principle XXI)."""
     del visitor
     _keep(conn, "XX9XX", days=400)
     w0xyz = _sign_in(client, "W0XYZ", VISITOR_SECRET, "fd-2")

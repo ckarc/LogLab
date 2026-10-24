@@ -9,8 +9,7 @@ Engine: frequency, band, mode, filter width, and whether it is transmitting
 (Principle X). The web client's New QSO box fills in from it, and the On air
 box shows it.
 
-This version only reads the radio. It never tunes it and never transmits
-(Principle XI).
+This version only reads the radio. It never tunes it and never transmits.
 
 ## How it reaches a radio
 
@@ -103,7 +102,7 @@ How it behaves:
   Agent says so; fix what was wrong and import that file from the Menu.
 - **Only this computer.** WSJT-X's messages carry no password, so the Agent
   listens only on `127.0.0.1` and ignores anything from elsewhere
-  (Principle XIII).
+  (Principle XXI).
 - **One listener per address.** WSJT-X sends to one address. If another
   program on the computer (GridTracker, JTAlert) also wants WSJT-X's
   messages, it must use a different port; that program's own settings may
@@ -112,7 +111,7 @@ How it behaves:
 ## Notes
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
-  (Principle XIII). Stopping the Agent stops it too.
+  (Principle XXI). Stopping the Agent stops it too.
 - The FlexRadio driver only asks: it subscribes to slice and transmitter
   status, asks the radio's model, and pings it every 5 seconds. It sends no
   command that changes the radio. If the radio says nothing for 15 seconds,
