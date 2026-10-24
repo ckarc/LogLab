@@ -108,6 +108,22 @@ How it behaves:
   messages, it must use a different port; that program's own settings may
   let it pass them on.
 
+## Checking a rig definition
+
+Command-driven radios are described by rig definition files in `agent/rigs/`
+(see [station-agent-usb-radios.md](station-agent-usb-radios.md)). To check
+one, or every file in a folder:
+
+```sh
+loglab-agent check-rig agent/rigs
+```
+
+Each file is listed as `ok` with a one-line summary, or as `REFUSED` with
+every problem found in it. A misspelled key is shown with its line and column.
+The command exits with an error if any file is refused, and the Agent's tests
+check every file in `agent/rigs/`, so a broken definition cannot be merged
+(Principle XII).
+
 ## Notes
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
