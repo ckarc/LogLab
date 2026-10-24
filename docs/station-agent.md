@@ -124,6 +124,15 @@ The command exits with an error if any file is refused, and the Agent's tests
 check every file in `agent/rigs/`, so a broken definition cannot be merged
 (Principle XII).
 
+## Watching CI-V
+
+`loglab-agent civ-demo` holds a short conversation with a pretend IC-7300 and
+prints every message both ways, byte by byte, with what each one means:
+asking who it is, reading and tuning the frequency, reading the mode and two
+menu settings, a tuning request it refuses, and a report it sends on its own
+when someone turns its dial. Nothing in it talks to a real radio. The same
+pretend radio is what the Agent's CI-V code is tested against.
+
 ## Notes
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only

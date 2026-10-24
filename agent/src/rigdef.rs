@@ -222,8 +222,12 @@ pub struct Definition {
     pub status: String,
     /// The radio's default address on its link (its CI-V address).
     pub default_address: u8,
+    /// The address the Agent uses for itself on the link.
+    pub controller_address: u8,
     /// The serial speeds to try, in order.
     pub baud_rates: Vec<u32>,
+    /// The radio's mode codes, by rig-model mode name.
+    pub mode_codes: BTreeMap<String, u8>,
     /// The menu settings the Agent may read, in file order.
     pub settings: Vec<SettingSummary>,
     /// The jobs the requirements are for, one per requirement.
@@ -234,11 +238,17 @@ pub struct Definition {
     pub verified_values: usize,
 }
 
-/// One menu setting, as far as the Agent needs to know it so far.
+/// One menu setting.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingSummary {
     /// The setting's id, such as `data_mod`.
     pub id: String,
+    /// Its menu item number, such as `[0x00, 0x67]`.
+    pub item: [u8; 2],
+    /// Its named values, if it has them.
+    pub values: Option<BTreeMap<String, u8>>,
+    /// Its lowest and highest value, if it is a level.
+    pub range: Option<[u8; 2]>,
     /// Whether the Agent may ever change it.
     pub write: bool,
 }
@@ -385,12 +395,21 @@ fn summarize(file: &File, check: &Check) -> Definition {
         family: file.definition.family.clone(),
         status: file.definition.status.clone(),
         default_address: file.link.default_address,
+        controller_address: file.link.controller_address,
         baud_rates: file.link.baud_rates.clone(),
+        mode_codes: file.modes.codes.clone(),
         settings: file
             .settings
             .iter()
             .map(|s| SettingSummary {
                 id: s.id.clone(),
+                // Already checked to be two bytes.
+                item: bytes(&s.item)
+                    .ok()
+                    .and_then(|b| <[u8; 2]>::try_from(b).ok())
+                    .unwrap_or_default(),
+                values: s.values.clone(),
+                range: s.range,
                 write: s.write,
             })
             .collect(),
