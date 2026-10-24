@@ -24,6 +24,7 @@ mod journal;
 mod pairing;
 mod pretend;
 mod rig;
+mod rigctld_server;
 mod rigdef;
 mod settings_record;
 mod wsjtx;
@@ -70,6 +71,11 @@ Usage:
                                        reading as its as-received record,
                                        and compare later ones against it
                                        (only --civ-pretend can, for now)
+  loglab-agent serve RADIO [--listen 127.0.0.1:4532]
+                                       be a virtual radio for programs like
+                                       WSJT-X (Rig: Hamlib NET rigctl), on
+                                       this computer only; read-only: every
+                                       request to tune or key is refused
   loglab-agent check-rig PATH...       check rig definition files (a file,
                                        or every .toml file in a folder)
   loglab-agent civ-demo                show a CI-V conversation with the
@@ -128,6 +134,10 @@ enum Command {
     Read(RadioChoice),
     CheckRig(Vec<String>),
     CivDemo,
+    Serve {
+        radio: RadioChoice,
+        listen: SocketAddr,
+    },
     Record {
         radio: RadioChoice,
         records: String,
@@ -164,6 +174,7 @@ struct Options {
     wsjtx: Option<SocketAddr>,
     journal: Option<String>,
     records: Option<String>,
+    listen: Option<SocketAddr>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -218,6 +229,11 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--flex" => options.flex = Some(value),
             "--journal" => options.journal = Some(value),
             "--records" => options.records = Some(value),
+            "--listen" => {
+                options.listen = Some(value.parse().map_err(|_| {
+                    format!("--listen needs an address like 127.0.0.1:4532, not {value:?}")
+                })?);
+            }
             "--wsjtx" => {
                 let address: SocketAddr = value.parse().map_err(|_| {
                     format!("--wsjtx needs an address like 127.0.0.1:2237, not {value:?}")
@@ -234,14 +250,31 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
     }
     let radio = radio_choice(&mut options)?;
+    command(verb, options, radio)
+}
+
+/// The command a verb names, from options already read and a radio already
+/// chosen.
+fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, String> {
     if options.journal.is_some() && options.wsjtx.is_none() {
         return Err("--journal goes with --wsjtx".to_owned());
     }
     if options.records.is_some() && verb != "record" {
         return Err("--records goes with record".to_owned());
     }
-    match verb.as_str() {
-        "read" | "record" if options.wsjtx.is_some() => Err("--wsjtx goes with run".to_owned()),
+    if options.listen.is_some() && verb != "serve" {
+        return Err("--listen goes with serve".to_owned());
+    }
+    match verb {
+        "read" | "record" | "serve" if options.wsjtx.is_some() => {
+            Err("--wsjtx goes with run".to_owned())
+        }
+        "serve" => Ok(Command::Serve {
+            radio,
+            listen: options
+                .listen
+                .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 4532))),
+        }),
         "record" => Ok(Command::Record {
             radio,
             records: options
@@ -328,7 +361,7 @@ fn civ_pretend_radio() -> Result<CivRadio<PretendPort>, rig::RadioError> {
     CivRadio::find(port, &definitions)
 }
 
-fn open(choice: &RadioChoice) -> Result<Box<dyn Radio>, rig::RadioError> {
+fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
@@ -683,6 +716,36 @@ fn run(
     Ok(())
 }
 
+/// Be a read-only virtual radio for other programs until stopped
+/// (Principles IX and XXI).
+fn serve(choice: &RadioChoice, listen: SocketAddr) -> Result<(), String> {
+    let radio = open(choice).map_err(|error| error.to_string())?;
+    let shared: Arc<dyn rigctld_server::Source> = Arc::new(rigctld_server::Shared::new(radio));
+    let identity = shared.identity();
+    let server = rigctld_server::Server::start(listen, shared)?;
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
+        .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
+    println!(
+        "{} {} is a virtual radio at {}, read-only.",
+        identity.maker,
+        identity.model,
+        server.address()
+    );
+    println!(
+        "In WSJT-X: Settings > Radio > Rig: Hamlib NET rigctl, Network Server: {}",
+        server.address()
+    );
+    println!("Requests to tune or transmit are refused. Ctrl-C stops.");
+    while running.load(Ordering::SeqCst) {
+        thread::sleep(Duration::from_millis(200));
+    }
+    drop(server);
+    println!("stopped");
+    Ok(())
+}
+
 /// Read a radio's menu settings, keep the first reading as its as-received
 /// record, and report (Principles X and XIV).
 fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
@@ -758,6 +821,7 @@ fn main() -> ExitCode {
         }
         Ok(Command::Read(choice)) => read_once(&choice),
         Ok(Command::CheckRig(paths)) => check_rigs(&paths),
+        Ok(Command::Serve { radio, listen }) => serve(&radio, listen),
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
             for line in lines {
@@ -882,6 +946,19 @@ mod tests {
             ]))
         );
         assert!(parse(&args("check-rig")).is_err());
+    }
+
+    #[test]
+    fn reads_serve() {
+        assert_eq!(
+            parse(&args("serve --civ-pretend")),
+            Ok(Command::Serve {
+                radio: RadioChoice::CivPretend,
+                listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+            })
+        );
+        assert!(parse(&args("serve --civ-pretend --listen 127.0.0.1:5000")).is_ok());
+        assert!(parse(&args("read --civ-pretend --listen 127.0.0.1:5000")).is_err());
     }
 
     #[test]

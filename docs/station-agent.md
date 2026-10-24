@@ -131,6 +131,35 @@ The command exits with an error if any file is refused, and the Agent's tests
 check every file in `agent/rigs/`, so a broken definition cannot be merged
 (Principle XII).
 
+## Sharing a radio with WSJT-X and other programs
+
+The Agent can be a virtual radio for programs that speak Hamlib's `rigctld`
+network protocol, such as WSJT-X, VarAC and fldigi. They connect to the
+Agent, and the Agent stays the radio's one owner (Principle IX).
+
+```sh
+loglab-agent serve RADIO --listen 127.0.0.1:4532
+```
+
+In WSJT-X, open Settings > Radio and set **Rig** to `Hamlib NET rigctl` and
+**Network Server** to `127.0.0.1:4532` (the default if `--listen` is left
+out). WSJT-X then follows the radio's frequency and mode.
+
+How it behaves:
+
+- **Read-only, for now.** Every request to tune, change mode, or transmit is
+  refused with Hamlib's "command rejected by the rig" (`RPRT -9`), and
+  nothing reaches the radio. A band change in WSJT-X shows an error and the
+  radio stays where it is.
+- **This computer only.** The protocol has no sign-in, so the Agent listens
+  only on `127.0.0.1` and refuses connections from anywhere else
+  (Principle XXI).
+- **Several programs at once.** Up to eight can connect; readings are
+  shared, so they don't crowd the radio.
+- Any radio the Agent can read can be served: `--civ-pretend`, `--pretend`,
+  `--flex`, or a Hamlib radio. Hamlib's own network client, the one WSJT-X
+  uses, has been checked against it with Hamlib 4.5.5.
+
 ## A radio's settings record
 
 The first time the Agent meets a radio, it can read every menu setting the
