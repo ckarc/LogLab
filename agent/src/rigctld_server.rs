@@ -9,11 +9,14 @@
 //! those programs connect to the Agent instead of to the radio, and the
 //! Agent stays the radio's one owner (Principle IX).
 //!
-//! **This version only reads.** It answers questions about frequency, mode,
-//! PTT, VFO and split. Every request to change something is answered with
-//! `RPRT -9`, Hamlib's "command rejected by the rig", and nothing reaches
-//! the radio. Tuning comes later, for the program checked to control the
-//! radio in the Agent's tray program.
+//! It answers questions about frequency, mode, PTT, VFO and split. Whether
+//! programs may also **tune** the radio (frequency, mode, VFO and split) is
+//! the [`Source`]'s choice: by default they may not, and with tuning allowed
+//! (`serve --allow-tuning`, for the pretend radio only, until the tray
+//! program decides which program controls a radio) they may. **Transmitting
+//! is always refused** here, tuning allowed or not: every PTT request gets
+//! `RPRT -9`, Hamlib's "command rejected by the rig", and so does every
+//! other change the server doesn't make.
 //!
 //! The protocol has no sign-in, so the server listens only on this computer
 //! and refuses connections from anywhere else (Principle XXI). Every line it
@@ -33,7 +36,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-use crate::rig::{Mode, Radio, RadioIdentity, Reading};
+use crate::hamlib::mode_from_hamlib;
+use crate::rig::{Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
 
 /// The longest command line accepted.
 const MAX_LINE: usize = 256;
@@ -53,6 +57,8 @@ const RPRT_IO: i32 = -6;
 const RPRT_REJECTED: i32 = -9;
 /// "Function not available": a command this server doesn't have.
 const RPRT_NOT_AVAILABLE: i32 = -11;
+/// "Invalid parameter": a change asked for with a value that makes no sense.
+const RPRT_INVALID: i32 = -1;
 /// "Protocol error": a line too long or not text.
 const RPRT_PROTOCOL: i32 = -8;
 
@@ -70,24 +76,57 @@ pub trait Source: Send + Sync {
     ///
     /// The radio couldn't be read.
     fn reading(&self) -> Result<Reading, String>;
+
+    /// Whether programs may tune the radio through the server.
+    fn can_tune(&self) -> bool {
+        false
+    }
+
+    /// Asks the radio for a change.
+    ///
+    /// # Errors
+    ///
+    /// Tuning isn't allowed, or the radio refused.
+    fn tune(&self, tuning: Tuning) -> Result<(), String> {
+        let _ = tuning;
+        Err("tuning isn't allowed here".to_owned())
+    }
+}
+
+/// The radio a [`Shared`] holds: one that can only be read, or one programs
+/// may tune.
+enum Held {
+    Read(Box<dyn Radio + Send>),
+    Tune(Box<dyn Tunable + Send>),
 }
 
 /// A radio shared between the programs connected to the server. Readings
 /// are reused for a moment so several programs polling at once ask the
 /// radio only once.
 pub struct Shared {
-    radio: Mutex<Box<dyn Radio + Send>>,
+    radio: Mutex<Held>,
     identity: RadioIdentity,
     last: Mutex<Option<(Instant, Reading)>>,
 }
 
 impl Shared {
-    /// Shares `radio`.
+    /// Shares `radio` for reading only.
     #[must_use]
     pub fn new(radio: Box<dyn Radio + Send>) -> Self {
         let identity = radio.identity().clone();
         Self {
-            radio: Mutex::new(radio),
+            radio: Mutex::new(Held::Read(radio)),
+            identity,
+            last: Mutex::new(None),
+        }
+    }
+
+    /// Shares `radio`, and lets programs tune it (but never transmit).
+    #[must_use]
+    pub fn with_tuning(radio: Box<dyn Tunable + Send>) -> Self {
+        let identity = radio.identity().clone();
+        Self {
+            radio: Mutex::new(Held::Tune(radio)),
             identity,
             last: Mutex::new(None),
         }
@@ -113,9 +152,36 @@ impl Source for Shared {
             .radio
             .lock()
             .map_err(|_| "the radio is unavailable".to_owned())?;
-        let reading = radio.read().map_err(|error| error.to_string())?;
+        let reading = match &mut *radio {
+            Held::Read(radio) => radio.read(),
+            Held::Tune(radio) => radio.read(),
+        }
+        .map_err(|error| error.to_string())?;
         *last = Some((Instant::now(), reading.clone()));
         Ok(reading)
+    }
+
+    fn can_tune(&self) -> bool {
+        self.radio
+            .lock()
+            .is_ok_and(|radio| matches!(*radio, Held::Tune(_)))
+    }
+
+    fn tune(&self, tuning: Tuning) -> Result<(), String> {
+        let mut radio = self
+            .radio
+            .lock()
+            .map_err(|_| "the radio is unavailable".to_owned())?;
+        let Held::Tune(radio) = &mut *radio else {
+            return Err("tuning isn't allowed here".to_owned());
+        };
+        let done = radio.tune(tuning).map_err(|error| error.to_string());
+        // Whatever happened, the next reading comes from the radio, which is
+        // the truth about what changed (Principle X).
+        if let Ok(mut last) = self.last.lock() {
+            *last = None;
+        }
+        done
     }
 }
 
@@ -301,10 +367,74 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
         "\\chk_vfo" => Get::CheckVfo,
         "\\dump_state" => Get::DumpState,
         "1" | "\\dump_caps" => Get::DumpCaps,
+        // Transmitting is refused, always, whatever else is allowed.
+        "T" | "\\set_ptt" => return Reply::Text(result(extended, word, RPRT_REJECTED)),
+        _ if source.can_tune() && tuning_command(word) => {
+            return Reply::Text(tune(word, command, extended, source));
+        }
         _ if changes_something(word) => return Reply::Text(result(extended, word, RPRT_REJECTED)),
         _ => return Reply::Text(result(extended, word, RPRT_NOT_AVAILABLE)),
     };
     Reply::Text(answer(get, extended, source))
+}
+
+/// The commands that tune: frequency, transmit frequency, mode, VFO, split.
+fn tuning_command(word: &str) -> bool {
+    matches!(
+        word,
+        "F" | "\\set_freq"
+            | "I"
+            | "\\set_split_freq"
+            | "M"
+            | "\\set_mode"
+            | "V"
+            | "\\set_vfo"
+            | "S"
+            | "\\set_split_vfo"
+    )
+}
+
+/// Reads a tuning command's value and asks for the change.
+fn tune(word: &str, command: &str, extended: bool, source: &dyn Source) -> String {
+    let value = command.split_whitespace().nth(1).unwrap_or_default();
+    let tuning = match word {
+        "F" | "\\set_freq" => hertz(value).map(Tuning::Frequency),
+        "I" | "\\set_split_freq" => hertz(value).map(Tuning::OtherFrequency),
+        "M" | "\\set_mode" => match mode_from_hamlib(value) {
+            Some(Mode::Other) | None => None,
+            Some(mode) => Some(Tuning::Mode(mode)),
+        },
+        "V" | "\\set_vfo" => match value {
+            "VFOA" | "Main" => Some(Tuning::Select(Vfo::A)),
+            "VFOB" | "Sub" => Some(Tuning::Select(Vfo::B)),
+            // "The current VFO": nothing to change.
+            "currVFO" => return result(extended, word, RPRT_OK),
+            _ => None,
+        },
+        _ => match value {
+            "0" => Some(Tuning::Split(false)),
+            "1" => Some(Tuning::Split(true)),
+            _ => None,
+        },
+    };
+    let code = match tuning {
+        None => RPRT_INVALID,
+        Some(tuning) => match source.tune(tuning) {
+            Ok(()) => RPRT_OK,
+            Err(_) => RPRT_REJECTED,
+        },
+    };
+    result(extended, word, code)
+}
+
+/// A frequency as Hamlib sends it, such as `14074055.000000`, in whole
+/// hertz.
+fn hertz(value: &str) -> Option<u64> {
+    let hz: f64 = value.parse().ok()?;
+    if !hz.is_finite() || !(1.0..=300e9).contains(&hz) {
+        return None;
+    }
+    format!("{hz:.0}").parse().ok()
 }
 
 /// Whether a command asks to change the radio: Hamlib's short set commands
@@ -544,6 +674,62 @@ mod tests {
             assert!(reply.ends_with("RPRT -9\n"), "{line}: {reply}");
         }
         assert_eq!(text("+T 1"), "T:\nRPRT -9\n");
+    }
+
+    fn tunable_ic_7300() -> Arc<dyn Source> {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        Arc::new(Shared::with_tuning(Box::new(radio)))
+    }
+
+    fn say(source: &Arc<dyn Source>, line: &str) -> String {
+        match respond(line, source.as_ref()) {
+            Reply::Text(text) => text,
+            Reply::Quit => unreachable!("{line} is not quit"),
+        }
+    }
+
+    #[test]
+    fn tunes_when_tuning_is_allowed() {
+        let radio = tunable_ic_7300();
+        // What WSJT-X sends as soon as it connects.
+        assert_eq!(say(&radio, "F 14074055.000000"), "RPRT 0\n");
+        assert_eq!(
+            say(&radio, "f"),
+            "14074055\n",
+            "read back from the radio itself"
+        );
+        assert_eq!(say(&radio, "F 7074000"), "RPRT 0\n");
+        assert_eq!(say(&radio, "M USB 2400"), "RPRT 0\n");
+        assert_eq!(say(&radio, "m"), "USB\n0\n");
+        assert_eq!(say(&radio, "M PKTUSB 0"), "RPRT 0\n");
+        assert_eq!(say(&radio, "m"), "PKTUSB\n0\n");
+        assert_eq!(say(&radio, "V currVFO"), "RPRT 0\n");
+        assert_eq!(say(&radio, "S 0 VFOA"), "RPRT 0\n");
+        assert_eq!(say(&radio, "+F 7074000"), "F:\nRPRT 0\n");
+    }
+
+    #[test]
+    fn never_transmits_even_when_tuning_is_allowed() {
+        let radio = tunable_ic_7300();
+        for line in ["T 1", "\\set_ptt 1", "+T 1", "T 2", "T 3"] {
+            assert!(say(&radio, line).ends_with("RPRT -9\n"), "{line}");
+        }
+        assert_eq!(say(&radio, "t"), "0\n");
+    }
+
+    #[test]
+    fn refuses_changes_that_make_no_sense_or_the_radio_refuses() {
+        let radio = tunable_ic_7300();
+        assert_eq!(say(&radio, "F seven"), "RPRT -1\n");
+        assert_eq!(say(&radio, "F -5"), "RPRT -1\n");
+        assert_eq!(say(&radio, "M WIDGET 0"), "RPRT -1\n");
+        assert_eq!(say(&radio, "F 80000000"), "RPRT -9\n", "beyond the IC-7300");
+        assert_eq!(say(&radio, "f"), "14074000\n", "and nothing moved");
+        // Other changes it doesn't make are still refused.
+        assert_eq!(say(&radio, "L RFPOWER 0.5"), "RPRT -9\n");
     }
 
     #[test]

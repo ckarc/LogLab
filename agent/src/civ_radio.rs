@@ -25,9 +25,12 @@
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
 
-use crate::civ::{self, Decoder, Frame, NG};
+use crate::civ::{self, Decoder, Frame, NG, OK};
 use crate::civ_pretend::PretendCiv;
-use crate::rig::{ControlPath, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading};
+use crate::rig::{
+    ControlPath, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading, Tunable,
+    Tuning, Vfo,
+};
 use crate::rigdef::Definition;
 
 /// How long the driver waits for one answer.
@@ -100,6 +103,41 @@ impl Ask {
             Self::Transmitting => vec![0x1C, 0x00],
             // With no value after the item number, 1A 05 only asks.
             Self::Setting([a, b]) => vec![0x1A, 0x05, a, b],
+        }
+    }
+}
+
+/// Everything the driver may ask a radio to change. It holds no transmit
+/// command (`1C 00` with a value): tuning never keys a transmitter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Change {
+    /// Tune the selected VFO (`05`), to these BCD bytes.
+    Frequency([u8; 5]),
+    /// Tune the unselected VFO (`25 01`), to these BCD bytes.
+    OtherFrequency([u8; 5]),
+    /// Change the selected VFO's mode (`06`), to this mode code.
+    Mode(u8),
+    /// Turn data mode on (with FIL1) or off (`1A 06`).
+    DataMode(bool),
+    /// Select VFO A (`07 00`) or B (`07 01`).
+    Select(Vfo),
+    /// Turn split off (`0F 00`) or on (`0F 01`).
+    Split(bool),
+}
+
+impl Change {
+    /// The command bytes for this change.
+    #[must_use]
+    pub fn payload(self) -> Vec<u8> {
+        match self {
+            Self::Frequency(bcd) => [&[0x05][..], &bcd].concat(),
+            Self::OtherFrequency(bcd) => [&[0x25, 0x01][..], &bcd].concat(),
+            Self::Mode(code) => vec![0x06, code],
+            Self::DataMode(true) => vec![0x1A, 0x06, 0x01, 0x01],
+            Self::DataMode(false) => vec![0x1A, 0x06, 0x00, 0x00],
+            Self::Select(Vfo::A) => vec![0x07, 0x00],
+            Self::Select(Vfo::B) => vec![0x07, 0x01],
+            Self::Split(on) => vec![0x0F, u8::from(on)],
         }
     }
 }
@@ -203,8 +241,25 @@ impl<P: Port> CivRadio<P> {
 
     /// Asks one question and returns the radio's answer.
     fn ask(&mut self, ask: Ask) -> Result<Vec<u8>, RadioError> {
-        let payload = ask.payload();
-        let sent = Frame::new(self.address, self.me, &payload);
+        self.exchange(&ask.payload())
+    }
+
+    /// Asks for one change, and returns once the radio says it's done (FB).
+    fn change(&mut self, change: Change) -> Result<(), RadioError> {
+        let payload = change.payload();
+        match self.exchange(&payload)?.as_slice() {
+            [OK] => Ok(()),
+            other => Err(RadioError(format!(
+                "odd answer to {}: {}",
+                civ::hex(&payload),
+                civ::hex(other)
+            ))),
+        }
+    }
+
+    /// Sends one message and returns the radio's answer to it.
+    fn exchange(&mut self, payload: &[u8]) -> Result<Vec<u8>, RadioError> {
+        let sent = Frame::new(self.address, self.me, payload);
         self.port.send(&sent.encode()).map_err(RadioError)?;
         let deadline = Instant::now() + ANSWER_WAIT;
         let mut skipped = 0;
@@ -216,7 +271,7 @@ impl<P: Port> CivRadio<P> {
                     if frame.payload == [NG] {
                         return Err(RadioError(format!(
                             "the radio refused {} (FA)",
-                            civ::hex(&payload)
+                            civ::hex(payload)
                         )));
                     }
                     return Ok(frame.payload);
@@ -233,7 +288,7 @@ impl<P: Port> CivRadio<P> {
         }
         Err(RadioError(format!(
             "no answer to {} within {} ms",
-            civ::hex(&payload),
+            civ::hex(payload),
             ANSWER_WAIT.as_millis()
         )))
     }
@@ -252,6 +307,54 @@ impl<P: Port> CivRadio<P> {
             (Some("RTTY"), _) => Mode::Rtty,
             (Some("RTTY-R"), _) => Mode::RttyReverse,
             _ => Mode::Other,
+        }
+    }
+}
+
+impl<P: Port> CivRadio<P> {
+    fn bcd(hz: u64) -> Result<[u8; 5], RadioError> {
+        civ::frequency_to_bcd(hz)
+            .filter(|_| (1..=MAX_FREQUENCY_HZ).contains(&hz))
+            .ok_or_else(|| RadioError(format!("{hz} Hz can't be sent to the radio")))
+    }
+
+    fn set_mode(&mut self, mode: Mode) -> Result<(), RadioError> {
+        let (voice, data) = match mode {
+            Mode::Usb => ("USB", Some(false)),
+            Mode::Lsb => ("LSB", Some(false)),
+            Mode::Fm => ("FM", Some(false)),
+            Mode::DataUsb => ("USB", Some(true)),
+            Mode::DataLsb => ("LSB", Some(true)),
+            Mode::DataFm => ("FM", Some(true)),
+            Mode::Am => ("AM", None),
+            Mode::Cw => ("CW", None),
+            Mode::CwReverse => ("CW-R", None),
+            Mode::Rtty => ("RTTY", None),
+            Mode::RttyReverse => ("RTTY-R", None),
+            Mode::Other => return Err(RadioError("no such mode".to_owned())),
+        };
+        let code = self
+            .definition
+            .mode_codes
+            .get(voice)
+            .copied()
+            .ok_or_else(|| RadioError(format!("the {} has no {voice}", self.identity.model)))?;
+        self.change(Change::Mode(code))?;
+        match data {
+            Some(on) => self.change(Change::DataMode(on)),
+            None => Ok(()),
+        }
+    }
+}
+
+impl<P: Port> Tunable for CivRadio<P> {
+    fn tune(&mut self, tuning: Tuning) -> Result<(), RadioError> {
+        match tuning {
+            Tuning::Frequency(hz) => self.change(Change::Frequency(Self::bcd(hz)?)),
+            Tuning::OtherFrequency(hz) => self.change(Change::OtherFrequency(Self::bcd(hz)?)),
+            Tuning::Mode(mode) => self.set_mode(mode),
+            Tuning::Select(vfo) => self.change(Change::Select(vfo)),
+            Tuning::Split(on) => self.change(Change::Split(on)),
         }
     }
 }
@@ -354,10 +457,10 @@ impl Port for PretendPort {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ask, CivRadio, Port, PretendPort};
+    use super::{Ask, Change, CivRadio, Port, PretendPort};
     use crate::civ::Frame;
     use crate::civ_pretend::PretendCiv;
-    use crate::rig::{ControlPath, Mode, Radio};
+    use crate::rig::{ControlPath, Mode, Radio, Tunable, Tuning, Vfo};
     use crate::rigdef::{self, Definition};
 
     fn ic_7300() -> Definition {
@@ -461,6 +564,73 @@ mod tests {
         let mut radio = found(115_200);
         assert!(radio.read().is_ok());
         assert!(!radio.port.radio().transmitting(), "reading never keys it");
+    }
+
+    #[test]
+    fn no_change_can_key_the_transmitter() {
+        let bcd = crate::civ::frequency_to_bcd(7_074_000).unwrap_or_default();
+        let changes = [
+            Change::Frequency(bcd),
+            Change::OtherFrequency(bcd),
+            Change::Mode(0x01),
+            Change::DataMode(true),
+            Change::DataMode(false),
+            Change::Select(Vfo::A),
+            Change::Select(Vfo::B),
+            Change::Split(true),
+            Change::Split(false),
+        ];
+        for change in changes {
+            assert_ne!(
+                change.payload().first(),
+                Some(&0x1C),
+                "{change:?} is a transmit command"
+            );
+        }
+        // Every kind of tuning, on the pretend radio: none of it transmits.
+        let mut radio = found(115_200);
+        for tuning in [
+            Tuning::Frequency(7_074_000),
+            Tuning::OtherFrequency(7_076_000),
+            Tuning::Mode(Mode::Cw),
+            Tuning::Mode(Mode::DataUsb),
+            Tuning::Select(Vfo::B),
+            Tuning::Select(Vfo::A),
+            Tuning::Split(true),
+            Tuning::Split(false),
+        ] {
+            assert!(radio.tune(tuning).is_ok(), "{tuning:?}");
+            assert!(!radio.port.radio().transmitting(), "{tuning:?} keyed it");
+        }
+    }
+
+    #[test]
+    fn tunes_and_the_radio_reports_it() {
+        let mut radio = found(115_200);
+        assert!(radio.tune(Tuning::Frequency(7_074_000)).is_ok());
+        assert!(radio.tune(Tuning::Mode(Mode::Lsb)).is_ok());
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.frequency_hz, 7_074_000);
+        assert_eq!(
+            reading.mode,
+            Some(Mode::Lsb),
+            "data mode was turned off too"
+        );
+        assert!(radio.tune(Tuning::Mode(Mode::DataUsb)).is_ok());
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.mode, Some(Mode::DataUsb));
+    }
+
+    #[test]
+    fn says_when_the_radio_refuses_a_change() {
+        let mut radio = found(115_200);
+        assert!(
+            radio.tune(Tuning::Frequency(80_000_000)).is_err(),
+            "beyond the IC-7300"
+        );
+        assert!(radio.tune(Tuning::Mode(Mode::Other)).is_err());
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.frequency_hz, 14_074_000, "nothing changed");
     }
 
     #[test]

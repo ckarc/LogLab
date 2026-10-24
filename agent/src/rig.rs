@@ -8,10 +8,12 @@
 //! is. A radio's own identity (its maker and model) is kept apart from the
 //! path used to reach it, so a QSO can name the actual equipment.
 //!
-//! The model is read-only. A [`Radio`] reports what the radio says its live
-//! state is (Principle X); nothing here can tune a radio or key a transmitter.
-//! Those come later, and only for the program the person at the computer
-//! chooses to control the radio.
+//! A [`Radio`] reports what the radio says its live state is (Principle X).
+//! A radio whose driver can also tune it is [`Tunable`], and a [`Tuning`]
+//! is the whole list of what it may be asked to change. There is no way to
+//! ask for a transmission anywhere in the rig model: keying a transmitter
+//! comes later, only for the program the person at the computer chooses to
+//! control the radio.
 
 use std::fmt;
 
@@ -116,7 +118,7 @@ impl fmt::Display for RadioError {
 
 impl std::error::Error for RadioError {}
 
-/// A radio the Agent owns. It can only be read.
+/// A radio the Agent owns. Every radio can be read.
 pub trait Radio {
     /// What the radio is and how it is reached.
     fn identity(&self) -> &RadioIdentity;
@@ -128,4 +130,43 @@ pub trait Radio {
     /// The radio did not answer, or answered with something that is not a
     /// valid state (Principle XII).
     fn read(&mut self) -> Result<Reading, RadioError>;
+}
+
+/// A VFO, by the name Hamlib and most radios use for it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Vfo {
+    /// VFO A, or Main.
+    A,
+    /// VFO B, or Sub.
+    B,
+}
+
+/// Everything a radio may be asked to change. There is deliberately no
+/// transmit request here: tuning never keys a transmitter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tuning {
+    /// Tune the selected VFO, in hertz.
+    Frequency(u64),
+    /// Tune the VFO that isn't selected, in hertz (the transmit frequency in
+    /// split).
+    OtherFrequency(u64),
+    /// Change the selected VFO's mode.
+    Mode(Mode),
+    /// Select a VFO.
+    Select(Vfo),
+    /// Turn split on or off.
+    Split(bool),
+}
+
+/// A radio whose driver can tune it.
+pub trait Tunable: Radio {
+    /// Ask the radio to make a change. The radio's own state afterwards is
+    /// the truth (Principle X), so the caller reads it again rather than
+    /// assuming the change took.
+    ///
+    /// # Errors
+    ///
+    /// The radio refused, didn't answer, or the change can't be made on this
+    /// radio.
+    fn tune(&mut self, tuning: Tuning) -> Result<(), RadioError>;
 }
