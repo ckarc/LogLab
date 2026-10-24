@@ -22,7 +22,7 @@ Everything it makes is marked pretend (Principle XX):
   pretend.
 
 Its QSOs are logged in the session of the administrator who turned it on
-(Principle XIII): when that session ends, demo mode stops. Turning it off
+(Principle XXI): when that session ends, demo mode stops. Turning it off
 erases them entirely, and the erasure is recorded (Principle VII as amended
 in Constitution 2.1.0: a pretend QSO is not a contact). It runs only in
 memory, so a restart of the Engine turns it off; its QSOs are then erased

@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Each station's radio, as its Station Agent reports it (Principles IX, X, XIII)."""
+"""Each station's radio, as its Station Agent reports it (Principles IX, X, XXI)."""
 
 from __future__ import annotations
 
@@ -138,7 +138,7 @@ def test_a_radio_the_agent_cannot_read_says_why(
 def test_only_a_working_station_key_is_heard(
     client: TestClient, conn: psycopg.Connection[TupleRow], shack: Actor, k9ksu: dict[str, str]
 ) -> None:
-    """No key, a session token, or a replaced or ended key is refused (Principle XIII)."""
+    """No key, a session token, or a replaced or ended key is refused (Principle XXI)."""
     keys = AgentKeyStore(conn)
     assert client.put("/api/v1/agent/rig", json=_report()).status_code == 401
     # An operator's session is not a station key.
@@ -310,7 +310,7 @@ def test_an_agent_joins_when_an_administrator_approves(
     asked = _ask(client)
     assert len(asked["code"]) == 6
     assert _state(client, asked) == {"state": "waiting", "key": None}
-    # Only an administrator sees the requests and decides them (Principle XIII).
+    # Only an administrator sees the requests and decides them (Principle XXI).
     assert client.get("/api/v1/agent/pairings", headers=w0xyz).status_code == 403
     url = f"/api/v1/agent/pairings/{asked['id']}"
     assert client.post(f"{url}/approve", headers=w0xyz).status_code == 403

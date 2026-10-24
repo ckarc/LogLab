@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Operations: club-call logging with each operator recorded (VII, XIII), GOTA (FD 4.1.1.1)."""
+"""Operations: club-call logging with each operator recorded (VII, XXI), GOTA (FD 4.1.1.1)."""
 
 from __future__ import annotations
 
@@ -104,7 +104,7 @@ def test_an_administrator_sets_up_an_operation(
 def test_only_an_administrator_sets_up_an_operation(
     client: TestClient, w0xyz: dict[str, str]
 ) -> None:
-    """Logging does not grant administration (Principle XIII)."""
+    """Logging does not grant administration (Principle XXI)."""
     response = client.post("/api/v1/operations", headers=w0xyz, json=FIELD_DAY)
     assert response.status_code == 403
 
@@ -432,5 +432,5 @@ def test_an_archived_operations_qsos_are_left_out_of_qsl_uploads(
 def test_only_who_may_change_an_operation_archives_it(
     client: TestClient, w0xyz: dict[str, str], field_day: dict[str, Any]
 ) -> None:
-    """An operator who isn't an administrator can't archive the club's operation (XIII)."""
+    """An operator who isn't an administrator can't archive the club's operation (XXI)."""
     assert _archive(client, w0xyz, field_day) == 403

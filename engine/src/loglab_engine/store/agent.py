@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Station keys: how a Station Agent proves which station it is (Principle XIII).
+"""Station keys: how a Station Agent proves which station it is (Principle XXI).
 
 An administrator makes a key for a station and gives it to the Agent there.
 The Agent sends the key with every report of its radio; :meth:`authenticate`

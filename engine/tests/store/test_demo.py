@@ -187,7 +187,7 @@ def test_pretend_stations_go_on_the_air_and_log(
         assert fields["OPERATOR"] in {"Q1PRE", "Q2PRE", "Q3PRE"}
         assert fields["STATION_CALLSIGN"] == "W0CK"
         assert fields["APP_LOGLAB_OPERATION"] == str(op.id)
-        assert v.operator == "K9KSU"  # entered in the administrator's session (XIII)
+        assert v.operator == "K9KSU"  # entered in the administrator's session (XXI)
     assert demo.state().qsos == 3
     demo.stop()
     assert board.current(op.id, datetime.now(UTC)) == ()
@@ -217,7 +217,7 @@ def test_stops_when_the_session_ends(
     conn: psycopg.Connection[TupleRow],
     identity: IdentityStore,
 ) -> None:
-    """With nobody signed in to log them, demo mode stops itself (Principle XIII)."""
+    """With nobody signed in to log them, demo mode stops itself (Principle XXI)."""
     identity.enroll_first_admin("K9KSU", ADMIN_SECRET)
     session = identity.sign_in("K9KSU", ADMIN_SECRET, "shack")
     op = _operation(conn, session.actor, practice=True)
@@ -309,7 +309,7 @@ def test_a_qso_once_real_is_never_erased(
 def test_only_an_administrator_erases(
     database: str, conn: psycopg.Connection[TupleRow], shack: Actor, visitor: Actor
 ) -> None:
-    """An operator without admin is refused, and nothing is erased (Principle XIII)."""
+    """An operator without admin is refused, and nothing is erased (Principle XXI)."""
     op = _operation(conn, shack, practice=True)
     made = _pretend_qsos(database, conn, shack, op)
     with pytest.raises(NotAuthorizedError):
@@ -361,7 +361,7 @@ def _sign_in(client: TestClient, callsign: str, secret: str, station: str) -> di
 def test_only_an_administrator_turns_it_on(
     client: TestClient, identity: IdentityStore, shack: Actor
 ) -> None:
-    """Operators can see whether it is on; only administrators switch it (XIII)."""
+    """Operators can see whether it is on; only administrators switch it (XXI)."""
     identity.add_operator(shack, "W0XYZ", VISITOR_SECRET, [Permission.VIEW, Permission.LOG])
     w0xyz = _sign_in(client, "W0XYZ", VISITOR_SECRET, "gota")
     assert client.get("/api/v1/demo", headers=w0xyz).json()["on"] is False

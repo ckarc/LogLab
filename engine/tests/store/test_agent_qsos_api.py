@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""QSOs a program at a station logged, sent by its Station Agent (XIII, XV, VII)."""
+"""QSOs a program at a station logged, sent by its Station Agent (XXI, XV, VII)."""
 
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ def test_what_is_not_one_qso_is_refused(
 
 
 def test_only_an_agent_with_a_key_can_send(client: TestClient, shack: Actor) -> None:
-    """A browser's session or no key at all is refused (Principle XIII)."""
+    """A browser's session or no key at all is refused (Principle XXI)."""
     del shack
     browser = _sign_in(client, "K9KSU", ADMIN_SECRET, "fd-1")
     assert _send(client, browser).status_code == 401

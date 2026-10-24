@@ -120,7 +120,7 @@ def test_reading_paths_needs_view(
     identity: IdentityStore,
     shack: Actor,
 ) -> None:
-    """Signed in, and allowed to read the log (Principle XIII)."""
+    """Signed in, and allowed to read the log (Principle XXI)."""
     assert client.get("/api/v1/paths").status_code == 401
     identity.add_operator(shack, "W0XYZ", VISITOR_SECRET, [Permission.LOG])
     headers = _sign_in(client, "W0XYZ", VISITOR_SECRET)

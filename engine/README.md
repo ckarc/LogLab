@@ -64,7 +64,7 @@ default is `dbname=loglab`.
 ## Operators and signing in
 
 Every request is made by an identified operator at an identified station
-(Principle XIII). Operators are local accounts in the Engine's database, so
+(Principle XXI). Operators are local accounts in the Engine's database, so
 signing in works with no internet connection (Principle V).
 
 ```sh
@@ -115,7 +115,7 @@ own reference is at `/api/docs`.
   simply appears in the Log; the page shows a notice only when something
   needs your attention.
 - A QSO waiting in the journal is sent only by the operator who typed it, at
-  the same station (Principle XIII).
+  the same station (Principle XXI).
 - The top bar holds only LabLog, who is signed in, and **Menu**. Menu opens
   a box with a few headings: **Operation**, **Appearance and layout**,
   **Connections** (QRZ.com, LoTW, the US and Canada call lists) and

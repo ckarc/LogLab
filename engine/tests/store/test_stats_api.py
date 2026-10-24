@@ -106,7 +106,7 @@ def test_every_workstation_sees_the_same_stats(
 
 
 def test_stats_need_a_sign_in(client: TestClient, field_day: dict[str, Any]) -> None:
-    """Nobody reads the log without signing in (Principle XIII)."""
+    """Nobody reads the log without signing in (Principle XXI)."""
     assert client.get(f"/api/v1/operations/{field_day['id']}/stats").status_code == 401
 
 
@@ -208,5 +208,5 @@ def test_personal_stats_are_each_operators_own(
 
 
 def test_personal_stats_need_a_sign_in(client: TestClient) -> None:
-    """Nobody reads the log without signing in (Principle XIII)."""
+    """Nobody reads the log without signing in (Principle XXI)."""
     assert client.get("/api/v1/stats/personal").status_code == 401

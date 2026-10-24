@@ -7,7 +7,7 @@ Everything a client can do goes through these operations (Principle I); the
 web client served at ``/`` has no other way in. Every request body is parsed
 into a typed, size-limited model before anything else happens (Principle XII).
 Every request except signing in and the status check is made by a signed-in
-operator, who must hold the permission it needs (Principle XIII): ``view`` to
+operator, who must hold the permission it needs (Principle XXI): ``view`` to
 read, ``log`` to change QSOs. All times are UTC (Principle VIII).
 
 Callsign lookup through QRZ.com is optional: with no login saved, or no
@@ -1522,7 +1522,7 @@ def _actor(conn: Conn, authorization: Annotated[str | None, Header()] = None) ->
     if scheme.lower() != "bearer" or not token.strip():
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "sign in first (Principle XIII)",
+            "sign in first (Principle XXI)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return IdentityStore(conn).authenticate(token.strip())
@@ -2285,7 +2285,7 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
     Field Day (set up now if need be), and log pretend QSOs with real calls
     from the license lists, each marked pretend, in this administrator's
-    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    session (Principles XX and XXI). Off, they leave the air and every pretend QSO in Demo
     Field Day is erased, the erasure recorded (Principle VII, as amended in
     Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
     """
@@ -2322,7 +2322,7 @@ def _agent_station(conn: Conn, authorization: Annotated[str | None, Header()] = 
     if scheme.lower() != "bearer" or not key.strip():
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "send this station's key (Principle XIII)",
+            "send this station's key (Principle XXI)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return AgentKeyStore(conn).authenticate(key.strip())
@@ -2424,7 +2424,7 @@ def agent_log_qso(
 
     The QSO is logged exactly as if that operator had typed it at that
     station: in the operation they chose, with its fields and its hours
-    (Principle XIII). With nobody signed in at the station, it is refused
+    (Principle XXI). With nobody signed in at the station, it is refused
     with 503, and the Agent keeps it in its journal until someone signs in
     (Principle XV). A QSO already in the log, the same call, band and mode
     in the same UTC minute, is answered with that QSO, never logged twice.
@@ -2493,7 +2493,7 @@ def ask_to_pair(body: PairingAskIn, desk: Desk) -> PairingAskOut:
     """A Station Agent with no key asks to join as a station. No sign-in needed.
 
     The request grants nothing: an administrator must approve it, after
-    checking that the code the Agent shows matches (Principle XIII).
+    checking that the code the Agent shows matches (Principle XXI).
     """
     now = datetime.now(UTC)
     try:

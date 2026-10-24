@@ -5,7 +5,7 @@
 // Principle III) says which boxes New QSO asks for, how the page starts out,
 // and, for a contest, what counts as a dupe. An operation is one use of an
 // overlay, such as Field Day under the club call: every operator signs in as
-// themselves (Principle XIII), picks the operation from the Menu, and the
+// themselves (Principle XXI), picks the operation from the Menu, and the
 // Engine logs each QSO as the operation's station call, noting the operator.
 // Everyday logging is no operation at all: the operator's own call, and no
 // dupe check. The dupe check is the Engine's (Principles I and II), so every

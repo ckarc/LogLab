@@ -5,7 +5,7 @@
 
 The layout is opaque here: the API validates its shape before it arrives
 (Principle XII), and the database checks that only its own signed-in operator
-saves it (Principle XIII). Every save is kept; the latest is current.
+saves it (Principle XXI). Every save is kept; the latest is current.
 """
 
 from __future__ import annotations

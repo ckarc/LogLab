@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""QRZ.com lookups through the API: optional (V), cached (VI), per operator (XIII)."""
+"""QRZ.com lookups through the API: optional (V), cached (VI), per operator (XXI)."""
 
 from __future__ import annotations
 
@@ -337,7 +337,7 @@ def test_an_operator_can_remove_their_login(client: TestClient, k9ksu: dict[str,
 def test_callbook_operations_need_sign_in(
     client: TestClient, method: str, path: str, body: dict[str, str] | None
 ) -> None:
-    """Anonymous requests are refused (Principle XIII)."""
+    """Anonymous requests are refused (Principle XXI)."""
     assert client.request(method, path, json=body).status_code == 401
 
 
@@ -351,7 +351,7 @@ def test_a_bad_call_is_refused(client: TestClient, k9ksu: dict[str, str], call: 
 def test_the_database_lets_only_the_signed_in_operator_change_a_login(
     conn: psycopg.Connection[TupleRow], identity: IdentityStore, shack: Actor
 ) -> None:
-    """A login cannot be saved or removed from a session that has ended (Principle XIII)."""
+    """A login cannot be saved or removed from a session that has ended (Principle XXI)."""
     store = CallbookStore(conn)
     store.save_login(shack, "qrz", "K9KSU", QRZ_PASSWORD)
     session = identity.sign_in("K9KSU", ADMIN_SECRET, "shack")

@@ -5,7 +5,7 @@
 // this page fills in plain forms and sends the whole definition to the Engine,
 // which parses it into the same strict model as the overlays it ships
 // (Principle XII) and lets only a signed-in administrator save it (Principle
-// XIII). The built-in overlays can't be changed, only copied. Every save is a
+// XXI). The built-in overlays can't be changed, only copied. Every save is a
 // new version, and a save over someone else's newer one is refused.
 "use strict";
 

@@ -5,7 +5,7 @@
 
 The API parses each definition into the strict overlay model before it
 arrives here (Principle XII); the database checks that only a signed-in
-administrator saves one (Principle XIII). Every save is a new version.
+administrator saves one (Principle XXI). Every save is a new version.
 """
 
 from __future__ import annotations

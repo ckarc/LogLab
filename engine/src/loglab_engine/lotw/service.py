@@ -7,11 +7,11 @@ LoTW is an enhancement (Principle V). Logging never waits for it: a QSO is
 logged when the Engine commits it, and simply waits to be sent. Nothing goes
 to LoTW live: the operator first gathers waiting QSOs into a numbered batch
 and looks it over, and only when they release it does the Engine sign those
-QSOs with their own callsign certificate and send them (Principle XIII).
+QSOs with their own callsign certificate and send them (Principle XXI).
 When LoTW takes the file, each QSO's ``LOTW_QSL_SENT`` becomes ``Y``. Fetching confirmations sets
 ``LOTW_QSL_RCVD`` to ``Y`` on each QSO LoTW confirmed. Both are changes to
 the QSOs' own ADIF fields (Principle IV), made through the audited path by
-the operator who asked (Principles VII and XIII), and a QSO an operator has
+the operator who asked (Principles VII and XXI), and a QSO an operator has
 edited in the meantime is left alone.
 
 When LoTW cannot be reached, nothing changes and the answer says so; the

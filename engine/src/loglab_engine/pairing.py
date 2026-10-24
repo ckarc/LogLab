@@ -7,7 +7,7 @@ A Station Agent that has no key asks to join as a station. The Engine gives
 it a short code, which the Agent shows on its own screen, and a private
 ticket for asking how its request is going. An administrator sees the request
 in the web client, with the same code, and approves or refuses it (Principle
-XIII). Approving makes the station's key (:mod:`loglab_engine.store.agent`),
+XXI). Approving makes the station's key (:mod:`loglab_engine.store.agent`),
 which the Agent collects once with its ticket and keeps. Nobody has to copy a
 key from one computer to another.
 

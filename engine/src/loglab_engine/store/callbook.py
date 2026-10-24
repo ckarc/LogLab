@@ -5,7 +5,7 @@
 
 The cache is reference data, kept apart from the log (Principle VI); writing
 it can never touch a QSO. A login belongs to its operator, and the database
-lets only that operator, signed in, save, change, or remove it (Principle XIII).
+lets only that operator, signed in, save, change, or remove it (Principle XXI).
 """
 
 from __future__ import annotations

@@ -4,7 +4,7 @@
 """QRZ logbook keys, and what was sent to each QRZ logbook.
 
 A key belongs to the operator who saved it and serves one logbook callsign;
-the database lets only that operator, signed in, change it (Principle XIII).
+the database lets only that operator, signed in, change it (Principle XXI).
 A QSO goes to the logbook for its STATION_CALLSIGN, or, when it has none, for
 the operator who first logged it. Only QSOs entered after the key was saved
 are sent. Nothing here writes to the log.

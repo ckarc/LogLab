@@ -4,7 +4,7 @@
 """Each operator's Logbook of the World set-up, and the batches they send to LoTW.
 
 A set-up belongs to its operator, and the database lets only that operator,
-signed in, save, change, or remove it (Principle XIII). Nothing here touches a
+signed in, save, change, or remove it (Principle XXI). Nothing here touches a
 QSO: what was sent and confirmed is written to the QSOs through the log's
 audited path (Principle VII).
 """
@@ -212,7 +212,7 @@ class LotwBatchStore:
     """Reads and writes the signed-in operator's LoTW batches.
 
     The database lets only a batch's own operator, signed in, prepare, send or
-    cancel it, and keeps every batch (Principle XIII).
+    cancel it, and keeps every batch (Principle XXI).
     """
 
     def __init__(self, conn: psycopg.Connection[TupleRow]) -> None:

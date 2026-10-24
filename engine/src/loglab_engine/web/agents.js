@@ -4,7 +4,7 @@
 // Station Agents: an administrator approves an Agent that asks to join as a
 // station, and sees the stations that have one. A new Agent shows a short
 // code on its own computer; the same code shows here, and approving makes the
-// station's key, which the Agent collects by itself (Principle XIII). Nobody
+// station's key, which the Agent collects by itself (Principle XXI). Nobody
 // copies a key by hand. Only administrators see any of this.
 "use strict";
 
