@@ -795,7 +795,15 @@ fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result
     let mut last_look: Option<Instant> = None;
     while running.load(Ordering::SeqCst) {
         for event in heard.try_iter() {
-            println!("{}  {event}", utc_clock());
+            // A hint on how to fix something goes on its own lines, indented
+            // under the event it explains.
+            let mut lines = event.lines();
+            if let Some(first) = lines.next() {
+                println!("{}  {first}", utc_clock());
+            }
+            for line in lines {
+                println!("           {line}");
+            }
         }
         if last_look.is_none_or(|at| at.elapsed() >= STATUS_EVERY) {
             last_look = Some(Instant::now());

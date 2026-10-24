@@ -251,9 +251,34 @@ computer decides which program controls it, in the Agent's tray program.
 **How the Agent knows which program is which.** A program connecting to a
 virtual radio does not say its name. So each program gets its own connection:
 its own rigctld port, virtual COM port, and virtual sound device. The tray's
-list is a list of those connections, each named for its program, and the
-"set up this program" button writes that program's connection into its
-settings.
+list is a list of those connections, each named for its program.
+
+**Setting a program up: the setup card.** The Agent never writes another
+program's settings files. Their formats aren't documented, can change with
+any version, and a program like WSJT-X rewrites its own file when it
+closes, so a change written while it runs is lost. Instead, the tray shows
+a setup card for each program and radio, with exactly what to enter, each
+value with a copy button:
+
+```
+WSJT-X, for the IC-7300
+  Rig:             Hamlib NET rigctl
+  Network Server:  127.0.0.1:4532
+  PTT Method:      CAT
+  Mode:            Data/Pkt
+  Bands this radio has: 160 m to 6 m (delete 2 m and 70 cm)
+```
+
+The person types it in once, and the program keeps it in its own file.
+
+**When a program complains: the fix.** The Agent sees every request a
+program makes and what became of it, so when one is refused it says why,
+in plain words, and how to fix it on the program's side. For example, a
+band the radio doesn't have: "The IC-7300 most likely has no band there ...
+in WSJT-X, Settings > Frequencies." A program that shows an error and
+reconnects usually did so right after a refused request, and the Agent's
+log puts the two side by side. `serve` already does this for refused bands,
+modes, split, and transmit requests; the tray shows the same.
 
 **Failing safe.** When anything goes wrong, the result is not transmitting:
 
