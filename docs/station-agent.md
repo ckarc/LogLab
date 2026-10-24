@@ -164,6 +164,8 @@ How it behaves:
   by the radio itself. WSJT-X then shows "Rig Control Error" and reconnects,
   as it does with any radio. Delete those bands from WSJT-X's Settings >
   Frequencies for this radio's configuration.
+- **When something is refused, the window says how to fix it,** on a line
+  starting `->` under the refusal, such as which WSJT-X setting to change.
 - **This computer only.** The protocol has no sign-in, so the Agent listens
   only on `127.0.0.1` and refuses connections from anywhere else
   (Principle XXI).

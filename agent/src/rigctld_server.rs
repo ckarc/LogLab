@@ -100,6 +100,27 @@ pub trait Source: Send + Sync {
     }
 }
 
+/// What to do about a change the radio refused, in plain words, on its own
+/// line under the note.
+fn refused_hint(tuning: Tuning, identity: &RadioIdentity) -> String {
+    match tuning {
+        Tuning::Frequency(_) | Tuning::OtherFrequency(_) => format!(
+            "\n-> The {} {} most likely has no band there. A program offering that band \
+             (WSJT-X shows \"Rig Control Error\" and reconnects) should have it removed \
+             from its band list: in WSJT-X, Settings > Frequencies.",
+            identity.maker, identity.model
+        ),
+        Tuning::Mode(_) => format!(
+            "\n-> The {} {} doesn't have that mode, or not on this band. In WSJT-X, \
+             Settings > Radio > Mode: None leaves the mode alone.",
+            identity.maker, identity.model
+        ),
+        Tuning::Select(_) | Tuning::Split(_) => {
+            "\n-> In WSJT-X, Settings > Radio > Split Operation: None avoids this.".to_owned()
+        }
+    }
+}
+
 /// A change request in plain words.
 #[must_use]
 pub fn describe(tuning: Tuning) -> String {
@@ -220,7 +241,11 @@ impl Source for Shared {
         }
         self.note(&match &done {
             Ok(()) => format!("asked to {}: done", describe(tuning)),
-            Err(why) => format!("asked to {}: the radio refused ({why})", describe(tuning)),
+            Err(why) => format!(
+                "asked to {}: refused ({why}){}",
+                describe(tuning),
+                refused_hint(tuning, &self.identity)
+            ),
         });
         done
     }
@@ -446,7 +471,10 @@ fn ptt(word: &str, command: &str, extended: bool, source: &dyn Source) -> String
         source.note("asked to stop transmitting: done (the Agent hadn't keyed anything)");
         return result(extended, word, RPRT_OK);
     }
-    source.note("asked to transmit: refused (the Agent doesn't transmit yet)");
+    source.note(
+        "asked to transmit: refused (the Agent doesn't transmit yet)\n\
+         -> Until it does, in WSJT-X set Settings > Radio > PTT Method: VOX.",
+    );
     result(extended, word, RPRT_REJECTED)
 }
 
@@ -838,12 +866,17 @@ mod tests {
         );
         assert_eq!(heard[0], "asked to tune to 7.074000 MHz: done");
         assert!(
-            heard[1].starts_with("asked to tune to 80.000000 MHz: the radio refused"),
+            heard[1].starts_with("asked to tune to 80.000000 MHz: refused (the radio refused"),
             "{heard:?}"
         );
-        assert_eq!(
-            heard[2],
-            "asked to transmit: refused (the Agent doesn't transmit yet)"
+        assert!(
+            heard[2].starts_with("asked to transmit: refused (the Agent doesn't transmit yet)"),
+            "{heard:?}"
+        );
+        assert!(heard[2].contains("PTT Method: VOX"), "{heard:?}");
+        assert!(
+            heard[1].contains("Settings > Frequencies"),
+            "a refused band says how to fix it: {heard:?}"
         );
         assert!(heard[3].contains("L RFPOWER 0.5"), "{heard:?}");
         assert_eq!(
