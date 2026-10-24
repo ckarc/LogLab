@@ -102,6 +102,20 @@ jobs:
         run: cargo test --locked
       - name: Run
         run: cargo run --locked
+      # The Windows Agent, kept for download from this run's page, so it can
+      # be tried on a Windows computer with no Rust installed. Only after
+      # every check above has passed; it changes no gate.
+      - name: Release build for download (Windows)
+        if: matrix.os == 'windows-latest'
+        run: cargo build --locked --release
+      - name: Keep the Windows Agent for download
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: loglab-agent-windows
+          path: agent/target/release/loglab-agent.exe
+          if-no-files-found: error
+          retention-days: 30
 
   licenses:
     name: License check
