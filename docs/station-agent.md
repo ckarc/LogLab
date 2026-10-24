@@ -131,6 +131,25 @@ The command exits with an error if any file is refused, and the Agent's tests
 check every file in `agent/rigs/`, so a broken definition cannot be merged
 (Principle XII).
 
+## A radio's settings record
+
+The first time the Agent meets a radio, it can read every menu setting the
+radio's rig definition lists and keep them as the radio's **as-received
+record**: when (UTC), on which computer, and every value. It never
+overwrites that record. Reading the radio again compares it against the
+record and lists what has changed since the radio arrived.
+
+```sh
+loglab-agent record --civ-pretend --records FOLDER
+```
+
+The report also names any setting that stops a job from working, in plain
+words. For example, with DATA MOD on MIC, WSJT-X and VARA would transmit
+silence. It never changes a setting; offering a change, with your OK, comes
+later. Records are JSON files in FOLDER, one per radio, written whole and
+renamed into place. For now only `--civ-pretend` can be recorded: the
+Agent's CI-V driver is not yet connected to a serial port.
+
 ## Watching CI-V
 
 `loglab-agent civ-demo` holds a short conversation with a pretend IC-7300 and

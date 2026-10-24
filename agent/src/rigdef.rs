@@ -230,8 +230,8 @@ pub struct Definition {
     pub mode_codes: BTreeMap<String, u8>,
     /// The menu settings the Agent may read, in file order.
     pub settings: Vec<SettingSummary>,
-    /// The jobs the requirements are for, one per requirement.
-    pub requirement_jobs: Vec<String>,
+    /// The settings jobs need, in file order.
+    pub requirements: Vec<RequirementSummary>,
     /// How many values in the file carry a `verified` flag.
     pub checked_values: usize,
     /// How many of them are marked verified.
@@ -243,14 +243,33 @@ pub struct Definition {
 pub struct SettingSummary {
     /// The setting's id, such as `data_mod`.
     pub id: String,
+    /// Its name on the radio's menu, such as "DATA MOD".
+    pub label: String,
     /// Its menu item number, such as `[0x00, 0x67]`.
     pub item: [u8; 2],
     /// Its named values, if it has them.
     pub values: Option<BTreeMap<String, u8>>,
     /// Its lowest and highest value, if it is a level.
     pub range: Option<[u8; 2]>,
+    /// Whether its range is a percentage scale (0 to 255 meaning 0 to 100%).
+    pub percent: bool,
     /// Whether the Agent may ever change it.
     pub write: bool,
+}
+
+/// A setting a job can't work without.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RequirementSummary {
+    /// The job, such as `digital_modes`.
+    pub job: String,
+    /// The setting's id.
+    pub setting: String,
+    /// The value names that let the job work.
+    pub accept: Vec<String>,
+    /// The value the Agent would offer to change it to, if it may.
+    pub offer: Option<String>,
+    /// What goes wrong otherwise, in plain words.
+    pub explain: String,
 }
 
 impl Definition {
@@ -270,10 +289,14 @@ impl Definition {
             speeds.join("/"),
             self.settings.len(),
             writable,
-            if self.requirement_jobs.is_empty() {
+            if self.requirements.is_empty() {
                 "nothing".to_owned()
             } else {
-                self.requirement_jobs.join(", ")
+                self.requirements
+                    .iter()
+                    .map(|r| r.job.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
             },
             self.verified_values,
             self.checked_values,
@@ -426,6 +449,7 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .iter()
             .map(|s| SettingSummary {
                 id: s.id.clone(),
+                label: s.label.clone(),
                 // Already checked to be two bytes.
                 item: bytes(&s.item)
                     .ok()
@@ -433,10 +457,21 @@ fn summarize(file: &File, check: &Check) -> Definition {
                     .unwrap_or_default(),
                 values: s.values.clone(),
                 range: s.range,
+                percent: s.percent,
                 write: s.write,
             })
             .collect(),
-        requirement_jobs: file.requirements.iter().map(|r| r.job.clone()).collect(),
+        requirements: file
+            .requirements
+            .iter()
+            .map(|r| RequirementSummary {
+                job: r.job.clone(),
+                setting: r.setting.clone(),
+                accept: r.accept.clone(),
+                offer: r.offer.clone(),
+                explain: r.explain.clone(),
+            })
+            .collect(),
         checked_values: check.checked,
         verified_values: check.verified,
     }
@@ -986,10 +1021,12 @@ explain = "Data mode audio must come from USB."
             .map(|s| s.id.as_str())
             .collect();
         assert_eq!(writable, ["usb_mod_level", "data_off_mod", "data_mod"]);
-        assert_eq!(
-            definition.requirement_jobs,
-            ["control", "digital_modes", "computer_voice"]
-        );
+        let jobs: Vec<&str> = definition
+            .requirements
+            .iter()
+            .map(|r| r.job.as_str())
+            .collect();
+        assert_eq!(jobs, ["control", "digital_modes", "computer_voice"]);
         assert_eq!(
             definition.verified_values, 0,
             "nothing is checked on a radio yet"

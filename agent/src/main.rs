@@ -25,6 +25,7 @@ mod pairing;
 mod pretend;
 mod rig;
 mod rigdef;
+mod settings_record;
 mod wsjtx;
 
 use std::fs;
@@ -63,6 +64,12 @@ Usage:
   loglab-agent run  --engine URL --key-file FILE [--station NAME]
                     [--wsjtx 127.0.0.1:2237 [--journal FILE]] RADIO
   loglab-agent read RADIO              read the radio once and print it
+  loglab-agent record RADIO --records FOLDER
+                                       read every menu setting the radio's
+                                       definition lists; keep the first
+                                       reading as its as-received record,
+                                       and compare later ones against it
+                                       (only --civ-pretend can, for now)
   loglab-agent check-rig PATH...       check rig definition files (a file,
                                        or every .toml file in a folder)
   loglab-agent civ-demo                show a CI-V conversation with the
@@ -121,6 +128,10 @@ enum Command {
     Read(RadioChoice),
     CheckRig(Vec<String>),
     CivDemo,
+    Record {
+        radio: RadioChoice,
+        records: String,
+    },
     Run {
         engine: String,
         key_file: String,
@@ -152,6 +163,7 @@ struct Options {
     flex: Option<String>,
     wsjtx: Option<SocketAddr>,
     journal: Option<String>,
+    records: Option<String>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -205,6 +217,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--rigctld-program" => options.program = Some(value),
             "--flex" => options.flex = Some(value),
             "--journal" => options.journal = Some(value),
+            "--records" => options.records = Some(value),
             "--wsjtx" => {
                 let address: SocketAddr = value.parse().map_err(|_| {
                     format!("--wsjtx needs an address like 127.0.0.1:2237, not {value:?}")
@@ -224,8 +237,17 @@ fn parse(args: &[String]) -> Result<Command, String> {
     if options.journal.is_some() && options.wsjtx.is_none() {
         return Err("--journal goes with --wsjtx".to_owned());
     }
+    if options.records.is_some() && verb != "record" {
+        return Err("--records goes with record".to_owned());
+    }
     match verb.as_str() {
-        "read" if options.wsjtx.is_some() => Err("--wsjtx goes with run".to_owned()),
+        "read" | "record" if options.wsjtx.is_some() => Err("--wsjtx goes with run".to_owned()),
+        "record" => Ok(Command::Record {
+            radio,
+            records: options
+                .records
+                .ok_or("record needs --records, the folder settings records are kept in")?,
+        }),
         "read" => Ok(Command::Read(radio)),
         "run" => {
             let key_file = options
@@ -661,6 +683,37 @@ fn run(
     Ok(())
 }
 
+/// Read a radio's menu settings, keep the first reading as its as-received
+/// record, and report (Principles X and XIV).
+fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
+    let RadioChoice::CivPretend = choice else {
+        return Err(
+            "only the Agent's own CI-V driver can read settings, and for now only with --civ-pretend"
+                .to_owned(),
+        );
+    };
+    let mut radio = civ_pretend_radio().map_err(|error| error.to_string())?;
+    let now = settings_record::read(
+        &mut radio,
+        std::time::SystemTime::now(),
+        &settings_record::computer_name(),
+    );
+    let path = settings_record::path_for(dir, &now);
+    let first = settings_record::load(&path)?;
+    let found = settings_record::findings(&now, radio.definition());
+    for line in settings_record::report(&now, &found, first.as_ref()) {
+        println!("{line}");
+    }
+    if first.is_none() {
+        settings_record::save(&path, &now)?;
+        println!(
+            "Saved as this radio's as-received record: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
 /// Check rig definition files and say what was found in each
 /// (Principle XII).
 fn check_rigs(paths: &[String]) -> Result<(), String> {
@@ -705,6 +758,7 @@ fn main() -> ExitCode {
         }
         Ok(Command::Read(choice)) => read_once(&choice),
         Ok(Command::CheckRig(paths)) => check_rigs(&paths),
+        Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
             for line in lines {
                 println!("{line}");
@@ -828,6 +882,22 @@ mod tests {
             ]))
         );
         assert!(parse(&args("check-rig")).is_err());
+    }
+
+    #[test]
+    fn reads_record() {
+        assert_eq!(
+            parse(&args("record --civ-pretend --records r")),
+            Ok(Command::Record {
+                radio: RadioChoice::CivPretend,
+                records: "r".to_owned()
+            })
+        );
+        assert!(
+            parse(&args("record --civ-pretend")).is_err(),
+            "needs --records"
+        );
+        assert!(parse(&args("read --civ-pretend --records r")).is_err());
     }
 
     #[test]
