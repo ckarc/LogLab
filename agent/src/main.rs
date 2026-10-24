@@ -13,6 +13,9 @@
 //! and never keys it. With `--wsjtx`, it also hears WSJT-X log QSOs on this
 //! computer and hands them to the Engine, through its journal.
 
+mod civ;
+mod civ_demo;
+mod civ_pretend;
 mod engine;
 mod flex;
 mod hamlib;
@@ -59,6 +62,8 @@ Usage:
   loglab-agent read RADIO              read the radio once and print it
   loglab-agent check-rig PATH...       check rig definition files (a file,
                                        or every .toml file in a folder)
+  loglab-agent civ-demo                show a CI-V conversation with the
+                                       pretend IC-7300, byte by byte
 
 RADIO is one of:
   --pretend                            the built-in pretend radio
@@ -108,6 +113,7 @@ enum Command {
     Help,
     Read(RadioChoice),
     CheckRig(Vec<String>),
+    CivDemo,
     Run {
         engine: String,
         key_file: String,
@@ -152,6 +158,13 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
     if matches!(verb.as_str(), "help" | "--help" | "-h" | "--version") {
         return Ok(Command::Help);
+    }
+    if verb == "civ-demo" {
+        return if rest.is_empty() {
+            Ok(Command::CivDemo)
+        } else {
+            Err("civ-demo takes no options".to_owned())
+        };
     }
     if verb == "check-rig" {
         if rest.is_empty() {
@@ -657,6 +670,11 @@ fn main() -> ExitCode {
         }
         Ok(Command::Read(choice)) => read_once(&choice),
         Ok(Command::CheckRig(paths)) => check_rigs(&paths),
+        Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
+            for line in lines {
+                println!("{line}");
+            }
+        }),
         Ok(Command::Run {
             engine,
             key_file,
@@ -766,6 +784,12 @@ mod tests {
             ]))
         );
         assert!(parse(&args("check-rig")).is_err());
+    }
+
+    #[test]
+    fn reads_civ_demo() {
+        assert_eq!(parse(&args("civ-demo")), Ok(Command::CivDemo));
+        assert!(parse(&args("civ-demo --pretend")).is_err());
     }
 
     #[test]
