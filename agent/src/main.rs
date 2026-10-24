@@ -71,11 +71,13 @@ Usage:
                                        reading as its as-received record,
                                        and compare later ones against it
                                        (only --civ-pretend can, for now)
-  loglab-agent serve RADIO [--listen 127.0.0.1:4532]
+  loglab-agent serve RADIO [--listen 127.0.0.1:4532] [--allow-tuning]
                                        be a virtual radio for programs like
                                        WSJT-X (Rig: Hamlib NET rigctl), on
-                                       this computer only; read-only: every
-                                       request to tune or key is refused
+                                       this computer only; read-only unless
+                                       --allow-tuning (--civ-pretend only,
+                                       for now); transmitting is always
+                                       refused
   loglab-agent check-rig PATH...       check rig definition files (a file,
                                        or every .toml file in a folder)
   loglab-agent civ-demo                show a CI-V conversation with the
@@ -137,6 +139,7 @@ enum Command {
     Serve {
         radio: RadioChoice,
         listen: SocketAddr,
+        allow_tuning: bool,
     },
     Record {
         radio: RadioChoice,
@@ -175,6 +178,7 @@ struct Options {
     journal: Option<String>,
     records: Option<String>,
     listen: Option<SocketAddr>,
+    allow_tuning: bool,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -212,6 +216,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
         }
         if flag == "--civ-pretend" {
             options.civ_pretend = true;
+            continue;
+        }
+        if flag == "--allow-tuning" {
+            options.allow_tuning = true;
             continue;
         }
         let value = words
@@ -265,6 +273,15 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.listen.is_some() && verb != "serve" {
         return Err("--listen goes with serve".to_owned());
     }
+    if options.allow_tuning && verb != "serve" {
+        return Err("--allow-tuning goes with serve".to_owned());
+    }
+    if options.allow_tuning && radio != RadioChoice::CivPretend {
+        return Err(
+            "--allow-tuning works only with --civ-pretend for now: real radios stay read-only until the tray program chooses which program controls them"
+                .to_owned(),
+        );
+    }
     match verb {
         "read" | "record" | "serve" if options.wsjtx.is_some() => {
             Err("--wsjtx goes with run".to_owned())
@@ -274,6 +291,7 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
             listen: options
                 .listen
                 .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 4532))),
+            allow_tuning: options.allow_tuning,
         }),
         "record" => Ok(Command::Record {
             radio,
@@ -718,9 +736,15 @@ fn run(
 
 /// Be a read-only virtual radio for other programs until stopped
 /// (Principles IX and XXI).
-fn serve(choice: &RadioChoice, listen: SocketAddr) -> Result<(), String> {
-    let radio = open(choice).map_err(|error| error.to_string())?;
-    let shared: Arc<dyn rigctld_server::Source> = Arc::new(rigctld_server::Shared::new(radio));
+fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result<(), String> {
+    let shared: Arc<dyn rigctld_server::Source> = if allow_tuning {
+        // Only the pretend radio, for now (checked when the command is read).
+        let radio = civ_pretend_radio().map_err(|error| error.to_string())?;
+        Arc::new(rigctld_server::Shared::with_tuning(Box::new(radio)))
+    } else {
+        let radio = open(choice).map_err(|error| error.to_string())?;
+        Arc::new(rigctld_server::Shared::new(radio))
+    };
     let identity = shared.identity();
     let server = rigctld_server::Server::start(listen, shared)?;
     let running = Arc::new(AtomicBool::new(true));
@@ -728,16 +752,25 @@ fn serve(choice: &RadioChoice, listen: SocketAddr) -> Result<(), String> {
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     println!(
-        "{} {} is a virtual radio at {}, read-only.",
+        "{} {} is a virtual radio at {}, {}.",
         identity.maker,
         identity.model,
-        server.address()
+        server.address(),
+        if allow_tuning {
+            "and programs may tune it"
+        } else {
+            "read-only"
+        }
     );
     println!(
         "In WSJT-X: Settings > Radio > Rig: Hamlib NET rigctl, Network Server: {}",
         server.address()
     );
-    println!("Requests to tune or transmit are refused. Ctrl-C stops.");
+    if allow_tuning {
+        println!("Requests to transmit are refused. Ctrl-C stops.");
+    } else {
+        println!("Requests to tune or transmit are refused. Ctrl-C stops.");
+    }
     while running.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(200));
     }
@@ -821,7 +854,11 @@ fn main() -> ExitCode {
         }
         Ok(Command::Read(choice)) => read_once(&choice),
         Ok(Command::CheckRig(paths)) => check_rigs(&paths),
-        Ok(Command::Serve { radio, listen }) => serve(&radio, listen),
+        Ok(Command::Serve {
+            radio,
+            listen,
+            allow_tuning,
+        }) => serve(&radio, listen, allow_tuning),
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
             for line in lines {
@@ -955,9 +992,22 @@ mod tests {
             Ok(Command::Serve {
                 radio: RadioChoice::CivPretend,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+                allow_tuning: false,
             })
         );
         assert!(parse(&args("serve --civ-pretend --listen 127.0.0.1:5000")).is_ok());
+        assert!(matches!(
+            parse(&args("serve --civ-pretend --allow-tuning")),
+            Ok(Command::Serve {
+                allow_tuning: true,
+                ..
+            })
+        ));
+        assert!(
+            parse(&args("serve --pretend --allow-tuning")).is_err(),
+            "only the CI-V pretend radio may be tuned"
+        );
+        assert!(parse(&args("read --civ-pretend --allow-tuning")).is_err());
         assert!(parse(&args("read --civ-pretend --listen 127.0.0.1:5000")).is_err());
     }
 

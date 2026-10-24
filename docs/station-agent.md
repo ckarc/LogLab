@@ -139,6 +139,7 @@ Agent, and the Agent stays the radio's one owner (Principle IX).
 
 ```sh
 loglab-agent serve RADIO --listen 127.0.0.1:4532
+loglab-agent serve --civ-pretend --allow-tuning   # for WSJT-X
 ```
 
 In WSJT-X, open Settings > Radio and set **Rig** to `Hamlib NET rigctl` and
@@ -147,10 +148,16 @@ out). WSJT-X then follows the radio's frequency and mode.
 
 How it behaves:
 
-- **Read-only, for now.** Every request to tune, change mode, or transmit is
-  refused with Hamlib's "command rejected by the rig" (`RPRT -9`), and
-  nothing reaches the radio. A band change in WSJT-X shows an error and the
-  radio stays where it is.
+- **Read-only unless tuning is allowed.** Without `--allow-tuning`, every
+  request to tune or change mode is refused with Hamlib's "command rejected
+  by the rig" (`RPRT -9`). WSJT-X needs to tune: it sets the frequency as
+  soon as it connects, and stops with a rig error when refused. So for
+  WSJT-X, use `--allow-tuning`, which for now works only with
+  `--civ-pretend`. Real radios stay read-only until the tray program decides
+  which program controls each radio.
+- **Never transmits.** Every PTT request is refused, tuning allowed or not.
+  In WSJT-X set **PTT Method** to `VOX`, **Mode** to `None` and **Split
+  Operation** to `None` until transmitting through the Agent exists.
 - **This computer only.** The protocol has no sign-in, so the Agent listens
   only on `127.0.0.1` and refuses connections from anywhere else
   (Principle XXI).
