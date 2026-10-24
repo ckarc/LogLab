@@ -419,10 +419,7 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
         "\\dump_state" => Get::DumpState,
         "1" | "\\dump_caps" => Get::DumpCaps,
         // Transmitting is refused, always, whatever else is allowed.
-        "T" | "\\set_ptt" => {
-            source.note("asked to transmit: refused (the Agent doesn't transmit yet)");
-            return Reply::Text(result(extended, word, RPRT_REJECTED));
-        }
+        "T" | "\\set_ptt" => return Reply::Text(ptt(word, command, extended, source)),
         _ if source.can_tune() && tuning_command(word) => {
             return Reply::Text(tune(word, command, extended, source));
         }
@@ -437,6 +434,20 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
         _ => return Reply::Text(result(extended, word, RPRT_NOT_AVAILABLE)),
     };
     Reply::Text(answer(get, extended, source))
+}
+
+/// A PTT request. A request to **stop** transmitting (`T 0`) is always
+/// honored, never refused: a program that sends it, as WSJT-X does whenever
+/// it closes its connection, must never be told no. The Agent keys nothing
+/// yet, so today there is nothing to unkey. Every request to transmit is
+/// refused.
+fn ptt(word: &str, command: &str, extended: bool, source: &dyn Source) -> String {
+    if command.split_whitespace().nth(1) == Some("0") {
+        source.note("asked to stop transmitting: done (the Agent hadn't keyed anything)");
+        return result(extended, word, RPRT_OK);
+    }
+    source.note("asked to transmit: refused (the Agent doesn't transmit yet)");
+    result(extended, word, RPRT_REJECTED)
 }
 
 /// The commands that tune: frequency, transmit frequency, mode, VFO, split.
@@ -773,9 +784,20 @@ mod tests {
     }
 
     #[test]
+    fn a_request_to_stop_transmitting_is_never_refused() {
+        // WSJT-X sends T 0 whenever it closes its connection.
+        for radio in [tunable_ic_7300(), pretend_ic_7300()] {
+            assert_eq!(say(&radio, "T 0"), "RPRT 0\n");
+            assert_eq!(say(&radio, "\\set_ptt 0"), "RPRT 0\n");
+            assert_eq!(say(&radio, "+T 0"), "T:\nRPRT 0\n");
+            assert_eq!(say(&radio, "t"), "0\n");
+        }
+    }
+
+    #[test]
     fn never_transmits_even_when_tuning_is_allowed() {
         let radio = tunable_ic_7300();
-        for line in ["T 1", "\\set_ptt 1", "+T 1", "T 2", "T 3"] {
+        for line in ["T 1", "\\set_ptt 1", "+T 1", "T 2", "T 3", "T", "T x"] {
             assert!(say(&radio, line).ends_with("RPRT -9\n"), "{line}");
         }
         assert_eq!(say(&radio, "t"), "0\n");
@@ -807,10 +829,11 @@ mod tests {
         say(&radio, "F 80000000");
         say(&radio, "T 1");
         say(&radio, "L RFPOWER 0.5");
+        say(&radio, "T 0");
         let heard: Vec<String> = heard.try_iter().collect();
         assert_eq!(
             heard.len(),
-            4,
+            5,
             "questions aren't noted, changes are: {heard:?}"
         );
         assert_eq!(heard[0], "asked to tune to 7.074000 MHz: done");
@@ -823,6 +846,10 @@ mod tests {
             "asked to transmit: refused (the Agent doesn't transmit yet)"
         );
         assert!(heard[3].contains("L RFPOWER 0.5"), "{heard:?}");
+        assert_eq!(
+            heard[4],
+            "asked to stop transmitting: done (the Agent hadn't keyed anything)"
+        );
     }
 
     #[test]
