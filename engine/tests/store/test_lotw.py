@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""LoTW through the API: optional (V), audited (VII), per operator (XIII)."""
+"""LoTW through the API: optional (V), audited (VII), per operator (XXI)."""
 
 from __future__ import annotations
 
@@ -355,7 +355,7 @@ def test_a_wrong_lotw_login_is_reported(
 def test_a_set_up_belongs_to_its_operator(
     client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], lotw: FakeLotw
 ) -> None:
-    """W0XYZ never sees or uses K9KSU's certificate (Principle XIII)."""
+    """W0XYZ never sees or uses K9KSU's certificate (Principle XXI)."""
     _set_up(client, k9ksu)
     _log(client, k9ksu, qso())
     assert client.get("/api/v1/lotw", headers=w0xyz).json()["certificate"] is None
@@ -370,7 +370,7 @@ def test_a_set_up_belongs_to_its_operator(
 def test_sending_and_fetching_need_the_log_permission(
     client: TestClient, identity: IdentityStore, shack: Actor
 ) -> None:
-    """They change QSOs, so a view-only operator can't (Principle XIII)."""
+    """They change QSOs, so a view-only operator can't (Principle XXI)."""
     identity.add_operator(shack, "KD0VUE", VISITOR_SECRET, [Permission.VIEW])
     viewer = _sign_in(client, "KD0VUE", VISITOR_SECRET, "fd-3")
     assert client.post("/api/v1/lotw/batches", headers=viewer).status_code == 403
@@ -465,7 +465,7 @@ def test_lotw_marks_never_send_a_qso_to_qrz_again(
 def test_nothing_goes_to_lotw_until_a_reviewed_batch_is_sent(
     client: TestClient, k9ksu: dict[str, str], lotw: FakeLotw
 ) -> None:
-    """Preparing a batch fixes its QSOs and sends nothing; sending it is a separate act (XIII)."""
+    """Preparing a batch fixes its QSOs and sends nothing; sending it is a separate act (XXI)."""
     _set_up(client, k9ksu)
     w1aw = _log(client, k9ksu, qso("W1AW"))
     n0oy = _log(client, k9ksu, qso("N0OY", TIME_ON="1830"))
@@ -573,7 +573,7 @@ def test_a_refused_batch_keeps_waiting_with_lotw_s_reason(
 def test_a_batch_belongs_to_its_operator(
     client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str], lotw: FakeLotw
 ) -> None:
-    """W0XYZ can't see, send or cancel K9KSU's batch (Principle XIII)."""
+    """W0XYZ can't see, send or cancel K9KSU's batch (Principle XXI)."""
     _set_up(client, k9ksu)
     _log(client, k9ksu, qso())
     batch = _post(client, k9ksu, "batches")["batch"]

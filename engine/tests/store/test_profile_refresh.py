@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Kept QRZ.com profiles re-checked in the background: off Starlink, gently (V, VI, XIII)."""
+"""Kept QRZ.com profiles re-checked in the background: off Starlink, gently (V, VI, XXI)."""
 
 from __future__ import annotations
 
@@ -231,7 +231,7 @@ def test_only_an_admin_changes_the_setting_and_anyone_can_see_it(
     visitor: Actor,
     conn: psycopg.Connection[TupleRow],
 ) -> None:
-    """Who may change it is the database's rule too (Principle XIII)."""
+    """Who may change it is the database's rule too (Principle XXI)."""
     w0xyz = _sign_in(client, "W0XYZ", VISITOR_SECRET, "fd-2")
     shown = client.get("/api/v1/callbook/refresh", headers=w0xyz)
     assert shown.status_code == 200

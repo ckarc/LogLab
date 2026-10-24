@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""The overlay editor: administrators make and copy overlays (III, XII, XIII)."""
+"""The overlay editor: administrators make and copy overlays (III, XII, XXI)."""
 
 from __future__ import annotations
 
@@ -100,7 +100,7 @@ def test_a_saved_copy_checks_dupes_like_its_original(
 def test_only_an_administrator_saves_an_overlay(
     client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str]
 ) -> None:
-    """Logging does not grant changing the overlays everyone uses (Principle XIII)."""
+    """Logging does not grant changing the overlays everyone uses (Principle XXI)."""
     assert _save(client, w0xyz, _copy(client, k9ksu)).status_code == 403
 
 

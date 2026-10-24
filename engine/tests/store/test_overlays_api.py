@@ -177,7 +177,7 @@ def test_winter_field_day_reports_ft8_and_a_bad_class(
 
 
 def test_the_check_needs_view_and_a_valid_body(client: TestClient, k9ksu: dict[str, str]) -> None:
-    """Signed in, and a body the Engine can read (Principles XII and XIII)."""
+    """Signed in, and a body the Engine can read (Principles XII and XXI)."""
     response = client.post("/api/v1/overlays/arrl-fd/check", json={"fields": _fields()})
     assert response.status_code == 401
     response = client.post(

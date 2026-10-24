@@ -95,6 +95,8 @@ def test_log_and_reference_are_separate_schemas(
         ("reference", "callbook_media"),
         ("reference", "license"),
         ("reference", "license_import"),
+        ("reference", "park"),
+        ("reference", "park_import"),
     }
     links = conn.execute(
         "SELECT count(*) FROM information_schema.referential_constraints r"

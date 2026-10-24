@@ -7,9 +7,12 @@ A QSO logged in an operation is made as the operation's station callsign (its
 GOTA callsign at the GOTA station, ARRL Field Day Rule 4.1.1.1), names the
 operator who made it in ADIF ``OPERATOR``, carries the overlay's
 ``CONTEST_ID``, records the exchange the station sent, and names the
-operation in ``APP_LOGLAB_OPERATION``, so its QSOs can be found together. A
-field the QSO already has is never replaced: what the operator typed is kept
-as typed.
+operation in ``APP_LOGLAB_OPERATION``, so its QSOs can be found together.
+Under a program like POTA, a QSO whose other station gave its park
+(``SIG_INFO``) is marked as that program's (``SIG``), and for POTA the park is
+also copied to ``POTA_REF``: both say only what the operator logged. A field
+the QSO already has is never replaced: what the operator typed is kept as
+typed.
 """
 
 from __future__ import annotations
@@ -57,10 +60,23 @@ def stamp_fields(overlay: Overlay, station: Station) -> tuple[tuple[str, str], .
     return tuple(fields)
 
 
+def _their_program(record: Record, overlay: Overlay) -> tuple[tuple[str, str], ...]:
+    if overlay.program is None:
+        return ()
+    their = next(
+        (f.value.strip().upper() for f in record.fields if f.name.upper() == "SIG_INFO"), ""
+    )
+    if not their:
+        return ()
+    fields: list[tuple[str, str]] = [("SIG", overlay.program.sig)]
+    if overlay.program.sig == "POTA":
+        fields.append(("POTA_REF", their))
+    return tuple(fields)
+
+
 def stamp(record: Record, overlay: Overlay, station: Station) -> Record:
     """``record`` with every field ``station`` gives it that it does not already have."""
     have = {f.name.upper() for f in record.fields}
-    extra = tuple(
-        Field(name, value) for name, value in stamp_fields(overlay, station) if name not in have
-    )
+    given = stamp_fields(overlay, station) + _their_program(record, overlay)
+    extra = tuple(Field(name, value) for name, value in given if name not in have)
     return Record(record.fields + extra) if extra else record

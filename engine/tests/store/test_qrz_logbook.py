@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Sending QSOs to QRZ logbooks: never in logging's way (V), per operator (XIII)."""
+"""Sending QSOs to QRZ logbooks: never in logging's way (V), per operator (XXI)."""
 
 from __future__ import annotations
 
@@ -342,7 +342,7 @@ def test_removing_the_key_stops_sending(
 def test_logbook_operations_need_sign_in(
     client: TestClient, method: str, body: dict[str, str] | None
 ) -> None:
-    """Anonymous requests are refused (Principle XIII)."""
+    """Anonymous requests are refused (Principle XXI)."""
     assert client.request(method, "/api/v1/logbook/qrz", json=body).status_code == 401
 
 
@@ -360,7 +360,7 @@ def test_a_bad_key_or_callsign_is_refused(
 def test_the_database_lets_only_the_signed_in_operator_change_a_key(
     conn: psycopg.Connection[TupleRow], identity: IdentityStore, shack: Actor
 ) -> None:
-    """A key cannot be saved or removed from a session that has ended (Principle XIII)."""
+    """A key cannot be saved or removed from a session that has ended (Principle XXI)."""
     store = LogbookStore(conn)
     store.save(shack, KEY, "K9KSU")
     session = identity.sign_in("K9KSU", ADMIN_SECRET, "shack")

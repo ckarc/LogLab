@@ -1823,6 +1823,7 @@
     add("GRIDSQUARE", form.GRIDSQUARE.value);
     add("CLASS", form.CLASS.value.toUpperCase());
     add("ARRL_SECT", form.ARRL_SECT.value.toUpperCase());
+    add("SIG_INFO", form.SIG_INFO.value.toUpperCase());
     add("COMMENT", form.COMMENT.value);
     return fields;
   }

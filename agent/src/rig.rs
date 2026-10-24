@@ -9,8 +9,9 @@
 //! path used to reach it, so a QSO can name the actual equipment.
 //!
 //! The model is read-only. A [`Radio`] reports what the radio says its live
-//! state is (Principle X); nothing here can tune a radio or key a transmitter
-//! (Principle XI). Those come later, behind their own authorization checks.
+//! state is (Principle X); nothing here can tune a radio or key a transmitter.
+//! Those come later, and only for the program the person at the computer
+//! chooses to control the radio.
 
 use std::fmt;
 

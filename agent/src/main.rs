@@ -13,6 +13,9 @@
 //! and never keys it. With `--wsjtx`, it also hears WSJT-X log QSOs on this
 //! computer and hands them to the Engine, through its journal.
 
+mod civ;
+mod civ_demo;
+mod civ_pretend;
 mod engine;
 mod flex;
 mod hamlib;
@@ -20,6 +23,7 @@ mod journal;
 mod pairing;
 mod pretend;
 mod rig;
+mod rigdef;
 mod wsjtx;
 
 use std::fs;
@@ -56,6 +60,10 @@ Usage:
   loglab-agent run  --engine URL --key-file FILE [--station NAME]
                     [--wsjtx 127.0.0.1:2237 [--journal FILE]] RADIO
   loglab-agent read RADIO              read the radio once and print it
+  loglab-agent check-rig PATH...       check rig definition files (a file,
+                                       or every .toml file in a folder)
+  loglab-agent civ-demo                show a CI-V conversation with the
+                                       pretend IC-7300, byte by byte
 
 RADIO is one of:
   --pretend                            the built-in pretend radio
@@ -104,6 +112,8 @@ enum HamlibChoice {
 enum Command {
     Help,
     Read(RadioChoice),
+    CheckRig(Vec<String>),
+    CivDemo,
     Run {
         engine: String,
         key_file: String,
@@ -148,6 +158,19 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
     if matches!(verb.as_str(), "help" | "--help" | "-h" | "--version") {
         return Ok(Command::Help);
+    }
+    if verb == "civ-demo" {
+        return if rest.is_empty() {
+            Ok(Command::CivDemo)
+        } else {
+            Err("civ-demo takes no options".to_owned())
+        };
+    }
+    if verb == "check-rig" {
+        if rest.is_empty() {
+            return Err("check-rig needs a definition file or a folder of them".to_owned());
+        }
+        return Ok(Command::CheckRig(rest.to_vec()));
     }
     let mut options = Options::default();
     let mut words = rest.iter();
@@ -603,6 +626,41 @@ fn run(
     Ok(())
 }
 
+/// Check rig definition files and say what was found in each
+/// (Principle XII).
+fn check_rigs(paths: &[String]) -> Result<(), String> {
+    let mut results = Vec::new();
+    for path in paths {
+        let path = Path::new(path);
+        if path.is_dir() {
+            results.extend(rigdef::load_dir(path)?);
+        } else {
+            results.push((path.to_path_buf(), rigdef::load(path)));
+        }
+    }
+    if results.is_empty() {
+        return Err("no rig definition files found".to_owned());
+    }
+    let mut refused = 0;
+    for (file, result) in &results {
+        match result {
+            Ok(definition) => println!("ok      {}: {}", file.display(), definition.summary()),
+            Err(error) => {
+                refused += 1;
+                println!("REFUSED {error}");
+            }
+        }
+    }
+    if refused == 0 {
+        Ok(())
+    } else {
+        Err(format!(
+            "{refused} of {} definition files refused",
+            results.len()
+        ))
+    }
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let outcome = match parse(&args) {
@@ -611,6 +669,12 @@ fn main() -> ExitCode {
             Ok(())
         }
         Ok(Command::Read(choice)) => read_once(&choice),
+        Ok(Command::CheckRig(paths)) => check_rigs(&paths),
+        Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
+            for line in lines {
+                println!("{line}");
+            }
+        }),
         Ok(Command::Run {
             engine,
             key_file,
@@ -708,6 +772,24 @@ mod tests {
             parse(&args("read --flex 192.168.1.20")),
             Ok(Command::Read(RadioChoice::Flex("192.168.1.20".to_owned())))
         );
+    }
+
+    #[test]
+    fn reads_check_rig() {
+        assert_eq!(
+            parse(&args("check-rig rigs rigs/icom/ic-7300.toml")),
+            Ok(Command::CheckRig(vec![
+                "rigs".to_owned(),
+                "rigs/icom/ic-7300.toml".to_owned()
+            ]))
+        );
+        assert!(parse(&args("check-rig")).is_err());
+    }
+
+    #[test]
+    fn reads_civ_demo() {
+        assert_eq!(parse(&args("civ-demo")), Ok(Command::CivDemo));
+        assert!(parse(&args("civ-demo --pretend")).is_err());
     }
 
     #[test]

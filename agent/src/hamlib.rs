@@ -16,8 +16,7 @@
 //! range.
 //!
 //! Only questions can be sent. [`Query`] is the whole list of what the Agent
-//! may say to `rigctld`, and none of it tunes the radio or keys it
-//! (Principle XI).
+//! may say to `rigctld`, and none of it tunes the radio or keys it.
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -227,7 +226,7 @@ impl HamlibRadio {
     /// # Errors
     ///
     /// `rigctld` could not be started or reached, or the address is not on
-    /// this computer (the protocol has no sign-in, Principle XIII).
+    /// this computer (the protocol has no sign-in, Principle XXI).
     pub fn open(source: &Source) -> Result<Self, RadioError> {
         let (address, model, child) = match source {
             Source::Running { address, model } => {
@@ -486,7 +485,7 @@ mod tests {
     fn only_asks_questions() {
         // Hamlib's commands that change the radio are upper case (F, M, T,
         // V, L ...) or long-form set_ names. Nothing the Agent can send is
-        // either (Principle XI).
+        // either.
         for query in [
             Query::Frequency,
             Query::Mode,

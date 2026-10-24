@@ -5,7 +5,7 @@
 // to be sent and opens a dialog where the operator saves their callsign
 // certificate, station location and LoTW website login, and fetches
 // confirmations. Nothing goes to LoTW live: the operator prepares a numbered
-// batch of waiting QSOs, checks it, and sends or cancels it (Principle XIII).
+// batch of waiting QSOs, checks it, and sends or cancels it (Principle XXI).
 // The Engine does all of it (Principle I): it signs with the operator's
 // certificate, talks to LoTW, keeps each batch, and records what was sent and
 // confirmed on each QSO. Logging never waits for LoTW (Principle V).

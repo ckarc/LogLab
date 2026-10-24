@@ -9,8 +9,7 @@ Engine: frequency, band, mode, filter width, and whether it is transmitting
 (Principle X). The web client's New QSO box fills in from it, and the On air
 box shows it.
 
-This version only reads the radio. It never tunes it and never transmits
-(Principle XI).
+This version only reads the radio. It never tunes it and never transmits.
 
 ## How it reaches a radio
 
@@ -103,16 +102,41 @@ How it behaves:
   Agent says so; fix what was wrong and import that file from the Menu.
 - **Only this computer.** WSJT-X's messages carry no password, so the Agent
   listens only on `127.0.0.1` and ignores anything from elsewhere
-  (Principle XIII).
+  (Principle XXI).
 - **One listener per address.** WSJT-X sends to one address. If another
   program on the computer (GridTracker, JTAlert) also wants WSJT-X's
   messages, it must use a different port; that program's own settings may
   let it pass them on.
 
+## Checking a rig definition
+
+Command-driven radios are described by rig definition files in `agent/rigs/`
+(see [station-agent-usb-radios.md](station-agent-usb-radios.md)). To check
+one, or every file in a folder:
+
+```sh
+loglab-agent check-rig agent/rigs
+```
+
+Each file is listed as `ok` with a one-line summary, or as `REFUSED` with
+every problem found in it. A misspelled key is shown with its line and column.
+The command exits with an error if any file is refused, and the Agent's tests
+check every file in `agent/rigs/`, so a broken definition cannot be merged
+(Principle XII).
+
+## Watching CI-V
+
+`loglab-agent civ-demo` holds a short conversation with a pretend IC-7300 and
+prints every message both ways, byte by byte, with what each one means:
+asking who it is, reading and tuning the frequency, reading the mode and two
+menu settings, a tuning request it refuses, and a report it sends on its own
+when someone turns its dial. Nothing in it talks to a real radio. The same
+pretend radio is what the Agent's CI-V code is tested against.
+
 ## Notes
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
-  (Principle XIII). Stopping the Agent stops it too.
+  (Principle XXI). Stopping the Agent stops it too.
 - The FlexRadio driver only asks: it subscribes to slice and transmitter
   status, asks the radio's model, and pings it every 5 seconds. It sends no
   command that changes the radio. If the radio says nothing for 15 seconds,

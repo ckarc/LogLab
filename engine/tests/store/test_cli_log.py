@@ -149,7 +149,7 @@ def test_unreachable_database_is_reported(tmp_path: Path) -> None:
 def test_every_command_needs_a_signed_in_operator(
     cli: Terminal, database: str, tmp_path: Path
 ) -> None:
-    """With no session, nothing is read or changed (Principle XIII)."""
+    """With no session, nothing is read or changed (Principle XXI)."""
     stranger = Terminal(database, tmp_path / "nobody.session")
     for argv in (("find",), ("import", str(tmp_path / "x.adi")), ("export", "-o", "x.adi")):
         code, _, err = stranger(*argv)

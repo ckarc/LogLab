@@ -20,6 +20,9 @@ The Station Agent's crates, compiled into its single executable:
 | memchr           | serde_json dependency                     | Unlicense OR MIT                 |
 | zmij             | serde_json dependency (number formatting) | MIT                              |
 | ctrlc            | Stopping Hamlib when the Agent is stopped | MIT OR Apache-2.0                |
+| toml             | Reading rig definition files              | MIT OR Apache-2.0                |
+| toml_parser, toml_datetime, serde_spanned | toml dependencies | MIT OR Apache-2.0                |
+| winnow           | toml dependency (parsing)                 | MIT                              |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
 | windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |

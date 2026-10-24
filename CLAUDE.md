@@ -56,6 +56,8 @@ every line. That means:
 - A QSO is "logged" once the Engine has committed it to durable storage;
   clients journal what they submit until then (Principle XV).
 - Everything must work with no internet connection (Principle V).
+- Every request comes from a signed-in operator holding the permission it
+  needs; an operator's own credentials are theirs alone (Principle XXI).
 
 ## Agent rules (Rust)
 
@@ -63,9 +65,8 @@ every line. That means:
 - No `unsafe` unless a hardware or platform interface requires it — isolated,
   documented, and justified in the pull request.
 - The radio is authoritative on live state; never overwrite it with a
-  remembered value (Principle X).
-- Every transmit path fails closed and requires an authorized operator's
-  deliberate action (Principles XI and XIII).
+  remembered value, except a restore the operator explicitly asked for and
+  confirmed (Principle X).
 - Measured values are logged as measured; entered values as entered.
 
 ## Before you say "done"

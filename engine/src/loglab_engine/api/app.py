@@ -7,7 +7,7 @@ Everything a client can do goes through these operations (Principle I); the
 web client served at ``/`` has no other way in. Every request body is parsed
 into a typed, size-limited model before anything else happens (Principle XII).
 Every request except signing in and the status check is made by a signed-in
-operator, who must hold the permission it needs (Principle XIII): ``view`` to
+operator, who must hold the permission it needs (Principle XXI): ``view`` to
 read, ``log`` to change QSOs. All times are UTC (Principle VIII).
 
 Callsign lookup through QRZ.com is optional: with no login saved, or no
@@ -102,6 +102,7 @@ from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
 from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
+from loglab_engine.personal import personal_stats
 from loglab_engine.reference import (
     SECTIONS,
     ZONE_FIELDS,
@@ -117,6 +118,7 @@ from loglab_engine.reference import (
 from loglab_engine.reference import SOURCE as SECTIONS_SOURCE
 from loglab_engine.reference import Place as MapPlace
 from loglab_engine.reference.licenses import FCC_CREDIT, ISED_CREDIT
+from loglab_engine.reference.parks import PARKS_CREDIT, Park
 from loglab_engine.reference.refresh import Downloads, HttpDownloads, Refresher
 from loglab_engine.rig import Radio, RigBoard, RigMode, RigState, adif_mode, band_for
 from loglab_engine.store import (
@@ -149,6 +151,7 @@ from loglab_engine.store.operation import (
     OperationStore,
 )
 from loglab_engine.store.overlay import OverlayStore
+from loglab_engine.store.parks import ParkStore
 from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
 
 if TYPE_CHECKING:
@@ -354,6 +357,22 @@ class OperatorStatsOut(BaseModel):
     points: int
 
 
+class ActivationOut(BaseModel):
+    """One station callsign's QSOs from one park on one UTC day, toward a POTA activation.
+
+    ``qsos`` leaves dupes out; the park is activated (``done``) once it has
+    ``goal`` of them. ``p2p`` of them were park to park.
+    """
+
+    station_call: str
+    park: str
+    day: date
+    qsos: int
+    goal: int
+    done: bool
+    p2p: int
+
+
 class OperationStatsOut(BaseModel):
     """How the whole group is doing in an operation, for the Operation stats box.
 
@@ -388,6 +407,53 @@ class OperationStatsOut(BaseModel):
     sections_total: int
     score: int | None
     points: dict[str, int]
+    activations: list[ActivationOut] = []
+    p2p: int = 0
+    goal: int | None = None
+
+
+class BandModeCountOut(BaseModel):
+    """The operator's QSOs on one band in one mode."""
+
+    band: str
+    mode: str
+    qsos: int
+
+
+class CountryOut(BaseModel):
+    """A country the operator has worked, as their log names it.
+
+    ``dxcc`` is the DXCC entity number, ``null`` when the log names a country
+    that is not on the DXCC list.
+    """
+
+    name: str
+    dxcc: int | None
+    qsos: int
+
+
+class PersonalStatsOut(BaseModel):
+    """The signed-in operator's own stats, for everyday logging.
+
+    ``today``, ``week`` (from Monday) and ``year`` start at UTC midnight.
+    States and countries are counted from each QSO's ``STATE``, ``DXCC`` and
+    ``COUNTRY`` as logged, never guessed from the call; ``no_country`` QSOs
+    name no country.
+    """
+
+    operator: str
+    now: datetime
+    today: int
+    week: int
+    year: int
+    total: int
+    last_qso: datetime | None
+    by_band_mode: list[BandModeCountOut]
+    states: list[str]
+    states_needed: list[str]
+    states_total: int
+    countries: list[CountryOut]
+    no_country: int
 
 
 class OnAirOut(BaseModel):
@@ -819,6 +885,34 @@ class LicensesOut(BaseModel):
 
     sources: list[LicenseSourceOut]
     problem: str | None
+
+
+class ParkOut(BaseModel):
+    """One Parks on the Air park, from the park list the Engine keeps."""
+
+    reference: str
+    name: str
+    active: bool
+    locations: list[str]
+    latitude: float | None
+    longitude: float | None
+    grid: str | None
+
+
+class ParksOut(BaseModel):
+    """Parks that match a search."""
+
+    parks: list[ParkOut]
+
+
+class ParkListOut(BaseModel):
+    """How current the park list is, and the last refresh problem."""
+
+    parks: int
+    published: datetime | None
+    imported: datetime | None
+    problem: str | None
+    credit: str
 
 
 class QrzLoginOut(BaseModel):
@@ -1428,7 +1522,7 @@ def _actor(conn: Conn, authorization: Annotated[str | None, Header()] = None) ->
     if scheme.lower() != "bearer" or not token.strip():
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "sign in first (Principle XIII)",
+            "sign in first (Principle XXI)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return IdentityStore(conn).authenticate(token.strip())
@@ -1951,6 +2045,48 @@ def operation_stats_out(operation_id: uuid.UUID, who: Signed, conn: Conn) -> Ope
         sections_total=stats.sections_total,
         score=stats.score,
         points=dict(stats.points),
+        activations=[
+            ActivationOut(
+                station_call=a.station_call,
+                park=a.park,
+                day=a.day,
+                qsos=a.qsos,
+                goal=a.goal,
+                done=a.done,
+                p2p=a.p2p,
+            )
+            for a in stats.activations
+        ],
+        p2p=stats.p2p,
+        goal=found.program.goal if found is not None and found.program is not None else None,
+    )
+
+
+@api.get("/stats/personal")
+def personal_stats_out(who: Signed, conn: Conn) -> PersonalStatsOut:
+    """The signed-in operator's own stats: today, this week and year, bands, states, countries.
+
+    Every QSO they made counts, in any operation or none; deleted and pretend
+    QSOs do not.
+    """
+    _require(conn, who, Permission.VIEW)
+    stats = personal_stats(LogStore(conn).operator_qsos(who.operator), now=datetime.now(UTC))
+    return PersonalStatsOut(
+        operator=who.operator,
+        now=stats.now,
+        today=stats.today,
+        week=stats.week,
+        year=stats.year,
+        total=stats.total,
+        last_qso=stats.last_qso,
+        by_band_mode=[
+            BandModeCountOut(band=b.band, mode=b.mode, qsos=b.qsos) for b in stats.by_band_mode
+        ],
+        states=list(stats.states),
+        states_needed=list(stats.states_needed),
+        states_total=stats.states_total,
+        countries=[CountryOut(name=c.name, dxcc=c.dxcc, qsos=c.qsos) for c in stats.countries],
+        no_country=stats.no_country,
     )
 
 
@@ -2149,7 +2285,7 @@ def set_demo(body: DemoIn, who: Signed, conn: Conn, demo: DemoMode) -> DemoOut:
     demo-1 to demo-3 with pretend radios, in the practice operation Demo
     Field Day (set up now if need be), and log pretend QSOs with real calls
     from the license lists, each marked pretend, in this administrator's
-    session (Principles XIII and XX). Off, they leave the air and every pretend QSO in Demo
+    session (Principles XX and XXI). Off, they leave the air and every pretend QSO in Demo
     Field Day is erased, the erasure recorded (Principle VII, as amended in
     Constitution 2.1.0). Nothing ever goes to LoTW or QRZ.com.
     """
@@ -2186,7 +2322,7 @@ def _agent_station(conn: Conn, authorization: Annotated[str | None, Header()] = 
     if scheme.lower() != "bearer" or not key.strip():
         raise HTTPException(
             status.HTTP_401_UNAUTHORIZED,
-            "send this station's key (Principle XIII)",
+            "send this station's key (Principle XXI)",
             headers={"WWW-Authenticate": "Bearer"},
         )
     return AgentKeyStore(conn).authenticate(key.strip())
@@ -2288,7 +2424,7 @@ def agent_log_qso(
 
     The QSO is logged exactly as if that operator had typed it at that
     station: in the operation they chose, with its fields and its hours
-    (Principle XIII). With nobody signed in at the station, it is refused
+    (Principle XXI). With nobody signed in at the station, it is refused
     with 503, and the Agent keeps it in its journal until someone signs in
     (Principle XV). A QSO already in the log, the same call, band and mode
     in the same UTC minute, is answered with that QSO, never logged twice.
@@ -2357,7 +2493,7 @@ def ask_to_pair(body: PairingAskIn, desk: Desk) -> PairingAskOut:
     """A Station Agent with no key asks to join as a station. No sign-in needed.
 
     The request grants nothing: an administrator must approve it, after
-    checking that the code the Agent shows matches (Principle XIII).
+    checking that the code the Agent shows matches (Principle XXI).
     """
     now = datetime.now(UTC)
     try:
@@ -2566,7 +2702,14 @@ def _catalog(conn: Conn) -> list[OverlayOut]:
                 }
             )
         )
-    out.sort(key=lambda o: (o.id != EVERYDAY, o.retired, o.is_contest, o.name.lower()))
+    out.sort(
+        key=lambda o: (
+            o.id != EVERYDAY,
+            o.retired,
+            o.is_contest or o.program is not None,
+            o.name.lower(),
+        )
+    )
     return out
 
 
@@ -2683,11 +2826,15 @@ def retire_overlay(
     return found
 
 
-def _year(qso_date: str | None) -> int:
+def _day(qso_date: str | None) -> date:
     try:
-        return datetime.strptime((qso_date or "").strip(), "%Y%m%d").replace(tzinfo=UTC).year
+        return datetime.strptime((qso_date or "").strip(), "%Y%m%d").replace(tzinfo=UTC).date()
     except ValueError:
-        return datetime.now(UTC).year
+        return datetime.now(UTC).date()
+
+
+def _year(qso_date: str | None) -> int:
+    return _day(qso_date).year
 
 
 def _worked_out(worked: Iterable[Worked]) -> list[WorkedOut]:
@@ -2706,7 +2853,9 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
     Two QSOs are dupes when they are with the same call, made as the same
     station callsign, carry the overlay's ``CONTEST_ID``, fall in the same
     UTC year, and agree on whatever the overlay's dupe rule lists (for both
-    Field Days, the band and the mode group). Nothing is stored.
+    Field Days, the band and the mode group). Under a program like POTA they
+    carry its ``MY_SIG`` instead and fall on the same UTC day, and the rule
+    also compares the parks. Nothing is stored.
     """
     _require(conn, who, Permission.VIEW)
     found = _overlay(conn, overlay_id)
@@ -2738,6 +2887,14 @@ def check_qso(overlay_id: str, body: ContestCheckIn, who: Signed, conn: Conn) ->
             station_call=station,
             call=call,
             year=year,
+            exclude=body.exclude,
+        )
+    elif found.program is not None and call:
+        earlier = LogStore(conn).program_qsos(
+            sig=found.program.sig,
+            station_call=station,
+            call=call,
+            day=_day(fields.get("QSO_DATE")),
             exclude=body.exclude,
         )
     result = contest_check(
@@ -3214,6 +3371,63 @@ def get_licenses(request: Request, who: Signed, conn: Conn) -> LicensesOut:
 @api.post("/licenses/refresh", status_code=status.HTTP_202_ACCEPTED)
 def refresh_licenses(request: Request, who: Signed, conn: Conn) -> None:
     """Check for newer license lists now, in the background (admins only)."""
+    _require(conn, who, Permission.ADMIN)
+    refresher: Refresher = request.app.state.licenses
+    refresher.wake()
+
+
+def _park_out(park: Park) -> ParkOut:
+    return ParkOut(
+        reference=park.reference,
+        name=park.name,
+        active=park.active,
+        locations=[] if park.locations is None else park.locations.split(","),
+        latitude=park.latitude,
+        longitude=park.longitude,
+        grid=park.grid,
+    )
+
+
+ParkSearch = Annotated[str, Query(min_length=1, max_length=100)]
+
+
+@api.get("/parks")
+def search_parks(who: Signed, conn: Conn, q: ParkSearch, limit: int = 20) -> ParksOut:
+    """Parks whose reference or name matches ``q``, from the local list (Principle V)."""
+    _require(conn, who, Permission.VIEW)
+    return ParksOut(parks=[_park_out(p) for p in ParkStore(conn).search(q, limit)])
+
+
+@api.get("/parks/{reference}")
+def get_park(who: Signed, conn: Conn, reference: str) -> ParkOut:
+    """One park by its reference, like ``US-1234``; 404 if the local list does not have it."""
+    _require(conn, who, Permission.VIEW)
+    park = ParkStore(conn).find(reference)
+    if park is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such park in the park list")
+    return _park_out(park)
+
+
+@api.get("/park-list")
+def get_park_list(request: Request, who: Signed, conn: Conn) -> ParkListOut:
+    """How current the POTA park list is (Principle VI)."""
+    _require(conn, who, Permission.VIEW)
+    refresher: Refresher = request.app.state.licenses
+    report = refresher.last_report()
+    problems = [] if report is None else report.park_problems
+    state = ParkStore(conn).state()
+    return ParkListOut(
+        parks=state.parks,
+        published=state.published,
+        imported=state.imported,
+        problem=problems[0] if problems else None,
+        credit=PARKS_CREDIT,
+    )
+
+
+@api.post("/park-list/refresh", status_code=status.HTTP_202_ACCEPTED)
+def refresh_park_list(request: Request, who: Signed, conn: Conn) -> None:
+    """Check for a newer park list now, in the background (admins only)."""
     _require(conn, who, Permission.ADMIN)
     refresher: Refresher = request.app.state.licenses
     refresher.wake()

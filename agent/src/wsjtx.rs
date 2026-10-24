@@ -13,7 +13,7 @@
 //! - **Logged ADIF**, sent when the operator clicks Log QSO: the QSO as ADIF.
 //!
 //! The messages carry no password, so the Agent listens only on this
-//! computer and ignores anything from elsewhere (Principle XIII). Every
+//! computer and ignores anything from elsewhere (Principle XXI). Every
 //! message is untrusted: lengths are checked against what arrived, and a
 //! malformed one is dropped, never trusted (Principle XII).
 
@@ -152,7 +152,7 @@ pub fn check_local(address: SocketAddr) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!(
-            "--wsjtx must be on this computer, like 127.0.0.1:2237, not {address}: WSJT-X's messages carry no password (Principle XIII)"
+            "--wsjtx must be on this computer, like 127.0.0.1:2237, not {address}: WSJT-X's messages carry no password (Principle XXI)"
         ))
     }
 }

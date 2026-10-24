@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 2.1.0                                                                                  |
+| **Version**    | 4.0.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -106,6 +106,14 @@ Cabrillo. Interoperability with other software happens through open,
 documented formats and protocols — ADIF, Cabrillo, the WSJT-X UDP protocol,
 the Hamlib `rigctld` network protocol, TCI — not by imitating another product.
 
+A radio maker's published command set is an open protocol. The Station Agent
+may offer a virtual radio that speaks one (a Kenwood command set, for
+example), so programs that only know how to talk to radios can share a radio
+through the Agent. It is built only from the maker's published reference, and
+the documentation says which command set it speaks. This permits speaking a
+published command set; it never permits copying another program's code, look,
+or workflow.
+
 *Why this is inviolable: an operator's log is decades of their history. A
 logger that loses fields on import, or that can only exchange data with
 itself, holds that history hostage. Open formats at the edges are what let an
@@ -146,11 +154,11 @@ from the log means a bad refresh is an inconvenience, not data loss.*
 
 ### VII. A QSO Is Never Silently Lost Or Altered
 
-Every change to a QSO record is versioned: which operator changed it
-(Principle XIII), when, from which station, and what it was before. Deletion is
-a recorded action, not an erasure, and a deleted QSO can be recovered. No
-import, migration, template change, or sync operation may modify existing QSOs
-except through this same audited path.
+Every change to a QSO record is versioned: which operator changed it, when,
+from which station, and what it was before. Deletion is a recorded action, not
+an erasure, and a deleted QSO can be recovered. No import, migration, template
+change, or sync operation may modify existing QSOs except through this same
+audited path.
 
 A pretend QSO is the one exception. A pretend QSO is marked as made with a
 pretend station (`APP_LOGLAB_PRETEND`), is accepted only in a practice
@@ -200,8 +208,8 @@ and fldigi can all use one radio at once.
 *Why this is inviolable: two programs fighting over one radio port is the
 oldest problem in station software — "port in use," commands interleaving,
 each program undoing the other's changes. One owner removes the fight. And
-because only the Agent touches hardware, the transmit-safety rule of
-Principle XI lives in exactly one place.*
+because only the Agent touches hardware, every command that reaches a radio
+passes through one place.*
 
 ### X. The Radio Is Authoritative On Live State
 
@@ -214,6 +222,12 @@ value back over the radio's current one.
 
 If the radio can store and recall a setting itself, the radio keeps it. The
 Agent persists only what the radio cannot store.
+
+One exception: the Agent may record a radio's settings when it first connects,
+and an operator may explicitly ask the Agent to put recorded settings back.
+The Agent restores only on that request, only after the operator confirms it,
+and records the restore — what was changed, from what, and when — like any
+other change it makes to a radio. It never restores on its own.
 
 Where a radio can measure a value the log records — transmit power, most
 importantly — the measured value is logged and marked as measured. A value an
@@ -229,21 +243,11 @@ settings jump back to stale ones on reconnect, and QSOs get stamped with a
 frequency the radio wasn't actually on. The log is only as accurate as the
 radio state behind it.*
 
-### XI. The Operator Keys The Transmitter
+### XI. Repealed
 
-Nothing in this system causes a transmission the operator did not deliberately
-initiate. Where the Agent can key a radio or keyer — PTT, a tune carrier, a CW
-or voice macro — every emission traces to a deliberate action by an operator
-holding transmit authorization for that radio (Principle XIII). Nothing
-transmits on a timer, as a retry, as a side effect of a state change or
-reconnect, or on instruction from a client or program the operator has not
-authorized to transmit. Every code path that can transmit lives in the Agent
-(Principle IX) and fails closed: if intent or authorization is not unambiguous,
-it does not key.
-
-*Why this is inviolable: every emission goes out under the operator's callsign
-and license, and it cannot be recalled once it leaves the antenna. A logger is
-never worth a transmission nobody asked for.*
+Repealed in version 3.0.0. LabLog is a logging application; transmitting is
+done by the programs the operator runs. The number is kept so that later
+principles keep their numbers.
 
 ### XII. Untrusted Input Is Validated At The Boundary
 
@@ -264,41 +268,11 @@ accept files and hardware data from anywhere. One oversized field or malformed
 packet that a parser trusts becomes a crash in the middle of a contest — or a
 way in.*
 
-### XIII. Every Action Has An Identified, Authorized Operator
+### XIII. Repealed
 
-Every request to the Engine or the Agent is made by an identified operator at
-an identified station. Anonymous requests are refused, except the small set
-needed to sign in and to discover the system on the local network.
-
-Authorization is explicit and separated by kind:
-
-- **Viewing** the log and the event stream.
-- **Logging** — entering and editing QSOs.
-- **Radio control** — tuning and configuring a radio without transmitting.
-- **Transmitting** — keying a specific radio, granted per operator and per
-  radio, never implied by any other permission.
-- **Administration** — managing operators, stations, templates, and reference
-  data.
-
-Being able to log at a position never by itself grants the right to control or
-key its radio.
-
-Identity works offline (Principle V). Operators are local accounts held by the
-Engine, and signing in requires no internet connection and no outside identity
-provider. Signing in is quick enough for a visiting operator to join a Field
-Day position in under a minute.
-
-Protocols that carry no authentication of their own — the Hamlib `rigctld`
-protocol, for example — are exposed only to the local machine by default.
-Opening one to the network is an explicit administrative choice, limited to
-named hosts, and never grants transmit authorization by default.
-
-*Why this is inviolable: the log promises to record who did what (Principle
-VII), and the transmitter promises to key only on an authorized operator's
-intent (Principle XI). Neither promise means anything if the system can't tell
-who is asking. At Field Day, the network is full of laptops the station owner
-doesn't control — a visitor logging contacts must not be one click away from
-keying a legal-limit amplifier.*
+Repealed in version 3.0.0. Which programs may control or key a radio is decided
+at the computer the radio is connected to, not by LabLog. The number is kept so
+that later principles keep their numbers.
 
 ### XIV. Persist Atomically
 
@@ -441,6 +415,46 @@ nobody can tell them apart afterward: not the operator, not a contest
 adjudicator, not a confirmation service. Decoding more weak signals is only
 worth something if every decode can be trusted to be what it says it is.*
 
+### XXI. The Log Knows Who Is Asking
+
+Every request to the Engine is made by an identified operator at an identified
+station. Anonymous requests are refused, except the small set needed to sign
+in and to discover the system on the local network.
+
+Permissions are explicit and separated by kind:
+
+- **Viewing** the log and the event stream.
+- **Logging**: entering and editing QSOs.
+- **Administration**: managing operators, stations, templates, and reference
+  data.
+
+Being able to log never by itself grants administration. An operator's own
+credentials (an online callbook login, a LoTW certificate, a logbook key)
+belong to that operator: only they, signed in, can use, change, or remove
+them.
+
+Identity works offline (Principle V). Operators are local accounts held by the
+Engine; signing in needs no internet connection and no outside identity
+provider, and is quick enough for a visiting operator to join a Field Day
+position in under a minute.
+
+A Station Agent proves which station it is with a key an administrator
+approved. Protocols that carry no sign-in of their own (the WSJT-X UDP
+protocol and the Hamlib `rigctld` protocol, for example) are accepted only
+from the computer they run on, unless an administrator explicitly opens one to
+named hosts.
+
+This principle is about the log. It grants nothing about controlling a radio:
+which program controls a radio is decided at the computer the radio is
+connected to.
+
+*Why this is inviolable: the log promises to record who did what (Principle
+VII), and that promise means nothing if the system can't tell who is asking.
+At Field Day the network is full of laptops the station owner doesn't
+control; a visitor must be able to log in a minute, and must never be able to
+read another operator's credentials, change the club's templates, or edit the
+log without signing in.*
+
 ---
 
 ## Technology Constraints
@@ -470,7 +484,7 @@ worth something if every decode can be trusted to be what it says it is.*
   requires it, and then isolated, documented, and justified in the pull
   request.
 - **Rig sharing**: the Agent speaks the Hamlib `rigctld` network protocol so
-  third-party programs can share radios through it (Principles IX and XIII).
+  third-party programs can share radios through it (Principle IX).
 - **Hardware drivers**: rig definition files for command-driven radios;
   dedicated drivers for network-native radios, built from vendor-published
   documentation and source (Principle XVI). A TCI driver reaches SDR
@@ -591,6 +605,8 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 2.0.0   | 2026-10-19 | Added Principle XX (Received Is Never Confused With Inferred): every decode is received, assisted, or predicted, carries that kind everywhere, and is never silently upgraded; benchmarks report received and assisted results separately. Added at the end so no principle is renumbered. Situation: LogLab's own FT8 decoder will reach weaker signals with help such as expected messages and combined repeats; without this rule, what a station probably sent could be logged and shown as what it did send, and the log could no longer be trusted as a record of what was heard. Requested by the maintainer. |
 | 2.0.1   | 2026-10-19 | Renamed the software LabLog wherever people read its name. The repository, code and database keep the name loglab. Wording only; no principle changed. Decided by the maintainer. |
 | 2.1.0   | 2026-10-23 | Narrowed Principle VII: an administrator may erase the pretend QSOs of a practice operation entirely, and the erasure itself is recorded; every other QSO keeps its full history. Situation: demo mode fills the boxes with pretend QSOs, using real calls marked pretend, to show LabLog to people. Keeping every one of them forever as deleted versions would fill the log's history with contacts that never happened, mixed in with the real ones, which is a worse outcome than erasing what was never a contact. Decided by the maintainer. |
+| 3.0.0   | 2026-10-24 | Repealed Principle XI (The Operator Keys The Transmitter) and Principle XIII (Every Action Has An Identified, Authorized Operator); their numbers are kept so no principle is renumbered. Principle VII now names the operator who made a change directly instead of citing XIII; Principle IX no longer cites XI. Narrowed Principle X: the Agent may record a radio's settings on first connect and restore them on an operator's explicit, confirmed request, recorded like any other change. Widened Principle IV: a radio maker's published command set is an open protocol the Agent may speak through a virtual radio. Situation: LabLog is now purely a logging application with no built-in operating modes. Transmitting is done by programs such as WSJT-X, VarAC and Winlink Express, which reach the radio through the Station Agent; the person at the computer chooses in the Agent which program controls each radio. Requiring LabLog operator accounts to authorize transmitting would put a logger between operators and their own stations, and would leave those programs unable to key a radio at a workstation where nobody has signed in to LabLog, a worse outcome than leaving that choice at the computer. Restoring recorded settings lets a visitor's radio go home set up the way it arrived, which Principle X as written forbade. Programs such as Winlink Express and N1MM Logger+ can only reach a radio through a maker's command set, so without the Principle IV clause they could not share a radio through the Agent at all. Decided by the maintainer. |
+| 4.0.0   | 2026-10-24 | Added Principle XXI (The Log Knows Who Is Asking): every Engine request is made by an identified operator at an identified station; viewing, logging and administration are separate permissions; an operator's own credentials are theirs alone; sign-in works offline; a Station Agent proves its station with an approved key; protocols with no sign-in are accepted only from their own computer. It grants nothing about controlling a radio. Added at the end so no principle is renumbered. Situation: repealing Principle XIII in 3.0.0 removed the radio permissions it held, as intended, but also left the Engine's sign-in, its separate permissions, and each operator's private credentials with no principle behind them; without one, a change could let anyone on a Field Day network read or edit the log, or use another operator's LoTW certificate, with no rule to stop it. Decided by the maintainer. |
 
 ---
 

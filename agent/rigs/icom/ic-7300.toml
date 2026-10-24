@@ -1,0 +1,316 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Rig definition: Icom IC-7300.
+#
+# The first rig definition file, and the model for the rest. The format is
+# described in docs/station-agent-usb-radios.md ("Rig definition files").
+# This file is data, never code (Principle XII): the Agent checks it against
+# the schema when it loads it.
+#
+# `verified = true` means a value was checked against a real IC-7300. The
+# Agent reads unverified settings but never writes them. Every value below
+# starts unverified; flip each one only after checking it on a radio, and say
+# which firmware in the pull request.
+#
+# All bytes are written in hexadecimal, as the CI-V documents write them.
+
+[definition]
+schema = 1
+maker = "Icom"
+model = "IC-7300"
+family = "icom-civ"
+status = "draft"
+
+[[definition.sources]]
+id = "full_manual"
+title = "Icom IC-7300 Full Manual, section 19: Control command (CI-V)"
+note = "Command 19 00, 1A 05 settings, 1A 06, 1C 00, 25 and 26 were read from this section."
+
+[[definition.sources]]
+id = "civ_common"
+title = "Icom CI-V command set as used across Icom HF radios"
+note = """
+Commands 03, 04, 05, 06, 07 and 0F were not in the part of the manual read for
+this file. They are written from the common Icom CI-V command set and must be
+checked against the full manual and a radio before they are marked verified.
+"""
+
+# ---------------------------------------------------------------------------
+# How the radio appears on USB.
+# ---------------------------------------------------------------------------
+[usb]
+# The radio holds a USB hub with a USB-to-serial bridge and a USB sound device
+# behind it. The Agent pairs the two by their shared parent in the device tree.
+# 10C4:EA60 is Silicon Labs' standard ID for its CP210x serial bridges.
+serial = { vid = 0x10C4, pid = 0xEA60, role = "civ", verified = false }
+audio = { name_contains = "USB Audio CODEC", verified = false }
+
+# ---------------------------------------------------------------------------
+# The CI-V link.
+# ---------------------------------------------------------------------------
+[link]
+default_address = 0x94
+controller_address = 0xE0
+# The speed of the USB port can't be read or set over CI-V, so the Agent tries
+# these in order until the radio answers the identity query.
+baud_rates = [115200, 19200, 9600, 38400, 57600, 4800]
+# Whether the radio echoes each command back depends on setting 0075 (below);
+# the driver detects echo on the wire either way.
+echo = "detect"
+verified = false
+
+[identity]
+# Read the transceiver ID. The radio answers with its CI-V address.
+query = "19 00"
+source = "full_manual"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Modes: the radio's mode byte (commands 04, 06, 26) mapped to the rig model.
+# Data modes are the voice mode with data mode on (command 1A 06), so
+# USB with data on is DATA-USB.
+# ---------------------------------------------------------------------------
+[modes]
+source = "full_manual"
+verified = false
+
+[modes.codes]
+LSB = 0x00
+USB = 0x01
+AM = 0x02
+CW = 0x03
+RTTY = 0x04
+FM = 0x05
+CW-R = 0x07
+RTTY-R = 0x08
+
+[data_mode]
+# 1A 06: data mode off (00) or on (01), then the filter (01, 02, 03; 00 when off).
+command = "1A 06"
+data_modes = { DATA-USB = "USB", DATA-LSB = "LSB", DATA-FM = "FM" }
+source = "full_manual"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Commands the driver uses for rig-model operations.
+# ---------------------------------------------------------------------------
+[commands]
+read_frequency = { command = "03", source = "civ_common", verified = false }
+read_mode = { command = "04", source = "civ_common", verified = false }
+set_frequency = { command = "05", source = "civ_common", verified = false }
+set_mode = { command = "06", source = "civ_common", verified = false }
+# 25 / 26 with 00 = selected VFO, 01 = unselected VFO. Preferred over 03-06
+# because they reach the unselected VFO without switching to it, which split
+# operation needs.
+vfo_frequency = { command = "25", source = "full_manual", verified = false }
+vfo_mode = { command = "26", source = "full_manual", verified = false }
+select_vfo_a = { command = "07 00", source = "civ_common", verified = false }
+select_vfo_b = { command = "07 01", source = "civ_common", verified = false }
+split = { command = "0F", off = 0x00, on = 0x01, source = "civ_common", verified = false }
+# 1C 00: transmit status. 00 = receive, 01 = transmit.
+# Writing this keys the radio: only the Agent's transmit path may use it
+# (Principle XI).
+ptt = { command = "1C 00", off = 0x00, on = 0x01, source = "full_manual", verified = false }
+
+# ---------------------------------------------------------------------------
+# Menu settings the Agent reads (command 1A 05 plus the item number).
+# `write = false` means the Agent never changes it, whatever else is true.
+# These are read into the as-received record on first connect.
+# ---------------------------------------------------------------------------
+[[settings]]
+id = "civ_transceive"
+item = "00 71"
+label = "CI-V Transceive"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+note = "When ON the radio reports changes on its own; the Agent uses that, and asks on a schedule when it's OFF."
+
+[[settings]]
+id = "civ_usb_to_remote_address"
+item = "00 72"
+label = "CI-V USB to REMOTE transceive address"
+range = [0x00, 0xDF]
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "civ_output_for_ant"
+item = "00 73"
+label = "CI-V Output (for ANT)"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "civ_usb_port"
+item = "00 74"
+label = "CI-V USB Port"
+values = { "Link to [REMOTE]" = 0x00, "Unlink from [REMOTE]" = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+note = "The manual lists this item as read-only over CI-V."
+
+[[settings]]
+id = "civ_usb_echo_back"
+item = "00 75"
+label = "CI-V USB Echo Back"
+# As printed in the manual: 00 is ON and 01 is OFF, the opposite of the other
+# on/off items. Check this on a radio before marking it verified.
+values = { ON = 0x00, OFF = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_serial_function"
+item = "00 76"
+label = "USB Serial Function"
+values = { "CI-V" = 0x00, "RTTY Decode" = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+note = "Must be CI-V for the Agent to reach the radio at all; if it isn't, the radio never answers and the Agent says so."
+
+[[settings]]
+id = "usb_send"
+item = "00 78"
+label = "USB SEND (transmit control line)"
+values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
+write = false
+source = "full_manual"
+verified = false
+note = "The Agent keys with CAT (1C 00), not a control line, so this is recorded but not needed."
+
+[[settings]]
+id = "usb_keying_cw"
+item = "00 79"
+label = "USB Keying (CW)"
+values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_keying_rtty"
+item = "00 80"
+label = "USB Keying (RTTY)"
+values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_if_output"
+item = "00 59"
+label = "ACC/USB Output Select"
+values = { AF = 0x00, IF = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_output_level"
+item = "00 60"
+label = "ACC/USB AF Output Level"
+range = [0, 255]
+percent = true
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_squelch"
+item = "00 61"
+label = "ACC/USB AF SQL"
+values = { "OFF (OPEN)" = 0x00, ON = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_beep_speech"
+item = "00 62"
+label = "ACC/USB AF Beep/Speech Output"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_if_output_level"
+item = "00 63"
+label = "ACC/USB IF Output Level"
+range = [0, 255]
+percent = true
+write = false
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_mod_level"
+item = "00 65"
+label = "USB MOD Level"
+range = [0, 255]
+percent = true
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "data_off_mod"
+item = "00 66"
+label = "DATA OFF MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "data_mod"
+item = "00 67"
+label = "DATA MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_inhibit_timer"
+item = "01 97"
+label = "Inhibit timer at USB connection"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "full_manual"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Requirements: settings a job can't work without. The Agent checks them,
+# explains what's wrong, and offers to change only that setting, with the
+# operator's approval (docs/station-agent-usb-radios.md, "Adapting to the
+# radio"). A requirement can only offer to change a setting with write = true.
+# ---------------------------------------------------------------------------
+[[requirements]]
+job = "control"
+setting = "usb_serial_function"
+accept = ["CI-V"]
+explain = "The radio's USB serial port is set to RTTY Decode, so it can't be controlled over USB. Set USB Serial Function to CI-V in the radio's Connectors settings."
+
+[[requirements]]
+job = "digital_modes"
+setting = "data_mod"
+accept = ["USB", "MIC,USB"]
+offer = "USB"
+explain = "In data mode the radio takes transmit audio from somewhere other than USB, so programs like WSJT-X and VARA would transmit silence."
+
+[[requirements]]
+job = "computer_voice"
+setting = "data_off_mod"
+accept = ["USB", "MIC,USB"]
+offer = "MIC,USB"
+explain = "Outside data mode the radio doesn't take transmit audio from USB, so a program's voice keyer would transmit silence. MIC,USB keeps the microphone working too."

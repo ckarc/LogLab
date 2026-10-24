@@ -106,7 +106,7 @@ def test_every_workstation_sees_the_same_stats(
 
 
 def test_stats_need_a_sign_in(client: TestClient, field_day: dict[str, Any]) -> None:
-    """Nobody reads the log without signing in (Principle XIII)."""
+    """Nobody reads the log without signing in (Principle XXI)."""
     assert client.get(f"/api/v1/operations/{field_day['id']}/stats").status_code == 401
 
 
@@ -169,3 +169,44 @@ def test_signing_in_again_at_a_station_replaces_its_line(
     client.put(url, headers=again, json={"band": "40m", "mode": "CW"})
     stations = client.get(url, headers=k9ksu).json()["stations"]
     assert [(s["station"], s["band"]) for s in stations] == [("fd-1", "40m")]
+
+
+def _log_everyday(client: TestClient, headers: dict[str, str], call: str, **more: str) -> str:
+    now = datetime.now(UTC)
+    fields = [
+        {"name": "CALL", "value": call},
+        {"name": "QSO_DATE", "value": now.strftime("%Y%m%d")},
+        {"name": "TIME_ON", "value": now.strftime("%H%M%S")},
+        {"name": "BAND", "value": "20m"},
+        {"name": "MODE", "value": "SSB"},
+        *({"name": k, "value": v} for k, v in more.items()),
+    ]
+    response = client.post("/api/v1/qsos", headers=headers, json={"fields": fields})
+    assert response.status_code == 201, response.text
+    qso_id: str = response.json()["qso"]["id"]
+    return qso_id
+
+
+def test_personal_stats_are_each_operators_own(
+    client: TestClient, k9ksu: dict[str, str], w0xyz: dict[str, str]
+) -> None:
+    """With no operation, each operator sees only their own QSOs; deleted ones don't count."""
+    _log_everyday(client, k9ksu, "W1AW", STATE="CT", DXCC="291")
+    _log_everyday(client, k9ksu, "VE3XYZ", STATE="ON", DXCC="1")
+    gone = _log_everyday(client, k9ksu, "DL1ABC", COUNTRY="GERMANY")
+    _log_everyday(client, w0xyz, "K1ABC", STATE="MA")
+    response = client.post(f"/api/v1/qsos/{gone}/delete", headers=k9ksu, json={})
+    assert response.status_code == 200, response.text
+    mine = client.get("/api/v1/stats/personal", headers=k9ksu).json()
+    assert mine["operator"] == "K9KSU"
+    assert (mine["today"], mine["week"], mine["year"], mine["total"]) == (2, 2, 2, 2)
+    assert mine["states"] == ["CT"]
+    assert [c["name"] for c in mine["countries"]] == ["Canada", "United States of America"]
+    assert mine["by_band_mode"] == [{"band": "20m", "mode": "SSB", "qsos": 2}]
+    theirs = client.get("/api/v1/stats/personal", headers=w0xyz).json()
+    assert (theirs["total"], theirs["states"], theirs["no_country"]) == (1, ["MA"], 1)
+
+
+def test_personal_stats_need_a_sign_in(client: TestClient) -> None:
+    """Nobody reads the log without signing in (Principle XXI)."""
+    assert client.get("/api/v1/stats/personal").status_code == 401

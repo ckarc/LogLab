@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import uuid
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Final, cast
 
@@ -186,7 +186,7 @@ def check_station(station: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Actor:
-    """A signed-in operator at a station, making a change in their session (Principle XIII).
+    """A signed-in operator at a station, making a change in their session (Principle XXI).
 
     Get one from :meth:`loglab_engine.store.IdentityStore.authenticate`. The
     database checks every change against the session, so an actor that was
@@ -222,6 +222,23 @@ class QsoVersion:
     mode: str | None
     import_id: int | None
     import_file: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class Worked:
+    """What an operator's personal stats need from one of their QSOs, as logged.
+
+    ``band`` is lower case and ``mode`` the ``SUBMODE`` when there is one
+    (FT4 rather than MFSK), else the ``MODE``; ``state``, ``dxcc`` and
+    ``country`` are the QSO's own fields, empty when it has none.
+    """
+
+    qso_start: datetime | None
+    band: str
+    mode: str
+    state: str
+    dxcc: str
+    country: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -390,7 +407,7 @@ class LogStore:
         except errors.InsufficientPrivilege as error:
             raise NotAuthorizedError(error.diag.message_primary or str(error)) from error
         if row is None:
-            msg = f"{actor.operator} at {actor.station} is not signed in (Principle XIII)"
+            msg = f"{actor.operator} at {actor.station} is not signed in (Principle XXI)"
             raise NotAuthorizedError(msg)
         changeset_id: int = row[0]
         return changeset_id
@@ -1006,6 +1023,40 @@ class LogStore:
         ).fetchall()
         return tuple(_version(row) for row in rows)
 
+    def program_qsos(
+        self,
+        *,
+        sig: str,
+        station_call: str,
+        call: str,
+        day: date,
+        exclude: uuid.UUID | None = None,
+    ) -> tuple[QsoVersion, ...]:
+        """Current QSOs with ``call``, made as ``station_call`` for program ``sig`` on ``day``.
+
+        These are the QSOs a new one could be a dupe of under a program like
+        POTA: the program is the ADIF ``MY_SIG`` and the day that of the QSO's
+        UTC start. ``exclude`` leaves one QSO out (the one being edited).
+        Deleted QSOs never count.
+        """
+        rows = self._conn.execute(
+            f"""
+            SELECT {_VERSION_COLUMNS}
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            {_VERSION_JOINS}
+            WHERE NOT q.deleted
+              AND v.call = upper(btrim(%(call)s))
+              AND upper(btrim(log.field_value(v.fields, 'MY_SIG'))) = upper(btrim(%(sig)s))
+              AND (v.qso_start AT TIME ZONE 'UTC')::date = %(day)s
+              AND {_STATION_CALL} = upper(btrim(%(station)s))
+              AND (%(exclude)s::uuid IS NULL OR q.id <> %(exclude)s::uuid)
+            ORDER BY v.qso_start, q.entry_seq
+            """,  # noqa: S608 - constant fragments only; values are parameters
+            {"call": call, "sig": sig, "day": day, "station": station_call, "exclude": exclude},
+        ).fetchall()
+        return tuple(_version(row) for row in rows)
+
     def operation_qsos(self, operation_id: uuid.UUID) -> tuple[QsoVersion, ...]:
         """Every current QSO logged in the operation ``operation_id``, oldest first."""
         rows = self._conn.execute(
@@ -1021,6 +1072,36 @@ class LogStore:
             (str(operation_id),),
         ).fetchall()
         return tuple(_version(row) for row in rows)
+
+    def operator_qsos(self, operator: str) -> tuple[Worked, ...]:
+        """Every current QSO ``operator`` made, oldest first, for their personal stats.
+
+        A QSO is theirs as :class:`QsoFilter` says (its ``OPERATOR``, else
+        whoever entered the current version), whatever operation it was
+        logged in. Deleted QSOs and pretend ones (``APP_LOGLAB_PRETEND`` = Y)
+        are left out: they are not contacts.
+        """
+        rows = self._conn.execute(
+            """
+            SELECT v.qso_start, coalesce(v.band, ''),
+                   coalesce(nullif(upper(btrim(log.field_value(v.fields, 'SUBMODE'))), ''),
+                            v.mode, ''),
+                   coalesce(upper(btrim(log.field_value(v.fields, 'STATE'))), ''),
+                   coalesce(btrim(log.field_value(v.fields, 'DXCC')), ''),
+                   coalesce(upper(btrim(log.field_value(v.fields, 'COUNTRY'))), '')
+            FROM log.qso q
+            JOIN log.qso_version v ON v.qso_id = q.id AND v.version = q.current_version
+            JOIN log.changeset c ON c.id = v.changeset_id
+            JOIN log.operator o ON o.id = c.operator_id
+            WHERE NOT q.deleted
+              AND coalesce(upper(btrim(log.field_value(v.fields, 'APP_LOGLAB_PRETEND'))), '') <> 'Y'
+              AND upper(btrim(%s)) = upper(coalesce(
+                  nullif(btrim(log.field_value(v.fields, 'OPERATOR')), ''), o.callsign))
+            ORDER BY v.qso_start, q.entry_seq
+            """,
+            (operator,),
+        ).fetchall()
+        return tuple(Worked(*row) for row in rows)
 
     def field_counts(self, name: str, operation: uuid.UUID | None = None) -> dict[str, int]:
         """How many current QSOs carry each value of the ADIF field ``name``.

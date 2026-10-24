@@ -17,6 +17,8 @@
 }
 .stat-value { font-size: 22px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; }
 .stat-label { font-size: 12px; color: var(--muted); }
+.stat-tile.done { border-color: var(--ok); }
+.stat-tile.done .stat-value { color: var(--ok); }
 
 .stat-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px 20px; }
 .stat-panels h3 { margin: 0 0 6px; font-size: 13px; font-weight: 600; color: var(--muted); }
@@ -35,6 +37,19 @@
 .stat-table th:first-child, .stat-table td:first-child { text-align: left; }
 .stat-table th { font-size: 12px; color: var(--muted); font-weight: 600; }
 .stat-table tr.total td { border-top: 1px solid var(--glass-line); font-weight: 600; }
+
+/* Everyday: the states worked as chips, and a country list that scrolls. */
+.stat-chips { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.stat-chip {
+  padding: 1px 7px;
+  border-radius: 8px;
+  border: 1px solid var(--glass-line);
+  background: var(--field);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.stat-scroll { max-height: 220px; overflow-y: auto; }
 
 .onair-list { font-size: 14px; }
 .onair-list td:first-child, .onair-list th:first-child { width: 14px; padding-right: 4px; }

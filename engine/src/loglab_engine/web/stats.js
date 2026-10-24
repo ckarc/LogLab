@@ -4,7 +4,10 @@
 // The Operation stats box: how the whole group is doing in an operation like
 // Field Day. The Engine works out every number from the log (Principle I),
 // so every workstation shows the same ones (Principle II); this page only
-// draws them. Which stats show is set by the operation's overlay. Other
+// draws them. Which stats show is set by the operation's overlay. With no
+// operation picked (everyday logging) it shows the signed-in operator's own
+// stats instead: today, this week and year, bands and modes, states and
+// countries, the last two as the log names them, never guessed. Other
 // workstations' QSOs arrive by asking the Engine again every so often, over
 // the local network, while the box is on screen (Principle V).
 "use strict";
@@ -22,7 +25,8 @@
   // that opens them over the page (app.js, expander). The same elements are
   // kept across refreshes, so a refresh never opens or closes them.
   const inside = el("div", { className: "stat-more-body" });
-  const more = LogLab.expander({ id: "stats", box, part: inside, over: true, label: () => "Each hour, bands and modes, operators" });
+  let moreLabel = "Each hour, bands and modes, operators";
+  const more = LogLab.expander({ id: "stats", box, part: inside, over: true, label: () => moreLabel });
 
   const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const hhmm = (iso) => `${iso.slice(11, 13)}${iso.slice(14, 16)}Z`;
@@ -41,10 +45,37 @@
     return t;
   }
 
+  // Hours and minutes from now to the next 0000 UTC, when POTA's count starts over.
+  function untilMidnight(nowIso) {
+    const now = new Date(nowIso);
+    const next = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() + 1);
+    const minutes = Math.max(0, Math.floor((next - now.getTime()) / 60000));
+    return `${Math.floor(minutes / 60)}:${String(minutes % 60).padStart(2, "0")}`;
+  }
+
+  // Each park's QSOs today toward an activation, one tile for each station
+  // callsign and park; a club call worked by several operators is one tile.
+  function activationTiles(s, row) {
+    const today = s.now.slice(0, 10);
+    const now = s.activations.filter((a) => a.day === today);
+    for (const a of now) {
+      const t = tile(`${a.park} · ${a.station_call}${a.done ? " · activated ✓" : ""}`, `${a.qsos}/${a.goal}`,
+        `QSOs from ${a.park} as ${a.station_call} today (UTC), dupes left out${a.p2p ? `; ${plural(a.p2p, "park to park")}` : ""}`);
+      if (a.done) t.classList.add("done");
+      row.append(t);
+    }
+    if (!now.length && s.goal) row.append(tile("Toward an activation", `0/${s.goal}`, "No QSOs from a park yet today (UTC)"));
+    row.append(tile("Till 0000 UTC", untilMidnight(s.now), "When the UTC day ends, the count starts over"));
+  }
+
   function tiles(s) {
     const row = el("div", { className: "stat-tiles" });
     for (const id of s.show) {
-      if (id === "rate") {
+      if (id === "activation") {
+        activationTiles(s, row);
+      } else if (id === "p2p") {
+        row.append(tile("Park to park", s.p2p, "QSOs with a station in another park"));
+      } else if (id === "rate") {
         row.append(
           tile("QSOs", s.qsos, `${s.counted} counting`),
           tile("Last hour", s.last_hour, "QSOs made in the last 60 minutes"),
@@ -84,11 +115,20 @@
     return el("div", { className: "stat-wide" }, el("h3", { textContent: "QSOs each hour (UTC)" }), chart);
   }
 
+  // Bands from the longest wavelength down (160m before 20m before 2m before
+  // 70cm); anything else, like SAT, after them.
+  const UNIT = { m: 1, cm: 0.01, mm: 0.001 };
+  function metres(band) {
+    const m = /^(\d+(?:\.\d+)?)(mm|cm|m)$/i.exec(band);
+    return m ? Number(m[1]) * UNIT[m[2].toLowerCase()] : -1;
+  }
+  const byBand = (a, b) => metres(b) - metres(a) || a.localeCompare(b);
+
   // Bands down, mode groups across: what the Field Day summary sheet asks for.
   function bandMode(s) {
     if (!s.by_band_mode.length) return null;
     const modes = [...new Set(s.by_band_mode.map((b) => b.mode))].sort((a, b) => (GROUPS.indexOf(a) + 1 || 99) - (GROUPS.indexOf(b) + 1 || 99) || a.localeCompare(b));
-    const bands = [...new Set(s.by_band_mode.map((b) => b.band))];
+    const bands = [...new Set(s.by_band_mode.map((b) => b.band))].sort(byBand);
     const cell = new Map(s.by_band_mode.map((b) => [`${b.band} ${b.mode}`, b.qsos]));
     const table = el("table", { className: "stat-table" });
     table.append(el("thead", {}, el("tr", {}, el("th", { textContent: "Band" }), ...modes.map((m) => el("th", { textContent: m })), el("th", { textContent: "Total" }))));
@@ -116,6 +156,7 @@
   }
 
   function render(s) {
+    moreLabel = "Each hour, bands and modes, operators";
     $("#stats-scope").textContent = `${s.name} · updated ${hhmm(s.now)}`;
     const parts = [tiles(s)];
     const panels = el("div", { className: "stat-panels" });
@@ -131,24 +172,86 @@
     if (s.outside) notes.push(`${plural(s.outside, "QSO")} outside the operation's hours`);
     if (s.not_counted) notes.push(`${plural(s.not_counted, "QSO")} on a band or mode that doesn't count`);
     if (notes.length) parts.push(el("p", { className: "hint", textContent: `Not counted: ${notes.join(", ")}.` }));
+    const earlier = s.show.includes("activation") ? s.activations.filter((a) => a.day !== s.now.slice(0, 10)) : [];
+    if (earlier.length) {
+      const said = earlier.map((a) => `${a.day} ${a.park} as ${a.station_call}: ${a.qsos}${a.done ? " ✓" : `/${a.goal}`}`);
+      parts.push(el("p", { className: "hint", textContent: `Earlier UTC days: ${said.join("; ")}.` }));
+    }
     body.replaceChildren(...parts.filter(Boolean));
   }
 
+  // -- Everyday: the operator's own stats ---------------------------------
+
+  // A list of short names, like state codes, as small chips.
+  function chips(names, className = "") {
+    return el("div", { className: `stat-chips ${className}`.trim() }, ...names.map((n) => el("span", { className: "stat-chip", textContent: n })));
+  }
+
+  function states(p) {
+    const needed = p.states_needed;
+    const part = el("div", {}, el("h3", { textContent: `States worked: ${p.states.length} of ${p.states_total}` }));
+    if (p.states.length) part.append(chips(p.states));
+    if (p.states.length && needed.length && needed.length <= 25) part.append(el("p", { className: "hint", textContent: `Still needed: ${needed.join(" ")}` }));
+    if (!p.states.length) part.append(el("p", { className: "hint", textContent: "None yet: a QSO counts here once its State box names a US state." }));
+    return part;
+  }
+
+  function countries(p) {
+    const part = el("div", {}, el("h3", { textContent: `Countries worked: ${p.countries.length}` }));
+    if (p.countries.length) {
+      const table = el("table", { className: "stat-table" });
+      table.append(el("thead", {}, el("tr", {}, el("th", { textContent: "Country" }), el("th", { textContent: "QSOs" }))));
+      table.append(el("tbody", {}, ...p.countries.map((c) => el("tr", { title: c.dxcc === null ? "Not on the DXCC list: counted as the log names it" : `DXCC entity ${c.dxcc}` },
+        el("td", { textContent: c.name }), el("td", { textContent: String(c.qsos) })))));
+      part.append(el("div", { className: "table-wrap stat-scroll" }, table));
+    }
+    if (p.no_country) {
+      part.append(el("p", { className: "hint", textContent: `${plural(p.no_country, "QSO")} name no country, so they are not counted here. LabLog doesn't guess a country from the call.` }));
+    }
+    return part;
+  }
+
+  function renderPersonal(p) {
+    moreLabel = "Bands and modes, states, countries";
+    $("#stats-scope").textContent = `Everyday · ${p.operator} · updated ${hhmm(p.now)}`;
+    const row = el("div", { className: "stat-tiles" },
+      tile("Today", p.today, "Your QSOs since 0000Z today"),
+      tile("This week", p.week, "Your QSOs since 0000Z Monday"),
+      tile("This year", p.year, "Your QSOs since 0000Z on 1 January"),
+      tile("All time", p.total, p.last_qso ? `Every QSO you made; the latest at ${p.last_qso.slice(0, 10)} ${hhmm(p.last_qso)}` : "Every QSO you made"),
+      tile("States", `${p.states.length}/${p.states_total}`, "US states worked, from each QSO's State as logged"),
+      tile("Countries", p.countries.length, "Countries worked, from each QSO's DXCC entity or Country as logged"),
+    );
+    const parts = [row];
+    if (!p.total) parts.push(el("p", { className: "hint", textContent: "Your stats start with your first QSO." }));
+    const panels = el("div", { className: "stat-panels" });
+    const table = bandMode({ by_band_mode: p.by_band_mode, by_mode: p.by_band_mode.reduce((m, b) => ({ ...m, [b.mode]: (m[b.mode] || 0) + b.qsos }), {}) });
+    if (table) panels.append(table);
+    if (p.total) panels.append(states(p), countries(p));
+    if (panels.children.length) {
+      inside.replaceChildren(panels);
+      parts.push(more.outer);
+    }
+    body.replaceChildren(...parts);
+  }
+
   async function refresh() {
-    const op = LogLab.session() && LogLab.layout().operation;
-    $("#stats-none").hidden = Boolean(op);
-    body.hidden = !op;
-    if (!op) {
+    const signedIn = Boolean(LogLab.session());
+    const op = signedIn && LogLab.layout().operation;
+    $("#stats-none").hidden = signedIn;
+    body.hidden = !signedIn;
+    if (!signedIn) {
       $("#stats-scope").textContent = "";
       $("#stats-error").textContent = "";
       return;
     }
     if (!shown() || asking) return;
-    asking = LogLab.api("GET", `/operations/${op.id}/stats`);
+    asking = LogLab.api("GET", op ? `/operations/${op.id}/stats` : "/stats/personal");
     try {
       const s = await asking;
-      if (LogLab.layout().operation?.id !== op.id) return; // moved to another operation while asking
-      render(s);
+      if ((LogLab.layout().operation?.id || null) !== (op ? op.id : null)) return; // moved to another operation while asking
+      if (op) render(s);
+      else renderPersonal(s);
       $("#stats-error").textContent = "";
     } catch (e) {
       $("#stats-error").textContent = `The stats could not be updated: ${e.message}`;

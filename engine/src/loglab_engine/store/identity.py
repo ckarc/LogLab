@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Operators, their permissions, and signing in (Principle XIII).
+"""Operators, their permissions, and signing in (Principle XXI).
 
 Operators are local accounts held by the Engine; signing in needs no internet
 connection (Principle V). An operator signs in at a station with their callsign

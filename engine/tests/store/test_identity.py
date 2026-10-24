@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LogLab contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Operators and sign-in: identified, authorized, and enforced by the database (XIII, XVIII)."""
+"""Operators and sign-in: identified, authorized, and enforced by the database (XXI, XVIII)."""
 
 from __future__ import annotations
 
@@ -184,7 +184,7 @@ def test_logging_never_grants_radio_control_or_administration(
     identity: IdentityStore,
     visitor: Actor,
 ) -> None:
-    """Each permission is granted on its own (Principle XIII); there is no transmit grant yet."""
+    """Each permission is granted on its own (Principle XXI)."""
     assert identity.may(visitor, Permission.LOG)
     assert identity.may(visitor, Permission.VIEW)
     assert not identity.may(visitor, Permission.RADIO)
