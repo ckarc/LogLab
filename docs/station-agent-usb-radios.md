@@ -3,9 +3,9 @@
 
 # Station Agent: USB Radios and Virtual Radios
 
-**Status: design draft.** Nothing here is built yet. The decisions marked
-**Decision needed** are the maintainer's to make (Principle XIX); until then,
-they are proposals.
+**Status: design draft.** Nothing here is built yet. Decisions the
+maintainer has made are recorded where they apply; the two still open are
+marked **Decision needed** (Principle XIX).
 
 This document plans how the Station Agent takes over radios connected to a
 workstation by USB (the Icom IC-7300 and IC-9700, the Yaesu FTDX10 and the
@@ -31,7 +31,7 @@ it finds the radio, opens it once, and hands every program a ready-made
 The Agent ([station-agent.md](station-agent.md)) reads a radio and reports it
 to the Engine. It reaches radios three ways: Hamlib's `rigctld` (started by the
 Agent as its own child program), a FlexRadio's network API, and a built-in
-pretend radio. It never tunes a radio and never transmits (Principle XI). It
+pretend radio. It never tunes a radio and never transmits. It
 also hears WSJT-X log QSOs and logs them in LabLog.
 
 This plan keeps all of that and adds to it.
@@ -177,26 +177,17 @@ and the Agent keeps its own copy so this works with no connection to the
 Engine (Principle V). Files are written in full and renamed into place
 (Principle XIV).
 
-**Decision needed: restoring settings.** Principle X says "the Agent never
-writes a remembered value back over the radio's current one." Restoring the
-as-received record does exactly that, even when the operator asks for it. The
-options:
-
-- **(a) Amend Principle X** to allow one exception: an operator's explicit,
-  confirmed request to restore a radio's recorded settings, recorded like any
-  other change. *Recommended*: the restore is the operator's deliberate
-  action, not the Agent trusting a stale copy over the radio, which is what X
-  exists to prevent.
-- **(b) Keep the record only.** The Agent documents the radio; restoring is
-  done by hand from the printed report.
-
-Until this is decided, the plan builds the record and not the restore.
+**Restoring settings.** An operator can ask the Agent to put a radio's
+recorded settings back. The Agent restores only on that explicit request,
+only after the operator confirms it, and records the restore like any other
+change it makes to a radio. It never restores on its own. (Principle X,
+amended in constitution 3.0.0.)
 
 ## Virtual radios (personalities)
 
 | Personality | What it is | Who uses it |
 | --- | --- | --- |
-| rigctld server | Hamlib's documented network protocol, on `127.0.0.1` only (Principle XIII) | WSJT-X, VarAC, fldigi, JS8Call, LabLog |
+| rigctld server | Hamlib's documented network protocol, on `127.0.0.1` only | WSJT-X, VarAC, fldigi, JS8Call, LabLog |
 | CAT over TCP | A text command set many loggers understand, on `127.0.0.1` | N1MM Logger+ |
 | Virtual COM port | The same command set, on a virtual serial port | Winlink Express, N3FJP if its API is not enough, older programs |
 | N3FJP API client | The Agent calls N3FJP's own documented TCP API to tell it the frequency and mode; N3FJP's rig setting is "None" | N3FJP |
@@ -224,40 +215,60 @@ offers what these programs actually use: frequency, mode, split, VFO, and
 PTT. Maker-specific extras (scope data, filter shapes) are available only
 through the Agent's own API.
 
-**Decision needed: whose command set the CAT personality speaks.** N1MM and
-Winlink both understand the Kenwood command set (the TS-2000's, which Kenwood
-publishes). Principle IV asks for "open, documented formats and protocols
-... not by imitating another product." The Kenwood command set is published
-and widely used as a common language between programs and radios, which reads
-as an open protocol; but the personality would answer to programs as if it
-were a Kenwood radio. *Recommended*: allow it, implemented only from Kenwood's
-published command reference, and say plainly in the user guide that the
-virtual radio speaks Kenwood's command set.
+**The CAT personality speaks Kenwood's command set** (the TS-2000's, which
+Kenwood publishes), because N1MM and Winlink both understand it. It is built
+only from Kenwood's published command reference, and the user guide says
+plainly that the virtual radio speaks Kenwood's command set. (Principle IV,
+amended in constitution 3.0.0: a maker's published command set is an open
+protocol.)
 
-## Transmitting
+## Who controls a radio
 
-Principle XI: nothing transmits unless an operator holding transmit
-authorization for that radio deliberately caused it. With programs keying the
-radio through the Agent, that means:
+LabLog is a logging application; it never tunes or transmits. Control of a
+radio belongs to the computer it is connected to, and the person at that
+computer decides which program controls it, in the Agent's tray program.
 
-- **A program may only transmit if an operator granted it.** When an operator
-  signs in at a station, they choose which programs may transmit on which
-  radio, for that session ("WSJT-X may transmit on the IC-7300"). A program
-  without a grant can tune but not key; its PTT requests are refused and the
-  refusal is shown. A grant ends when the operator signs out.
-- **One transmitter, one program at a time.** While one program holds PTT,
-  another program's PTT request is refused, not queued. Pressing the mic's PTT
-  on the radio itself always wins; the Agent sees it from the radio's state
-  and refuses program PTT until it is released.
-- **Fails closed.** If the program that keyed disconnects, the Agent unkeys.
-  If the Agent's own transmit watchdog sees PTT held longer than the limit set
-  for the radio, it unkeys and reports why. If the Agent loses the radio
-  mid-transmission, it reports the radio as possibly keyed and tells the
-  operator to check it. The radio's own transmit time-out timer is the last
-  line of defense, and the setup report recommends turning it on.
+- **The tray lists each radio and the programs that can use it.** WSJT-X,
+  VarAC, Winlink Express, N3FJP, N1MM Logger+ and so on. VARA is not listed:
+  it never tunes a radio, and its client keys for it, so checking VarAC or
+  Winlink Express also sends VARA's transmit audio to that radio.
+- **One check per radio.** The checked program has full control of that
+  radio: frequency, mode, split, VFO and PTT. Checking another program moves
+  control to it, and the Agent unkeys the radio first if it is transmitting.
+- **Nothing is checked to begin with.** Until someone checks a program,
+  nothing can tune or key the radio.
+- **Unchecked programs are read-only.** They see the frequency and mode and
+  hear receive audio, so they log correctly, but the Agent refuses every
+  command from them that would change the radio, and their transmit audio
+  never reaches it.
+- **The radio's own PTT always wins.** Pressing the microphone's PTT on the
+  radio overrides the program; the Agent sees it from the radio's state and
+  refuses program PTT until it is released.
+- **The network only reads.** Programs on other computers, LabLog included,
+  can read a radio's state from the Agent. Nothing on the network can tune or
+  key a radio.
 
-Every transmit path stays in the Agent (Principles IX and XI), and every one
-of them has tests (Principle XVII).
+**How the Agent knows which program is which.** A program connecting to a
+virtual radio does not say its name. So each program gets its own connection:
+its own rigctld port, virtual COM port, and virtual sound device. The tray's
+list is a list of those connections, each named for its program, and the
+"set up this program" button writes that program's connection into its
+settings.
+
+**Failing safe.** When anything goes wrong, the result is not transmitting:
+
+- If the checked program disconnects while keyed, the Agent unkeys.
+- If the Agent's transmit watchdog sees PTT held longer than the limit set for
+  the radio, it unkeys and reports why.
+- The Agent never keys a radio on its own: not on a timer, not as a retry, not
+  after a reconnect.
+- If the Agent loses the radio mid-transmission, it reports the radio as
+  possibly keyed and tells the operator to check it. The radio's own transmit
+  time-out timer is the last line of defense, and the setup report recommends
+  turning it on.
+
+Every transmit path is in the Agent (Principle IX), and every one has tests
+(Principle XVII).
 
 ## Audio
 
@@ -276,10 +287,14 @@ devices, and the Agent moves audio between them and the radio.
 
 ## Windows specifics
 
-- **Runs as a service plus a tray program.** The service starts at boot, owns
-  the radios, and keeps running when nobody is signed in to Windows. The small
-  tray program shows status and asks the operator the questions above (approve
-  a setting change, grant transmit).
+- **How it runs. Decision needed.** The person at the computer works with the
+  Agent through its tray program. The open question is whether the tray
+  program *is* the Agent, starting when someone signs in to Windows, or the
+  face of a background service that starts when the computer does. A service
+  keeps owning the radio, and keeps the WSJT-X logging journal running, when
+  nobody is signed in to Windows, for example after a power blip restarts the
+  computer; a tray-only Agent stops at sign-out. *Recommended*: a service with
+  the tray program as its face.
 - **Drivers.** Windows only loads signed drivers. A virtual COM port and a
   virtual sound device both need one. **Decision needed**: for the first
   versions, use existing signed drivers (VB-Audio's virtual cable for sound, a
@@ -329,8 +344,8 @@ definition and the model for the rest.
 
 Everything here works on a station network with no internet (Principle V):
 finding radios, virtual radios, the settings record (kept locally and sent to
-the Engine when it is reachable), and transmit grants (made through the
-Engine on the local network).
+the Engine when it is reachable), and choosing which program controls a radio
+(done in the tray program on the computer itself, with no network at all).
 
 ## Order of work
 
@@ -346,8 +361,9 @@ Each step is its own pull request, with tests and a demonstration
 4. **Settings record** on first connect.
 5. **rigctld personality** on `127.0.0.1`: WSJT-X connects to the Agent
    instead of to the radio. Tuning first, no transmit.
-6. **Transmit grants and the PTT path**, with the watchdog and refusal tests.
-   WSJT-X transmits through the Agent.
+6. **The tray program and the PTT path**: the one-check-per-radio control,
+   read-only unchecked programs, the watchdog, and refusal tests. WSJT-X
+   transmits through the Agent.
 7. **Audio**: the Agent owns the radio's sound device; WSJT-X uses a virtual
    one.
 8. **VARA with Winlink Express and VarAC**: the virtual COM port and the
@@ -356,12 +372,12 @@ Each step is its own pull request, with tests and a demonstration
 10. **IC-9700 and FTDX10** definitions (the FTDX10 adds the Yaesu CAT driver).
 11. **N1MM Logger+** through the CAT-over-TCP personality.
 
-## Decisions needed
+## Decisions
 
-| # | Question | Recommended |
+| # | Question | Status |
 | --- | --- | --- |
-| 1 | Restore a radio's recorded settings: amend Principle X, or keep the record only? | Amend X for an explicit, confirmed, recorded operator restore |
-| 2 | May the CAT personality speak Kenwood's published command set (Principle IV)? | Yes, from Kenwood's published reference only |
-| 3 | Transmit grants per program, per radio, per session, as described above? | Yes |
-| 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | Existing first |
-| 5 | Service plus tray program on Windows? | Yes |
+| 1 | Restore a radio's recorded settings? | **Decided**: yes, on the operator's explicit, confirmed request (Principle X, constitution 3.0.0) |
+| 2 | May the CAT personality speak Kenwood's published command set? | **Decided**: yes (Principle IV, constitution 3.0.0) |
+| 3 | Who decides which program may control and key a radio? | **Decided**: the person at the computer, one checked program per radio in the tray |
+| 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | Open. Recommended: existing first |
+| 5 | Tray program only, or a service with the tray program as its face? | Open. Recommended: service plus tray |
