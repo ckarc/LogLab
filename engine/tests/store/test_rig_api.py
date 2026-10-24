@@ -123,6 +123,17 @@ def test_a_flexradio_reports_through_its_api(
     assert (radio["band"], radio["transmitting"], radio["vfo"]) == ("20m", True, "Slice A")
 
 
+def test_an_icom_radio_reports_through_the_agents_own_ci_v_driver(
+    client: TestClient, agent: dict[str, str], k9ksu: dict[str, str]
+) -> None:
+    """A radio the Agent reads over CI-V itself shows like any other radio (Principle IX)."""
+    civ = {**IC7300, "path": {"kind": "civ"}, "mode": "DATA-USB", "passband_hz": None}
+    response = client.put("/api/v1/agent/rig", headers=agent, json=_report(civ))
+    assert response.status_code == 204, response.text
+    radio = client.get("/api/v1/rig", headers=k9ksu).json()["radio"]
+    assert (radio["model"], radio["path"]) == ("IC-7300", "Icom CI-V")
+
+
 def test_a_radio_the_agent_cannot_read_says_why(
     client: TestClient, agent: dict[str, str], k9ksu: dict[str, str]
 ) -> None:

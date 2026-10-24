@@ -306,6 +306,29 @@ impl std::error::Error for DefinitionError {}
 // Loading.
 // ---------------------------------------------------------------------------
 
+/// The definition files built into the Agent, by their path under `rigs/`.
+/// The Agent is one executable with nothing to install beside it, so the
+/// definitions travel inside it; a test fails if a file in `rigs/` is
+/// missing here.
+const BUILT_IN: [(&str, &str); 1] = [(
+    "icom/ic-7300.toml",
+    include_str!("../rigs/icom/ic-7300.toml"),
+)];
+
+/// Every definition built into the Agent.
+///
+/// # Errors
+///
+/// A built-in definition failed its checks, which the Agent's tests rule out.
+pub fn built_in() -> Result<Vec<Definition>, String> {
+    BUILT_IN
+        .iter()
+        .map(|(path, text)| {
+            parse(text).map_err(|problems| format!("built-in {path}: {}", problems.join("; ")))
+        })
+        .collect()
+}
+
 /// Read and check one definition file.
 ///
 /// # Errors
@@ -827,7 +850,7 @@ fn bytes(text: &str) -> Result<Vec<u8>, String> {
 mod tests {
     use std::path::Path;
 
-    use super::{DATA_MODES, VOICE_MODES, bytes, load, load_dir, parse};
+    use super::{BUILT_IN, DATA_MODES, VOICE_MODES, built_in, bytes, load, load_dir, parse};
     use crate::rig::Mode;
 
     /// The smallest file that passes every check.
@@ -925,6 +948,26 @@ explain = "Data mode audio must come from USB."
             .filter_map(|(_, result)| result.as_ref().err().map(ToString::to_string))
             .collect();
         assert!(failures.is_empty(), "\n{}", failures.join("\n"));
+    }
+
+    #[test]
+    fn every_file_in_rigs_is_built_in() {
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("rigs");
+        let files: Vec<String> = load_dir(&dir)
+            .unwrap_or_else(|error| unreachable!("{error}"))
+            .into_iter()
+            .filter_map(|(path, _)| {
+                path.strip_prefix(&dir)
+                    .ok()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+            })
+            .collect();
+        let built: Vec<&str> = BUILT_IN.iter().map(|(path, _)| *path).collect();
+        assert_eq!(
+            files, built,
+            "add each file in rigs/ to BUILT_IN in rigdef.rs"
+        );
+        assert_eq!(built_in().map(|d| d.len()), Ok(BUILT_IN.len()));
     }
 
     #[test]
