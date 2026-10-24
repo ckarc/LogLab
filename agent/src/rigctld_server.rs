@@ -32,6 +32,7 @@ use std::fmt::Write as _;
 use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -91,6 +92,27 @@ pub trait Source: Send + Sync {
         let _ = tuning;
         Err("tuning isn't allowed here".to_owned())
     }
+
+    /// Something worth telling the person at the computer: a program came
+    /// or went, or asked for a change and what became of it.
+    fn note(&self, event: &str) {
+        let _ = event;
+    }
+}
+
+/// A change request in plain words.
+#[must_use]
+pub fn describe(tuning: Tuning) -> String {
+    let mhz = |hz: u64| format!("{}.{:06} MHz", hz / 1_000_000, hz % 1_000_000);
+    match tuning {
+        Tuning::Frequency(hz) => format!("tune to {}", mhz(hz)),
+        Tuning::OtherFrequency(hz) => format!("set the other VFO to {}", mhz(hz)),
+        Tuning::Mode(mode) => format!("change mode to {}", hamlib_mode(Some(mode))),
+        Tuning::Select(Vfo::A) => "select VFO A".to_owned(),
+        Tuning::Select(Vfo::B) => "select VFO B".to_owned(),
+        Tuning::Split(true) => "turn split on".to_owned(),
+        Tuning::Split(false) => "turn split off".to_owned(),
+    }
 }
 
 /// The radio a [`Shared`] holds: one that can only be read, or one programs
@@ -107,6 +129,7 @@ pub struct Shared {
     radio: Mutex<Held>,
     identity: RadioIdentity,
     last: Mutex<Option<(Instant, Reading)>>,
+    notes: Mutex<Option<Sender<String>>>,
 }
 
 impl Shared {
@@ -118,7 +141,18 @@ impl Shared {
             radio: Mutex::new(Held::Read(radio)),
             identity,
             last: Mutex::new(None),
+            notes: Mutex::new(None),
         }
+    }
+
+    /// Sends what happens (programs coming and going, the changes they ask
+    /// for) to `notes`, for the person at the computer.
+    #[must_use]
+    pub fn with_notes(self, notes: Sender<String>) -> Self {
+        if let Ok(mut slot) = self.notes.lock() {
+            *slot = Some(notes);
+        }
+        self
     }
 
     /// Shares `radio`, and lets programs tune it (but never transmit).
@@ -129,6 +163,7 @@ impl Shared {
             radio: Mutex::new(Held::Tune(radio)),
             identity,
             last: Mutex::new(None),
+            notes: Mutex::new(None),
         }
     }
 }
@@ -168,20 +203,34 @@ impl Source for Shared {
     }
 
     fn tune(&self, tuning: Tuning) -> Result<(), String> {
-        let mut radio = self
+        let mut held = self
             .radio
             .lock()
             .map_err(|_| "the radio is unavailable".to_owned())?;
-        let Held::Tune(radio) = &mut *radio else {
+        let Held::Tune(radio) = &mut *held else {
             return Err("tuning isn't allowed here".to_owned());
         };
         let done = radio.tune(tuning).map_err(|error| error.to_string());
+        // Let go of the radio before telling anyone.
+        drop(held);
         // Whatever happened, the next reading comes from the radio, which is
         // the truth about what changed (Principle X).
         if let Ok(mut last) = self.last.lock() {
             *last = None;
         }
+        self.note(&match &done {
+            Ok(()) => format!("asked to {}: done", describe(tuning)),
+            Err(why) => format!("asked to {}: the radio refused ({why})", describe(tuning)),
+        });
         done
+    }
+
+    fn note(&self, event: &str) {
+        if let Ok(notes) = self.notes.lock()
+            && let Some(notes) = notes.as_ref()
+        {
+            let _ = notes.send(event.to_owned());
+        }
     }
 }
 
@@ -250,11 +299,13 @@ fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBoo
                     continue;
                 }
                 clients.fetch_add(1, Ordering::SeqCst);
+                source.note(&format!("a program connected ({peer})"));
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
                     let _ = serve(stream, source.as_ref(), &stop);
                     clients.fetch_sub(1, Ordering::SeqCst);
+                    source.note(&format!("a program disconnected ({peer})"));
                 });
             }
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => thread::sleep(TICK),
@@ -368,11 +419,21 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
         "\\dump_state" => Get::DumpState,
         "1" | "\\dump_caps" => Get::DumpCaps,
         // Transmitting is refused, always, whatever else is allowed.
-        "T" | "\\set_ptt" => return Reply::Text(result(extended, word, RPRT_REJECTED)),
+        "T" | "\\set_ptt" => {
+            source.note("asked to transmit: refused (the Agent doesn't transmit yet)");
+            return Reply::Text(result(extended, word, RPRT_REJECTED));
+        }
         _ if source.can_tune() && tuning_command(word) => {
             return Reply::Text(tune(word, command, extended, source));
         }
-        _ if changes_something(word) => return Reply::Text(result(extended, word, RPRT_REJECTED)),
+        _ if changes_something(word) => {
+            source.note(&if source.can_tune() {
+                format!("asked {command:?}: refused (not something the Agent changes)")
+            } else {
+                format!("asked {command:?}: refused (read-only)")
+            });
+            return Reply::Text(result(extended, word, RPRT_REJECTED));
+        }
         _ => return Reply::Text(result(extended, word, RPRT_NOT_AVAILABLE)),
     };
     Reply::Text(answer(get, extended, source))
@@ -730,6 +791,38 @@ mod tests {
         assert_eq!(say(&radio, "f"), "14074000\n", "and nothing moved");
         // Other changes it doesn't make are still refused.
         assert_eq!(say(&radio, "L RFPOWER 0.5"), "RPRT -9\n");
+    }
+
+    #[test]
+    fn tells_the_person_at_the_computer_what_programs_asked() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let (notes, heard) = std::sync::mpsc::channel();
+        let radio: Arc<dyn Source> =
+            Arc::new(Shared::with_tuning(Box::new(radio)).with_notes(notes));
+        say(&radio, "f");
+        say(&radio, "F 7074000");
+        say(&radio, "F 80000000");
+        say(&radio, "T 1");
+        say(&radio, "L RFPOWER 0.5");
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert_eq!(
+            heard.len(),
+            4,
+            "questions aren't noted, changes are: {heard:?}"
+        );
+        assert_eq!(heard[0], "asked to tune to 7.074000 MHz: done");
+        assert!(
+            heard[1].starts_with("asked to tune to 80.000000 MHz: the radio refused"),
+            "{heard:?}"
+        );
+        assert_eq!(
+            heard[2],
+            "asked to transmit: refused (the Agent doesn't transmit yet)"
+        );
+        assert!(heard[3].contains("L RFPOWER 0.5"), "{heard:?}");
     }
 
     #[test]
