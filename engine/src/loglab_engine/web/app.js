@@ -2511,12 +2511,15 @@
     return fields;
   }
 
-  async function change(method, path, body) {
+  // A change shows the QSO again as it now stands, or, with `close`, closes
+  // the window once the Engine has it.
+  async function change(method, path, body, { close = false } = {}) {
     setError("#edit", "");
     try {
       const result = await api(method, path, body);
       await loadLog();
-      await openDetail(result.qso.id);
+      if (close) closeDetail();
+      else await openDetail(result.qso.id);
     } catch (e) {
       setError("#edit", e.status === 409 ? `${e.message} The latest version is shown now.` : e.message);
       if (e.status === 409 && current) await openDetail(current.id);
@@ -2672,7 +2675,7 @@
     });
     $("#delete").addEventListener("click", () => {
       if (current && confirm("Delete this QSO? It is kept in the history and can be restored.")) {
-        change("POST", `/qsos/${current.id}/delete`, { note: note() });
+        change("POST", `/qsos/${current.id}/delete`, { note: note() }, { close: true }); // done with it
       }
     });
     $("#restore").addEventListener("click", () => {
