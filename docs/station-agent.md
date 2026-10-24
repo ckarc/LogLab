@@ -155,9 +155,15 @@ How it behaves:
   WSJT-X, use `--allow-tuning`, which for now works only with
   `--civ-pretend`. Real radios stay read-only until the tray program decides
   which program controls each radio.
-- **Never transmits.** Every PTT request is refused, tuning allowed or not.
+- **Never transmits.** Every request to transmit is refused, tuning allowed
+  or not. A request to **stop** transmitting (`T 0`, which WSJT-X sends
+  whenever it closes its connection) is always honored, never refused.
   In WSJT-X set **PTT Method** to `VOX`, **Mode** to `None` and **Split
   Operation** to `None` until transmitting through the Agent exists.
+- **A band the radio doesn't have** (2 m or 70 cm on an IC-7300) is refused
+  by the radio itself. WSJT-X then shows "Rig Control Error" and reconnects,
+  as it does with any radio. Delete those bands from WSJT-X's Settings >
+  Frequencies for this radio's configuration.
 - **This computer only.** The protocol has no sign-in, so the Agent listens
   only on `127.0.0.1` and refuses connections from anywhere else
   (Principle XXI).
