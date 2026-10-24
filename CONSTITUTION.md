@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 3.0.0                                                                                  |
+| **Version**    | 4.0.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -415,6 +415,46 @@ nobody can tell them apart afterward: not the operator, not a contest
 adjudicator, not a confirmation service. Decoding more weak signals is only
 worth something if every decode can be trusted to be what it says it is.*
 
+### XXI. The Log Knows Who Is Asking
+
+Every request to the Engine is made by an identified operator at an identified
+station. Anonymous requests are refused, except the small set needed to sign
+in and to discover the system on the local network.
+
+Permissions are explicit and separated by kind:
+
+- **Viewing** the log and the event stream.
+- **Logging**: entering and editing QSOs.
+- **Administration**: managing operators, stations, templates, and reference
+  data.
+
+Being able to log never by itself grants administration. An operator's own
+credentials (an online callbook login, a LoTW certificate, a logbook key)
+belong to that operator: only they, signed in, can use, change, or remove
+them.
+
+Identity works offline (Principle V). Operators are local accounts held by the
+Engine; signing in needs no internet connection and no outside identity
+provider, and is quick enough for a visiting operator to join a Field Day
+position in under a minute.
+
+A Station Agent proves which station it is with a key an administrator
+approved. Protocols that carry no sign-in of their own (the WSJT-X UDP
+protocol and the Hamlib `rigctld` protocol, for example) are accepted only
+from the computer they run on, unless an administrator explicitly opens one to
+named hosts.
+
+This principle is about the log. It grants nothing about controlling a radio:
+which program controls a radio is decided at the computer the radio is
+connected to.
+
+*Why this is inviolable: the log promises to record who did what (Principle
+VII), and that promise means nothing if the system can't tell who is asking.
+At Field Day the network is full of laptops the station owner doesn't
+control; a visitor must be able to log in a minute, and must never be able to
+read another operator's credentials, change the club's templates, or edit the
+log without signing in.*
+
 ---
 
 ## Technology Constraints
@@ -566,6 +606,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 2.0.1   | 2026-10-19 | Renamed the software LabLog wherever people read its name. The repository, code and database keep the name loglab. Wording only; no principle changed. Decided by the maintainer. |
 | 2.1.0   | 2026-10-23 | Narrowed Principle VII: an administrator may erase the pretend QSOs of a practice operation entirely, and the erasure itself is recorded; every other QSO keeps its full history. Situation: demo mode fills the boxes with pretend QSOs, using real calls marked pretend, to show LabLog to people. Keeping every one of them forever as deleted versions would fill the log's history with contacts that never happened, mixed in with the real ones, which is a worse outcome than erasing what was never a contact. Decided by the maintainer. |
 | 3.0.0   | 2026-10-24 | Repealed Principle XI (The Operator Keys The Transmitter) and Principle XIII (Every Action Has An Identified, Authorized Operator); their numbers are kept so no principle is renumbered. Principle VII now names the operator who made a change directly instead of citing XIII; Principle IX no longer cites XI. Narrowed Principle X: the Agent may record a radio's settings on first connect and restore them on an operator's explicit, confirmed request, recorded like any other change. Widened Principle IV: a radio maker's published command set is an open protocol the Agent may speak through a virtual radio. Situation: LabLog is now purely a logging application with no built-in operating modes. Transmitting is done by programs such as WSJT-X, VarAC and Winlink Express, which reach the radio through the Station Agent; the person at the computer chooses in the Agent which program controls each radio. Requiring LabLog operator accounts to authorize transmitting would put a logger between operators and their own stations, and would leave those programs unable to key a radio at a workstation where nobody has signed in to LabLog, a worse outcome than leaving that choice at the computer. Restoring recorded settings lets a visitor's radio go home set up the way it arrived, which Principle X as written forbade. Programs such as Winlink Express and N1MM Logger+ can only reach a radio through a maker's command set, so without the Principle IV clause they could not share a radio through the Agent at all. Decided by the maintainer. |
+| 4.0.0   | 2026-10-24 | Added Principle XXI (The Log Knows Who Is Asking): every Engine request is made by an identified operator at an identified station; viewing, logging and administration are separate permissions; an operator's own credentials are theirs alone; sign-in works offline; a Station Agent proves its station with an approved key; protocols with no sign-in are accepted only from their own computer. It grants nothing about controlling a radio. Added at the end so no principle is renumbered. Situation: repealing Principle XIII in 3.0.0 removed the radio permissions it held, as intended, but also left the Engine's sign-in, its separate permissions, and each operator's private credentials with no principle behind them; without one, a change could let anyone on a Field Day network read or edit the log, or use another operator's LoTW certificate, with no rule to stop it. Decided by the maintainer. |
 
 ---
 
