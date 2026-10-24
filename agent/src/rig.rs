@@ -72,6 +72,8 @@ pub enum ControlPath {
     },
     /// Over the network, through a FlexRadio's own API.
     Flex,
+    /// Over a serial port, in Icom's CI-V protocol, by the Agent's own driver.
+    Civ,
     /// The Agent's built-in pretend radio, for trying LogLab without one.
     Pretend,
 }

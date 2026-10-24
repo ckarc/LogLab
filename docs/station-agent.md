@@ -25,6 +25,13 @@ This version only reads the radio. It never tunes it and never transmits.
   transmits) and names it, such as "Slice A". SmartSDR's radio chooser shows
   the radio's IP address; giving the radio a fixed address on the network
   keeps the Agent's command line right.
+- **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
+  each speed its rig definitions list, asks each known radio "who are you?"
+  (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
+  and whether it is transmitting. It is not yet connected to a serial port:
+  `--civ-pretend` runs it against a pretend IC-7300, and the serial port comes
+  once there is a radio to test it on. LabLog shows the connection as
+  "Icom CI-V".
 - **The pretend radio.** Built in, for trying LabLog with no radio. It visits
   a few spots on the bands and "transmits" for a few seconds at each.
 

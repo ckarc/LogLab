@@ -16,6 +16,7 @@
 mod civ;
 mod civ_demo;
 mod civ_pretend;
+mod civ_radio;
 mod engine;
 mod flex;
 mod hamlib;
@@ -36,6 +37,8 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use civ_pretend::PretendCiv;
+use civ_radio::{CivRadio, PretendPort};
 use engine::{Handed, RadioReport, Report, SendError, Uplink};
 use flex::FlexRadio;
 use hamlib::{HamlibRadio, Launch, Source};
@@ -67,6 +70,9 @@ Usage:
 
 RADIO is one of:
   --pretend                            the built-in pretend radio
+  --civ-pretend                        the Agent's own CI-V driver, talking
+                                       to a pretend IC-7300 (no real radio
+                                       yet: the serial port comes later)
   --hamlib-model N --device PORT [--baud N] [--rigctld-program PATH]
                                        start Hamlib's rigctld for a radio
                                        (3073 is the Icom IC-7300)
@@ -97,6 +103,7 @@ fn banner() -> String {
 #[derive(Debug, PartialEq, Eq)]
 enum RadioChoice {
     Pretend,
+    CivPretend,
     Hamlib(HamlibChoice),
     Flex(String),
 }
@@ -136,6 +143,7 @@ struct Options {
     key_file: Option<String>,
     station: Option<String>,
     pretend: bool,
+    civ_pretend: bool,
     model: Option<u32>,
     device: Option<String>,
     baud: Option<u32>,
@@ -177,6 +185,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
     while let Some(flag) = words.next() {
         if flag == "--pretend" {
             options.pretend = true;
+            continue;
+        }
+        if flag == "--civ-pretend" {
+            options.civ_pretend = true;
             continue;
         }
         let value = words
@@ -241,12 +253,22 @@ fn parse(args: &[String]) -> Result<Command, String> {
 
 fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     let hamlib = options.model.is_some() || options.device.is_some() || options.rigctld.is_some();
-    let chosen = [options.pretend, hamlib, options.flex.is_some()];
+    let chosen = [
+        options.pretend,
+        options.civ_pretend,
+        hamlib,
+        options.flex.is_some(),
+    ];
     if chosen.iter().filter(|c| **c).count() > 1 {
-        return Err("choose one radio: --pretend, a Hamlib radio, or --flex".to_owned());
+        return Err(
+            "choose one radio: --pretend, --civ-pretend, a Hamlib radio, or --flex".to_owned(),
+        );
     }
     if options.pretend {
         return Ok(RadioChoice::Pretend);
+    }
+    if options.civ_pretend {
+        return Ok(RadioChoice::CivPretend);
     }
     if let Some(address) = options.flex.take() {
         return Ok(RadioChoice::Flex(address));
@@ -272,9 +294,22 @@ fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     }
 }
 
+/// The CI-V driver, finding a pretend IC-7300 that listens at 19200 baud,
+/// so the speed search has to work to find it.
+fn civ_pretend_radio() -> Result<CivRadio<PretendPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let ic_7300 = definitions
+        .iter()
+        .find(|d| d.model == "IC-7300")
+        .ok_or_else(|| rig::RadioError("the IC-7300 definition is not built in".to_owned()))?;
+    let port = PretendPort::new(PretendCiv::new(ic_7300), 19_200);
+    CivRadio::find(port, &definitions)
+}
+
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
+        RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
         RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
             Box::new(HamlibRadio::open(&Source::Started(launch.clone()))?)
@@ -764,6 +799,15 @@ mod tests {
             parse(&args("read --pretend")),
             Ok(Command::Read(RadioChoice::Pretend))
         );
+    }
+
+    #[test]
+    fn reads_the_civ_pretend_radio() {
+        assert_eq!(
+            parse(&args("read --civ-pretend")),
+            Ok(Command::Read(RadioChoice::CivPretend))
+        );
+        assert!(parse(&args("read --civ-pretend --pretend")).is_err());
     }
 
     #[test]
