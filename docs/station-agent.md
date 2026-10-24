@@ -161,6 +161,20 @@ How it behaves:
 - **This computer only.** The protocol has no sign-in, so the Agent listens
   only on `127.0.0.1` and refuses connections from anywhere else
   (Principle XXI).
+- **What it shows.** While it runs, `serve` prints what the radio says,
+  whenever its frequency, mode or PTT changes, and beside it every change a
+  program asked for and what became of it, each with the UTC time:
+
+  ```
+  21:38:26Z  a program connected (127.0.0.1:55526)
+  21:38:26Z  asked to tune to 7.074000 MHz: done
+  21:38:26Z  radio: 7.074000 MHz DATA-USB, receiving
+  21:38:28Z  asked to transmit: refused (the Agent doesn't transmit yet)
+  ```
+
+  The `radio:` lines are read from the radio itself, so if a program's
+  display ever disagrees with the latest one, the program is showing what it
+  asked for rather than what the radio did (Principle X).
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
 - Any radio the Agent can read can be served: `--civ-pretend`, `--pretend`,

@@ -398,6 +398,16 @@ fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> 
 
 fn describe(radio: &dyn Radio, reading: &Reading) -> String {
     let identity = radio.identity();
+    format!(
+        "{} {}: {}",
+        identity.maker,
+        identity.model,
+        reading_text(reading)
+    )
+}
+
+/// A reading in plain words: "14.074000 MHz DATA-USB, receiving".
+fn reading_text(reading: &Reading) -> String {
     let mhz = format!(
         "{}.{:06}",
         reading.frequency_hz / 1_000_000,
@@ -413,10 +423,7 @@ fn describe(radio: &dyn Radio, reading: &Reading) -> String {
         Some(false) => "receiving",
         None => "PTT unknown",
     };
-    format!(
-        "{} {}: {mhz} MHz {mode}, {ptt}",
-        identity.maker, identity.model
-    )
+    format!("{mhz} MHz {mode}, {ptt}")
 }
 
 fn read_once(choice: &RadioChoice) -> Result<(), String> {
@@ -734,19 +741,30 @@ fn run(
     Ok(())
 }
 
+/// How often `serve` looks at the radio to show its status.
+const STATUS_EVERY: Duration = Duration::from_millis(500);
+
+/// The time of day in UTC, as `21:35:27Z` (Principle VIII).
+fn utc_clock() -> String {
+    let text = settings_record::utc_text(std::time::SystemTime::now());
+    text.split_once('T')
+        .map_or(text.clone(), |(_, time)| time.to_owned())
+}
+
 /// Be a read-only virtual radio for other programs until stopped
 /// (Principles IX and XXI).
 fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result<(), String> {
+    let (notes, heard) = mpsc::channel();
     let shared: Arc<dyn rigctld_server::Source> = if allow_tuning {
         // Only the pretend radio, for now (checked when the command is read).
         let radio = civ_pretend_radio().map_err(|error| error.to_string())?;
-        Arc::new(rigctld_server::Shared::with_tuning(Box::new(radio)))
+        Arc::new(rigctld_server::Shared::with_tuning(Box::new(radio)).with_notes(notes))
     } else {
         let radio = open(choice).map_err(|error| error.to_string())?;
-        Arc::new(rigctld_server::Shared::new(radio))
+        Arc::new(rigctld_server::Shared::new(radio).with_notes(notes))
     };
     let identity = shared.identity();
-    let server = rigctld_server::Server::start(listen, shared)?;
+    let server = rigctld_server::Server::start(listen, Arc::clone(&shared))?;
     let running = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
@@ -771,8 +789,26 @@ fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result
     } else {
         println!("Requests to tune or transmit are refused. Ctrl-C stops.");
     }
+    // What the radio says, whenever it changes, beside what programs asked
+    // for, so the two can be compared at a glance (Principle X).
+    let mut shown = String::new();
+    let mut last_look: Option<Instant> = None;
     while running.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(200));
+        for event in heard.try_iter() {
+            println!("{}  {event}", utc_clock());
+        }
+        if last_look.is_none_or(|at| at.elapsed() >= STATUS_EVERY) {
+            last_look = Some(Instant::now());
+            let now = match shared.reading() {
+                Ok(reading) => format!("radio: {}", reading_text(&reading)),
+                Err(error) => format!("radio: can't be read ({error})"),
+            };
+            if now != shown {
+                println!("{}  {now}", utc_clock());
+                shown = now;
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
     }
     drop(server);
     println!("stopped");
