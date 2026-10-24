@@ -23,12 +23,12 @@ family = "icom-civ"
 status = "draft"
 
 [[definition.sources]]
-id = "full-manual"
+id = "full_manual"
 title = "Icom IC-7300 Full Manual, section 19: Control command (CI-V)"
 note = "Command 19 00, 1A 05 settings, 1A 06, 1C 00, 25 and 26 were read from this section."
 
 [[definition.sources]]
-id = "civ-common"
+id = "civ_common"
 title = "Icom CI-V command set as used across Icom HF radios"
 note = """
 Commands 03, 04, 05, 06, 07 and 0F were not in the part of the manual read for
@@ -63,7 +63,7 @@ verified = false
 [identity]
 # Read the transceiver ID. The radio answers with its CI-V address.
 query = "19 00"
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ verified = false
 # USB with data on is DATA-USB.
 # ---------------------------------------------------------------------------
 [modes]
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [modes.codes]
@@ -89,29 +89,29 @@ RTTY-R = 0x08
 # 1A 06: data mode off (00) or on (01), then the filter (01, 02, 03; 00 when off).
 command = "1A 06"
 data_modes = { DATA-USB = "USB", DATA-LSB = "LSB", DATA-FM = "FM" }
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 # ---------------------------------------------------------------------------
 # Commands the driver uses for rig-model operations.
 # ---------------------------------------------------------------------------
 [commands]
-read_frequency = { command = "03", source = "civ-common", verified = false }
-read_mode = { command = "04", source = "civ-common", verified = false }
-set_frequency = { command = "05", source = "civ-common", verified = false }
-set_mode = { command = "06", source = "civ-common", verified = false }
+read_frequency = { command = "03", source = "civ_common", verified = false }
+read_mode = { command = "04", source = "civ_common", verified = false }
+set_frequency = { command = "05", source = "civ_common", verified = false }
+set_mode = { command = "06", source = "civ_common", verified = false }
 # 25 / 26 with 00 = selected VFO, 01 = unselected VFO. Preferred over 03-06
 # because they reach the unselected VFO without switching to it, which split
 # operation needs.
-vfo_frequency = { command = "25", source = "full-manual", verified = false }
-vfo_mode = { command = "26", source = "full-manual", verified = false }
-select_vfo_a = { command = "07 00", source = "civ-common", verified = false }
-select_vfo_b = { command = "07 01", source = "civ-common", verified = false }
-split = { command = "0F", off = 0x00, on = 0x01, source = "civ-common", verified = false }
+vfo_frequency = { command = "25", source = "full_manual", verified = false }
+vfo_mode = { command = "26", source = "full_manual", verified = false }
+select_vfo_a = { command = "07 00", source = "civ_common", verified = false }
+select_vfo_b = { command = "07 01", source = "civ_common", verified = false }
+split = { command = "0F", off = 0x00, on = 0x01, source = "civ_common", verified = false }
 # 1C 00: transmit status. 00 = receive, 01 = transmit.
 # Writing this keys the radio: only the Agent's transmit path may use it
 # (Principle XI).
-ptt = { command = "1C 00", off = 0x00, on = 0x01, source = "full-manual", verified = false }
+ptt = { command = "1C 00", off = 0x00, on = 0x01, source = "full_manual", verified = false }
 
 # ---------------------------------------------------------------------------
 # Menu settings the Agent reads (command 1A 05 plus the item number).
@@ -124,7 +124,7 @@ item = "00 71"
 label = "CI-V Transceive"
 values = { OFF = 0x00, ON = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 note = "When ON the radio reports changes on its own; the Agent uses that, and asks on a schedule when it's OFF."
 
@@ -134,7 +134,7 @@ item = "00 72"
 label = "CI-V USB to REMOTE transceive address"
 range = [0x00, 0xDF]
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -143,7 +143,7 @@ item = "00 73"
 label = "CI-V Output (for ANT)"
 values = { OFF = 0x00, ON = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -152,7 +152,7 @@ item = "00 74"
 label = "CI-V USB Port"
 values = { "Link to [REMOTE]" = 0x00, "Unlink from [REMOTE]" = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 note = "The manual lists this item as read-only over CI-V."
 
@@ -164,7 +164,7 @@ label = "CI-V USB Echo Back"
 # on/off items. Check this on a radio before marking it verified.
 values = { ON = 0x00, OFF = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -173,7 +173,7 @@ item = "00 76"
 label = "USB Serial Function"
 values = { "CI-V" = 0x00, "RTTY Decode" = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 note = "Must be CI-V for the Agent to reach the radio at all; if it isn't, the radio never answers and the Agent says so."
 
@@ -183,7 +183,7 @@ item = "00 78"
 label = "USB SEND (transmit control line)"
 values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 note = "The Agent keys with CAT (1C 00), not a control line, so this is recorded but not needed."
 
@@ -193,7 +193,7 @@ item = "00 79"
 label = "USB Keying (CW)"
 values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -202,7 +202,7 @@ item = "00 80"
 label = "USB Keying (RTTY)"
 values = { OFF = 0x00, DTR = 0x01, RTS = 0x02 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -211,7 +211,7 @@ item = "00 59"
 label = "ACC/USB Output Select"
 values = { AF = 0x00, IF = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -221,7 +221,7 @@ label = "ACC/USB AF Output Level"
 range = [0, 255]
 percent = true
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -230,7 +230,7 @@ item = "00 61"
 label = "ACC/USB AF SQL"
 values = { "OFF (OPEN)" = 0x00, ON = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -239,7 +239,7 @@ item = "00 62"
 label = "ACC/USB AF Beep/Speech Output"
 values = { OFF = 0x00, ON = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -249,7 +249,7 @@ label = "ACC/USB IF Output Level"
 range = [0, 255]
 percent = true
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -259,7 +259,7 @@ label = "USB MOD Level"
 range = [0, 255]
 percent = true
 write = true
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -268,7 +268,7 @@ item = "00 66"
 label = "DATA OFF MOD"
 values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
 write = true
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -277,7 +277,7 @@ item = "00 67"
 label = "DATA MOD"
 values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
 write = true
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 [[settings]]
@@ -286,7 +286,7 @@ item = "01 97"
 label = "Inhibit timer at USB connection"
 values = { OFF = 0x00, ON = 0x01 }
 write = false
-source = "full-manual"
+source = "full_manual"
 verified = false
 
 # ---------------------------------------------------------------------------
