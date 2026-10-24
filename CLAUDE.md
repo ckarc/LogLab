@@ -56,6 +56,8 @@ every line. That means:
 - A QSO is "logged" once the Engine has committed it to durable storage;
   clients journal what they submit until then (Principle XV).
 - Everything must work with no internet connection (Principle V).
+- Every request comes from a signed-in operator holding the permission it
+  needs; an operator's own credentials are theirs alone (Principle XXI).
 
 ## Agent rules (Rust)
 
