@@ -63,9 +63,8 @@ every line. That means:
 - No `unsafe` unless a hardware or platform interface requires it — isolated,
   documented, and justified in the pull request.
 - The radio is authoritative on live state; never overwrite it with a
-  remembered value (Principle X).
-- Every transmit path fails closed and requires an authorized operator's
-  deliberate action (Principles XI and XIII).
+  remembered value, except a restore the operator explicitly asked for and
+  confirmed (Principle X).
 - Measured values are logged as measured; entered values as entered.
 
 ## Before you say "done"
