@@ -74,6 +74,8 @@ pub enum Ask {
     DataMode,
     /// Whether the radio is transmitting.
     Transmitting,
+    /// A menu setting's value, by its item number.
+    Setting([u8; 2]),
 }
 
 impl Ask {
@@ -89,13 +91,15 @@ impl Ask {
 
     /// The command bytes for this question.
     #[must_use]
-    pub const fn payload(self) -> &'static [u8] {
+    pub fn payload(self) -> Vec<u8> {
         match self {
-            Self::Identity => &[0x19, 0x00],
-            Self::Frequency => &[0x03],
-            Self::Mode => &[0x04],
-            Self::DataMode => &[0x1A, 0x06],
-            Self::Transmitting => &[0x1C, 0x00],
+            Self::Identity => vec![0x19, 0x00],
+            Self::Frequency => vec![0x03],
+            Self::Mode => vec![0x04],
+            Self::DataMode => vec![0x1A, 0x06],
+            Self::Transmitting => vec![0x1C, 0x00],
+            // With no value after the item number, 1A 05 only asks.
+            Self::Setting([a, b]) => vec![0x1A, 0x05, a, b],
         }
     }
 }
@@ -103,6 +107,7 @@ impl Ask {
 /// An Icom radio found on a port, read over CI-V.
 pub struct CivRadio<P: Port> {
     port: P,
+    definition: Definition,
     identity: RadioIdentity,
     address: u8,
     me: u8,
@@ -155,6 +160,7 @@ impl<P: Port> CivRadio<P> {
     fn new(port: P, definition: &Definition) -> Self {
         Self {
             port,
+            definition: definition.clone(),
             identity: RadioIdentity {
                 maker: definition.maker.clone(),
                 model: definition.model.clone(),
@@ -171,9 +177,34 @@ impl<P: Port> CivRadio<P> {
         }
     }
 
+    /// The definition of the radio that answered.
+    pub fn definition(&self) -> &Definition {
+        &self.definition
+    }
+
+    /// Reads one menu setting. Returns the value's bytes as the radio sent
+    /// them: one byte for a named value, two BCD bytes for a level.
+    ///
+    /// # Errors
+    ///
+    /// The radio refused, didn't answer, or answered about something else.
+    pub fn read_setting(&mut self, item: [u8; 2]) -> Result<Vec<u8>, RadioError> {
+        match self.ask(Ask::Setting(item))?.as_slice() {
+            [0x1A, 0x05, a, b, value @ ..] if [*a, *b] == item && !value.is_empty() => {
+                Ok(value.to_vec())
+            }
+            other => Err(RadioError(format!(
+                "odd answer to 1A 05 {}: {}",
+                civ::hex(&item),
+                civ::hex(other)
+            ))),
+        }
+    }
+
     /// Asks one question and returns the radio's answer.
     fn ask(&mut self, ask: Ask) -> Result<Vec<u8>, RadioError> {
-        let sent = Frame::new(self.address, self.me, ask.payload());
+        let payload = ask.payload();
+        let sent = Frame::new(self.address, self.me, &payload);
         self.port.send(&sent.encode()).map_err(RadioError)?;
         let deadline = Instant::now() + ANSWER_WAIT;
         let mut skipped = 0;
@@ -185,7 +216,7 @@ impl<P: Port> CivRadio<P> {
                     if frame.payload == [NG] {
                         return Err(RadioError(format!(
                             "the radio refused {} (FA)",
-                            civ::hex(ask.payload())
+                            civ::hex(&payload)
                         )));
                     }
                     return Ok(frame.payload);
@@ -202,7 +233,7 @@ impl<P: Port> CivRadio<P> {
         }
         Err(RadioError(format!(
             "no answer to {} within {} ms",
-            civ::hex(ask.payload()),
+            civ::hex(&payload),
             ANSWER_WAIT.as_millis()
         )))
     }
@@ -420,11 +451,32 @@ mod tests {
             &[0x1A, 0x06],
             &[0x1C, 0x00],
         ];
-        let asked: Vec<&[u8]> = Ask::ALL.iter().map(|ask| ask.payload()).collect();
+        let asked: Vec<Vec<u8>> = Ask::ALL.iter().map(|ask| ask.payload()).collect();
         assert_eq!(asked, reads);
+        // A setting is asked by its item number alone, with no value after.
+        assert_eq!(
+            Ask::Setting([0x00, 0x67]).payload(),
+            [0x1A, 0x05, 0x00, 0x67]
+        );
         let mut radio = found(115_200);
         assert!(radio.read().is_ok());
         assert!(!radio.port.radio().transmitting(), "reading never keys it");
+    }
+
+    #[test]
+    fn reads_a_menu_setting() {
+        let mut radio = found(115_200);
+        assert_eq!(
+            radio.read_setting([0x00, 0x67]).ok(),
+            Some(vec![0x00]),
+            "DATA MOD is MIC"
+        );
+        assert_eq!(
+            radio.read_setting([0x00, 0x65]).ok(),
+            Some(vec![0x01, 0x27]),
+            "level 127"
+        );
+        assert!(radio.read_setting([0x09, 0x99]).is_err(), "no such item");
     }
 
     #[test]
