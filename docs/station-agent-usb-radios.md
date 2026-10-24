@@ -3,9 +3,9 @@
 
 # Station Agent: USB Radios and Virtual Radios
 
-**Status: design draft.** Nothing here is built yet. Decisions the
-maintainer has made are recorded where they apply; the two still open are
-marked **Decision needed** (Principle XIX).
+**Status: design, all decisions made.** Nothing here is built yet. The
+maintainer's decisions are recorded where they apply and listed at the end
+(Principle XIX).
 
 This document plans how the Station Agent takes over radios connected to a
 workstation by USB (the Icom IC-7300 and IC-9700, the Yaesu FTDX10 and the
@@ -287,22 +287,21 @@ devices, and the Agent moves audio between them and the radio.
 
 ## Windows specifics
 
-- **How it runs. Decision needed.** The person at the computer works with the
-  Agent through its tray program. The open question is whether the tray
-  program *is* the Agent, starting when someone signs in to Windows, or the
-  face of a background service that starts when the computer does. A service
-  keeps owning the radio, and keeps the WSJT-X logging journal running, when
-  nobody is signed in to Windows, for example after a power blip restarts the
-  computer; a tray-only Agent stops at sign-out. *Recommended*: a service with
-  the tray program as its face.
-- **Drivers.** Windows only loads signed drivers. A virtual COM port and a
-  virtual sound device both need one. **Decision needed**: for the first
-  versions, use existing signed drivers (VB-Audio's virtual cable for sound, a
-  signed build of com0com for serial ports), which are installed separately
-  and are not part of LabLog; or write and sign our own, which is a large
-  project. *Recommended*: existing drivers first, our own later only if they
-  limit us. VB-Audio's licence must be checked before LabLog's installer
-  bundles it; until then it is a separate download.
+- **Runs as a service plus a tray program.** The service starts when the
+  computer does, owns the radios, and keeps running, journal included, when
+  nobody is signed in to Windows (after a power blip restarts the computer,
+  for example). The tray program is its face: it shows the radios and the
+  program checks, asks the operator to approve setting changes, and talks to
+  the service. Closing the tray program does not release the radios.
+- **Drivers: existing signed drivers first.** Windows only loads signed
+  drivers, and a virtual COM port and a virtual sound device both need one.
+  The first versions use existing signed drivers: VB-Audio's virtual cables
+  for sound and a signed build of com0com for COM ports. They are installed
+  separately and are not part of LabLog. Each program needs its own virtual
+  sound device, so a station running several programs needs VB-Audio's paid
+  additional cables; VB-Audio's licence must allow it before any LabLog
+  installer bundles their driver, and until then it is a separate download.
+  LabLog's own drivers come later, only if these limit us.
 - **The Agent is still one executable** (Technology Constraints); the drivers
   are separate installs, the same way Hamlib is today.
 
@@ -379,5 +378,5 @@ Each step is its own pull request, with tests and a demonstration
 | 1 | Restore a radio's recorded settings? | **Decided**: yes, on the operator's explicit, confirmed request (Principle X, constitution 3.0.0) |
 | 2 | May the CAT personality speak Kenwood's published command set? | **Decided**: yes (Principle IV, constitution 3.0.0) |
 | 3 | Who decides which program may control and key a radio? | **Decided**: the person at the computer, one checked program per radio in the tray |
-| 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | Open. Recommended: existing first |
-| 5 | Tray program only, or a service with the tray program as its face? | Open. Recommended: service plus tray |
+| 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | **Decided**: existing signed drivers first |
+| 5 | Tray program only, or a service with the tray program as its face? | **Decided**: a service, with the tray program as its face |
