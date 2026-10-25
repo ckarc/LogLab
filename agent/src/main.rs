@@ -13,6 +13,11 @@
 //! and never keys it. With `--wsjtx`, it also hears WSJT-X log QSOs on this
 //! computer and hands them to the Engine, through its journal.
 
+// The resampler is used on Windows, and tested on every platform.
+#[cfg(any(windows, test))]
+mod audio;
+#[cfg(windows)]
+mod audio_windows;
 mod civ;
 mod civ_demo;
 mod civ_pretend;
@@ -78,6 +83,12 @@ Usage:
                                        --allow-tuning (--civ-pretend only,
                                        for now); transmitting is always
                                        refused
+  loglab-agent audio-devices           list this computer's sound devices
+  loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
+                                       receive: play the radio's audio into
+                                       a VB-Audio virtual cable for programs
+                                       like WSJT-X (Windows only; nothing is
+                                       ever played to the radio)
   loglab-agent check-rig PATH...       check rig definition files (a file,
                                        or every .toml file in a folder)
   loglab-agent civ-demo                show a CI-V conversation with the
@@ -136,6 +147,11 @@ enum Command {
     Read(RadioChoice),
     CheckRig(Vec<String>),
     CivDemo,
+    AudioDevices,
+    RxAudio {
+        from: String,
+        to: String,
+    },
     Serve {
         radio: RadioChoice,
         listen: SocketAddr,
@@ -193,6 +209,16 @@ fn parse(args: &[String]) -> Result<Command, String> {
     };
     if matches!(verb.as_str(), "help" | "--help" | "-h" | "--version") {
         return Ok(Command::Help);
+    }
+    if verb == "audio-devices" {
+        return if rest.is_empty() {
+            Ok(Command::AudioDevices)
+        } else {
+            Err("audio-devices takes no options".to_owned())
+        };
+    }
+    if verb == "rx-audio" {
+        return rx_audio_command(rest);
     }
     if verb == "civ-demo" {
         return if rest.is_empty() {
@@ -259,6 +285,30 @@ fn parse(args: &[String]) -> Result<Command, String> {
     }
     let radio = radio_choice(&mut options)?;
     command(verb, options, radio)
+}
+
+/// `rx-audio --from NAME [--to NAME]`.
+fn rx_audio_command(rest: &[String]) -> Result<Command, String> {
+    let mut from = None;
+    let mut to = None;
+    let mut words = rest.iter();
+    while let Some(flag) = words.next() {
+        let value = words
+            .next()
+            .ok_or_else(|| format!("{flag} needs a value"))?
+            .clone();
+        match flag.as_str() {
+            "--from" => from = Some(value),
+            "--to" => to = Some(value),
+            _ => return Err(format!("unknown option {flag:?} for rx-audio")),
+        }
+    }
+    Ok(Command::RxAudio {
+        from: from.ok_or(
+            "rx-audio needs --from, part of the radio's sound device name, such as \"USB Audio CODEC\"",
+        )?,
+        to: to.unwrap_or_else(|| "CABLE Input".to_owned()),
+    })
 }
 
 /// The command a verb names, from options already read and a radio already
@@ -854,6 +904,42 @@ fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// List the sound devices, so the right ones can be named to `rx-audio`.
+#[cfg(windows)]
+fn audio_devices() -> Result<(), String> {
+    let (inputs, outputs) = audio_windows::devices()?;
+    println!("Capturing (a radio's receive audio is one of these):");
+    for device in &inputs {
+        println!("  {}  [{}]", device.name, device.format);
+    }
+    println!("Playing (rx-audio only plays into a VB-Audio \"CABLE Input\"):");
+    for device in &outputs {
+        println!("  {}  [{}]", device.name, device.format);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+fn audio_devices() -> Result<(), String> {
+    Err("routing a radio's audio is Windows-only for now".to_owned())
+}
+
+/// Receive a radio's audio into a virtual cable until stopped.
+#[cfg(windows)]
+fn rx_audio(from: &str, to: &str) -> Result<(), String> {
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
+        .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
+    audio_windows::receive(from, to, &running)
+}
+
+#[cfg(not(windows))]
+fn rx_audio(from: &str, to: &str) -> Result<(), String> {
+    let _ = (from, to);
+    Err("routing a radio's audio is Windows-only for now".to_owned())
+}
+
 /// Check rig definition files and say what was found in each
 /// (Principle XII).
 fn check_rigs(paths: &[String]) -> Result<(), String> {
@@ -904,6 +990,8 @@ fn main() -> ExitCode {
             allow_tuning,
         }) => serve(&radio, listen, allow_tuning),
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
+        Ok(Command::AudioDevices) => audio_devices(),
+        Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
             for line in lines {
                 println!("{line}");
@@ -1069,6 +1157,28 @@ mod tests {
             "needs --records"
         );
         assert!(parse(&args("read --civ-pretend --records r")).is_err());
+    }
+
+    #[test]
+    fn reads_the_audio_commands() {
+        assert_eq!(parse(&args("audio-devices")), Ok(Command::AudioDevices));
+        assert_eq!(
+            parse(&args("rx-audio --from CODEC")),
+            Ok(Command::RxAudio {
+                from: "CODEC".to_owned(),
+                to: "CABLE Input".to_owned()
+            })
+        );
+        assert_eq!(
+            parse(&args("rx-audio --from CODEC --to CABLE-A")),
+            Ok(Command::RxAudio {
+                from: "CODEC".to_owned(),
+                to: "CABLE-A".to_owned()
+            })
+        );
+        assert!(parse(&args("rx-audio")).is_err(), "needs --from");
+        assert!(parse(&args("rx-audio --from")).is_err());
+        assert!(parse(&args("audio-devices --all")).is_err());
     }
 
     #[test]

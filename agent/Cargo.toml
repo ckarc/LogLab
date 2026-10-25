@@ -20,6 +20,11 @@ serde_json = "1"
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 
+# Sound devices, for routing a radio's audio. Windows only for now: FieldLab's
+# workstations are Windows, and Linux's backend needs system ALSA libraries.
+[target.'cfg(windows)'.dependencies]
+cpal = { version = "0.18.2", default-features = false }
+
 [lints.rust]
 # `unsafe` is denied (not forbidden) so a hardware or platform interface that
 # truly needs it can allow it locally — isolated, documented, and justified in
