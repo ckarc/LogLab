@@ -23,6 +23,10 @@ The Station Agent's crates, compiled into its single executable:
 | toml             | Reading rig definition files              | MIT OR Apache-2.0                |
 | toml_parser, toml_datetime, serde_spanned | toml dependencies | MIT OR Apache-2.0                |
 | winnow           | toml dependency (parsing)                 | MIT                              |
+| cpal             | Sound devices, for a radio's audio (Windows build only) | Apache-2.0           |
+| dasp_sample      | cpal dependency (sample formats)          | MIT OR Apache-2.0                |
+| windows, windows-core, windows-collections, windows-future, windows-numerics, windows-result, windows-strings, windows-threading | cpal dependencies (Windows audio system) | MIT OR Apache-2.0 |
+| windows-implement, windows-interface | Build time only (windows dependencies) | MIT OR Apache-2.0  |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
 | windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |

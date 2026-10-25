@@ -389,7 +389,8 @@ Each step is its own pull request, with tests and a demonstration
    read-only unchecked programs, the watchdog, and refusal tests. WSJT-X
    transmits through the Agent.
 7. **Audio**: the Agent owns the radio's sound device; WSJT-X uses a virtual
-   one.
+   one. *Receiving is done (`rx-audio`): the radio's audio into a VB-Audio
+   cable, with clock-drift correction. Sending comes with transmitting.*
 8. **VARA with Winlink Express and VarAC**: the virtual COM port and the
    audio latency work.
 9. **N3FJP** through its API.

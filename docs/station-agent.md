@@ -189,6 +189,57 @@ How it behaves:
   `--flex`, or a Hamlib radio. Hamlib's own network client, the one WSJT-X
   uses, has been checked against it with Hamlib 4.5.5.
 
+## Receiving a radio's audio (Windows)
+
+The Agent can take a radio's receive audio from its USB sound device and
+play it into a virtual sound cable, so programs like WSJT-X take their
+audio from the cable and never open the radio's sound device themselves.
+The cable is VB-Audio's free **VB-CABLE**, installed separately from
+<https://vb-audio.com/Cable/>. It adds two devices: "CABLE Input", which the
+Agent plays into, and "CABLE Output", which programs record from.
+
+1. See the sound devices, and find the radio's (an IC-7300's is
+   "Microphone (USB Audio CODEC)", sometimes with a number):
+
+   ```sh
+   loglab-agent audio-devices
+   ```
+
+2. Start receiving, naming part of the radio's sound device:
+
+   ```sh
+   loglab-agent rx-audio --from "USB Audio CODEC"
+   ```
+
+3. In WSJT-X, Settings > Audio > **Input**: `CABLE Output (VB-Audio Virtual
+   Cable)`.
+
+Every two seconds the Agent shows how the audio is doing:
+
+```
+11:02:14Z  radio audio  -18 dBFS peak | buffer 96 ms | no gaps
+```
+
+- **dBFS peak** is how loud the radio's audio is, 0 being the loudest a
+  sound card can carry. Somewhere around -30 to -10 decodes well. When it's
+  silent, close to clipping, or very quiet, a line starting `->` says what to
+  change on the radio (on an IC-7300, ACC/USB AF Output Level and ACC/USB
+  Output Select).
+- **buffer** is how much audio is waiting between the radio and the cable.
+  The radio's sound chip and the cable keep slightly different time, and
+  the Agent keeps this near 100 ms by reading very slightly faster or slower,
+  so there are no glitches.
+- **gaps** are moments the cable had nothing to play. A few at the start are
+  normal; steady gaps mean the radio's audio is stalling.
+
+**Receive only.** Audio played into a radio can key it (through VOX, or data
+mode with USB audio), so `rx-audio` plays only into a VB-Audio virtual
+cable and refuses every other device, the radio's own "Speakers (USB Audio
+CODEC)" included. Sending a program's audio to the radio comes with
+transmitting, for the program checked in the tray program. If a name matches
+more than one device (two radios are both "USB Audio CODEC"), it lists them
+and asks for more of the name.
+
 ## A radio's settings record
 
 The first time the Agent meets a radio, it can read every menu setting the
