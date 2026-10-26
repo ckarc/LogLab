@@ -39,6 +39,40 @@ const MAX_CORRECTION: f64 = 0.01;
 /// doesn't jerk the speed around.
 const SMOOTHING: f64 = 0.01;
 
+/// The playing side of the receive cable, VB-CABLE's own: programs record
+/// the radio from its other side, [`RECEIVE_CABLE_OUT`].
+pub const RECEIVE_CABLE: &str = "CABLE Input (VB-Audio Virtual Cable)";
+/// The recording side of the receive cable.
+pub const RECEIVE_CABLE_OUT: &str = "CABLE Output (VB-Audio Virtual Cable)";
+/// What every VB-Audio virtual cable has in its name.
+pub const VB_AUDIO: &str = "VB-Audio";
+
+/// Picks the transmit cable from the names of this computer's recording and
+/// playing sound devices: a VB-Audio cable other than VB-CABLE, which
+/// carries receive audio. Returns its recording side, which the Agent takes
+/// a program's audio from, and its playing side, which the program plays
+/// into. A cable's two sides share the name in brackets, such as
+/// "(VB-Audio Cable A)".
+///
+/// # Errors
+///
+/// There is no second cable, or its two sides don't match.
+pub fn transmit_cable(
+    recording: &[String],
+    playing: &[String],
+) -> Result<(String, String), String> {
+    let from = recording
+        .iter()
+        .find(|name| name.contains(VB_AUDIO) && *name != RECEIVE_CABLE_OUT)
+        .ok_or("there is no second virtual cable, so a program's transmit audio can't go through the Agent")?;
+    let family = from.find('(').map_or(from.as_str(), |at| &from[at..]);
+    let into = playing
+        .iter()
+        .find(|name| *name != RECEIVE_CABLE && name.ends_with(family))
+        .ok_or_else(|| format!("{from:?} has no playing side to match it"))?;
+    Ok((from.clone(), into.clone()))
+}
+
 /// Audio waiting between the capturing device and the playing one, with the
 /// numbers worth showing a person.
 pub struct Buffer {
@@ -106,6 +140,13 @@ impl Buffer {
         (peak > 0.0).then(|| 20.0 * f64::from(peak).log10())
     }
 
+    /// Throws away everything waiting.
+    pub fn clear(&self) {
+        if let Ok(mut samples) = self.samples.lock() {
+            samples.clear();
+        }
+    }
+
     /// Times the playing side found nothing to play.
     #[must_use]
     pub fn gaps(&self) -> u64 {
@@ -153,6 +194,17 @@ impl Resampler {
             target,
             priming: true,
         }
+    }
+
+    /// Fills `out` with silence, throws away whatever is waiting, and starts
+    /// over: a gate that is shut lets nothing build up to play late.
+    pub fn silence(&mut self, out: &mut [f32]) {
+        out.fill(0.0);
+        self.buffer.clear();
+        self.priming = true;
+        self.position = 0.0;
+        self.last = 0.0;
+        self.smoothed = self.target;
     }
 
     /// Fills `out`, one mono sample per frame.
@@ -234,7 +286,7 @@ mod tests {
     use std::f32::consts::TAU;
     use std::time::Duration;
 
-    use super::{Buffer, Resampler, TARGET, count, samples_in};
+    use super::{Buffer, Resampler, TARGET, count, samples_in, transmit_cable};
 
     /// A tone at `hz`, `count` samples long at `rate`, starting at sample
     /// `start`.
@@ -348,5 +400,50 @@ mod tests {
         assert_eq!(samples_in(Duration::ZERO, 48_000), 0);
         assert!((count(4_800) - 4_800.0).abs() < f64::EPSILON);
         assert!((count(usize::MAX) - f64::from(u32::MAX)).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_shut_gate_plays_silence_and_lets_nothing_build_up() {
+        let buffer = Buffer::new(48_000);
+        let mut resampler = Resampler::new(std::sync::Arc::clone(&buffer), 48_000);
+        buffer.push(std::iter::repeat_n(0.5, 48_000));
+        let mut out = vec![1.0; 480];
+        resampler.silence(&mut out);
+        assert!(out.iter().all(|s| *s == 0.0));
+        assert_eq!(buffer.level(), Duration::ZERO, "nothing left to play late");
+        // Open again: only audio that arrives now plays, after the cushion.
+        buffer.push(std::iter::repeat_n(0.25, 9_600));
+        let mut out = vec![0.0; 480];
+        resampler.fill(&mut out);
+        assert!(out[100..].iter().all(|s| (*s - 0.25).abs() < 1e-6));
+    }
+
+    #[test]
+    fn picks_a_second_cable_for_transmit_audio() {
+        let names = |list: &[&str]| list.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        let recording = names(&[
+            "Microphone (2- USB Audio CODEC )",
+            "CABLE Output (VB-Audio Virtual Cable)",
+            "CABLE-A Output (VB-Audio Cable A)",
+        ]);
+        let playing = names(&[
+            "Speakers (2- USB Audio CODEC )",
+            "CABLE Input (VB-Audio Virtual Cable)",
+            "CABLE-A Input (VB-Audio Cable A)",
+        ]);
+        assert_eq!(
+            transmit_cable(&recording, &playing),
+            Ok((
+                "CABLE-A Output (VB-Audio Cable A)".to_owned(),
+                "CABLE-A Input (VB-Audio Cable A)".to_owned()
+            ))
+        );
+        // VB-CABLE alone carries receive audio, so there's no transmit cable.
+        let error = transmit_cable(&recording[..2], &playing[..2])
+            .err()
+            .unwrap_or_default();
+        assert!(error.contains("no second virtual cable"), "{error}");
+        // A radio's own sound device is never taken for a cable.
+        assert!(transmit_cable(&recording[..1], &playing).is_err());
     }
 }

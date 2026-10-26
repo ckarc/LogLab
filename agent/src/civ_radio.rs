@@ -162,6 +162,7 @@ pub struct CivRadio<P: Port> {
     me: u8,
     modes: BTreeMap<u8, String>,
     decoder: Decoder,
+    baud: u32,
 }
 
 impl<P: Port> CivRadio<P> {
@@ -183,6 +184,7 @@ impl<P: Port> CivRadio<P> {
             port.set_baud(*baud).map_err(RadioError)?;
             for definition in definitions {
                 let mut radio = Self::new(port, definition);
+                radio.baud = *baud;
                 if radio.ask(Ask::Identity).ok().as_deref()
                     == Some(&[0x19, 0x00, definition.default_address][..])
                 {
@@ -223,12 +225,18 @@ impl<P: Port> CivRadio<P> {
                 .map(|(name, code)| (*code, name.clone()))
                 .collect(),
             decoder: Decoder::default(),
+            baud: 0,
         }
     }
 
     /// The definition of the radio that answered.
     pub fn definition(&self) -> &Definition {
         &self.definition
+    }
+
+    /// The speed the radio answered at.
+    pub fn baud(&self) -> u32 {
+        self.baud
     }
 
     /// Reads one menu setting. Returns the value's bytes as the radio sent
@@ -504,6 +512,7 @@ mod tests {
             assert_eq!(radio.identity().model, "IC-7300");
             assert_eq!(radio.identity().path, ControlPath::Civ);
             assert_eq!(radio.port.baud, speed, "settled on the radio's speed");
+            assert_eq!(radio.baud(), speed, "and says so");
         }
     }
 

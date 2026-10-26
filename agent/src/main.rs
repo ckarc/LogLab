@@ -33,6 +33,9 @@ mod rig;
 mod rigctld_server;
 mod rigdef;
 mod settings_record;
+mod station;
+#[cfg(any(windows, test))]
+mod vara;
 mod wsjtx;
 
 use std::fs;
@@ -92,6 +95,14 @@ Usage:
                                        a time, for at most 60 seconds at
                                        once (--tx-limit, up to 600); both
                                        --civ or --civ-pretend only
+  loglab-agent station [--civ PORT] [--listen 127.0.0.1:4532] [--tx-limit SECONDS]
+                                       everything programs on this computer
+                                       need to use the radio: finds it and
+                                       its port, checks its settings, carries
+                                       its audio both ways (Windows), sets
+                                       VARA's sound devices, and lets
+                                       programs like VarAC and WSJT-X tune
+                                       and key it (as serve --allow-transmit)
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -177,6 +188,11 @@ enum Command {
         radio: RadioChoice,
         records: String,
     },
+    Station {
+        port: Option<String>,
+        listen: SocketAddr,
+        limit: Duration,
+    },
     Run {
         engine: String,
         key_file: String,
@@ -257,6 +273,9 @@ fn parse(args: &[String]) -> Result<Command, String> {
     if verb == "rx-audio" {
         return rx_audio_command(rest);
     }
+    if verb == "station" {
+        return station_command(rest);
+    }
     if verb == "civ-demo" {
         return if rest.is_empty() {
             Ok(Command::CivDemo)
@@ -330,6 +349,46 @@ fn parse(args: &[String]) -> Result<Command, String> {
     command(verb, options, radio)
 }
 
+/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS]`.
+fn station_command(rest: &[String]) -> Result<Command, String> {
+    let mut port = None;
+    let mut listen = SocketAddr::from(([127, 0, 0, 1], 4532));
+    let mut limit = TX_LIMIT;
+    let mut words = rest.iter();
+    while let Some(flag) = words.next() {
+        let value = words
+            .next()
+            .ok_or_else(|| format!("{flag} needs a value"))?
+            .clone();
+        match flag.as_str() {
+            "--civ" => port = Some(value),
+            "--listen" => {
+                listen = value.parse().map_err(|_| {
+                    format!("--listen needs an address like 127.0.0.1:4532, not {value:?}")
+                })?;
+            }
+            "--tx-limit" => limit = tx_limit(number(flag, &value)?)?,
+            _ => return Err(format!("unknown option {flag:?} for station")),
+        }
+    }
+    Ok(Command::Station {
+        port,
+        listen,
+        limit,
+    })
+}
+
+/// A `--tx-limit` in seconds, checked.
+fn tx_limit(seconds: u64) -> Result<Duration, String> {
+    if (1..=MAX_TX_LIMIT).contains(&seconds) {
+        Ok(Duration::from_secs(seconds))
+    } else {
+        Err(format!(
+            "--tx-limit is in seconds, 1 to {MAX_TX_LIMIT}, not {seconds}"
+        ))
+    }
+}
+
 /// `rx-audio --from NAME [--to NAME]`.
 fn rx_audio_command(rest: &[String]) -> Result<Command, String> {
     let mut from = None;
@@ -385,14 +444,7 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     let transmit_limit = match (transmitting, options.tx_limit) {
         (false, _) => None,
         (true, None) => Some(TX_LIMIT),
-        (true, Some(seconds)) if (1..=MAX_TX_LIMIT).contains(&seconds) => {
-            Some(Duration::from_secs(seconds))
-        }
-        (true, Some(seconds)) => {
-            return Err(format!(
-                "--tx-limit is in seconds, 1 to {MAX_TX_LIMIT}, not {seconds}"
-            ));
-        }
+        (true, Some(seconds)) => Some(tx_limit(seconds)?),
     };
     match verb {
         "read" | "record" | "serve" if options.wsjtx.is_some() => {
@@ -944,21 +996,26 @@ fn serve(
     } else {
         println!("Requests to tune or transmit are refused. Ctrl-C stops.");
     }
-    // What the radio says, whenever it changes, beside what programs asked
-    // for, so the two can be compared at a glance (Principle X).
+    show_until_stopped(shared.as_ref(), &heard, &running, || {});
+    drop(server);
+    println!("stopped");
+    Ok(())
+}
+
+/// Prints what the radio says, whenever it changes, beside what programs
+/// asked for, so the two can be compared at a glance (Principle X), until
+/// `running` turns false. `also` runs every moment, for more to show.
+fn show_until_stopped(
+    shared: &dyn rigctld_server::Source,
+    heard: &Receiver<String>,
+    running: &AtomicBool,
+    mut also: impl FnMut(),
+) {
     let mut shown = String::new();
     let mut last_look: Option<Instant> = None;
     while running.load(Ordering::SeqCst) {
         for event in heard.try_iter() {
-            // A hint on how to fix something goes on its own lines, indented
-            // under the event it explains.
-            let mut lines = event.lines();
-            if let Some(first) = lines.next() {
-                println!("{}  {first}", utc_clock());
-            }
-            for line in lines {
-                println!("           {line}");
-            }
+            print_event(&event);
         }
         if last_look.is_none_or(|at| at.elapsed() >= STATUS_EVERY) {
             last_look = Some(Instant::now());
@@ -971,11 +1028,21 @@ fn serve(
                 shown = now;
             }
         }
+        also();
         thread::sleep(Duration::from_millis(100));
     }
-    drop(server);
-    println!("stopped");
-    Ok(())
+}
+
+/// Prints one event with the time. A hint on how to fix something goes on
+/// its own lines, indented under the event it explains.
+fn print_event(event: &str) {
+    let mut lines = event.lines();
+    if let Some(first) = lines.next() {
+        println!("{}  {first}", utc_clock());
+    }
+    for line in lines {
+        println!("           {line}");
+    }
 }
 
 /// Read a radio's menu settings, keep the first reading as its as-received
@@ -1106,6 +1173,11 @@ fn main() -> ExitCode {
             transmit_limit,
         }) => serve(&radio, listen, allow_tuning, transmit_limit),
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
+        Ok(Command::Station {
+            port,
+            listen,
+            limit,
+        }) => station::run(port.as_deref(), listen, limit),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1324,6 +1396,37 @@ mod tests {
         }
         assert!(parse(&args("read --civ-pretend --allow-tuning")).is_err());
         assert!(parse(&args("read --civ-pretend --listen 127.0.0.1:5000")).is_err());
+    }
+
+    #[test]
+    fn reads_station() {
+        assert_eq!(
+            parse(&args("station")),
+            Ok(Command::Station {
+                port: None,
+                listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+                limit: Duration::from_mins(1),
+            })
+        );
+        assert_eq!(
+            parse(&args(
+                "station --civ COM5 --listen 127.0.0.1:4533 --tx-limit 30"
+            )),
+            Ok(Command::Station {
+                port: Some("COM5".to_owned()),
+                listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
+                limit: Duration::from_secs(30),
+            })
+        );
+        for refused in [
+            "station --tx-limit 0",
+            "station --tx-limit 601",
+            "station --listen nowhere",
+            "station --civ",
+            "station --pretend",
+        ] {
+            assert!(parse(&args(refused)).is_err(), "{refused}");
+        }
     }
 
     #[test]

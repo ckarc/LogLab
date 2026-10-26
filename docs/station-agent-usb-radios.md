@@ -271,6 +271,16 @@ WSJT-X, for the IC-7300
 
 The person types it in once, and the program keeps it in its own file.
 
+**The exception: VARA's sound devices.** VARA has no command line or
+control-port command for choosing its sound devices (varanny's README:
+"VARA doesn't offer command line configuration options"), and a station
+should work with nothing typed in. So the maintainer decided (2026-10-26)
+that the Agent sets exactly two lines of `VARA.ini`, `Input Device Name` and
+`Output Device Name` under `[Soundcard]`, to the Agent's virtual cables. It
+does so only while VARA isn't running, keeps the file as it first found it
+(`VARA.ini.lablog-original`), and writes the file whole and renames it into
+place. Nothing else in the file, and no other program's file, is touched.
+
 **When a program complains: the fix.** The Agent sees every request a
 program makes and what became of it, so when one is refused it says why,
 in plain words, and how to fix it on the program's side. For example, a
