@@ -228,7 +228,7 @@ pub fn check_key(key: &str) -> Result<(), String> {
     } else {
         Err(
             "that is not a station key; an administrator makes one with \
-             'loglab-operator agent-key STATION'"
+             'lablog-operator agent-key STATION'"
                 .to_owned(),
         )
     }

@@ -20,6 +20,11 @@ dependencies = [
 Homepage = "https://github.com/ckarc/loglab"
 
 [project.scripts]
+lablog-adif = "loglab_engine.cli.adif:run"
+lablog-log = "loglab_engine.cli.log:run"
+lablog-operator = "loglab_engine.cli.operator:run"
+lablog-engine = "loglab_engine.cli.engine:run"
+# The names from before the rename, so stations set up then keep working.
 loglab-adif = "loglab_engine.cli.adif:run"
 loglab-log = "loglab_engine.cli.log:run"
 loglab-operator = "loglab_engine.cli.operator:run"

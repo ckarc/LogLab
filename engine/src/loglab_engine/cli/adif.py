@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""``loglab-adif``: generate ghost QSOs, check ADI files, and prove round trips.
+"""``lablog-adif``: generate ghost QSOs, check ADI files, and prove round trips.
 
 Exit codes: 0 success, 1 round trip not identical, 2 input rejected or not found.
 """
@@ -142,7 +142,7 @@ def _roundtrip(args: argparse.Namespace, out: TextIO, err: TextIO) -> int:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="loglab-adif",
+        prog="lablog-adif",
         description="LabLog ADIF tools: ghost QSOs, validation, and lossless round trips.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")

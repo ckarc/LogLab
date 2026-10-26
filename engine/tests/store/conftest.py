@@ -7,7 +7,7 @@ Each test gets its own database, so tests cannot see each other's QSOs. Fresh
 ones are cloned from a template that is migrated once per run. The server is
 whatever libpq's environment points at (``PGHOST``, ``PGUSER``, ...); the
 maintenance database used to create and drop test databases is
-``$LOGLAB_TEST_ADMIN_DATABASE`` (default ``dbname=postgres``). There is no
+``$LABLOG_TEST_ADMIN_DATABASE`` (default ``dbname=postgres``). There is no
 skip: if PostgreSQL is unreachable, these tests fail.
 """
 
@@ -23,6 +23,7 @@ import pytest
 from psycopg import sql
 
 from loglab_engine.cli import log, operator
+from loglab_engine.environment import setting
 from loglab_engine.store import Actor, IdentityStore, LogStore, Permission, connect, migrate
 
 if TYPE_CHECKING:
@@ -31,7 +32,7 @@ if TYPE_CHECKING:
 
     from psycopg.rows import TupleRow
 
-ADMIN = os.environ.get("LOGLAB_TEST_ADMIN_DATABASE", "dbname=postgres")
+ADMIN = setting("TEST_ADMIN_DATABASE") or "dbname=postgres"
 
 
 def _admin(statement: sql.Composed) -> None:
@@ -129,7 +130,7 @@ def visitor(identity: IdentityStore, shack: Actor) -> Actor:
 
 
 class Terminal:
-    """``loglab-log`` in a terminal of its own, with its own session file."""
+    """``lablog-log`` in a terminal of its own, with its own session file."""
 
     def __init__(self, database: str, session_file: Path) -> None:
         """A terminal on ``database`` that keeps its session in ``session_file``."""
@@ -153,11 +154,11 @@ class Terminal:
         return code, out.getvalue(), err.getvalue()
 
     def __call__(self, *argv: str) -> tuple[int, str, str]:
-        """Run ``loglab-log``; return its exit code, output, and errors."""
+        """Run ``lablog-log``; return its exit code, output, and errors."""
         return self.run(log.main, argv)
 
     def operator(self, *argv: str, secret: str = ADMIN_SECRET) -> tuple[int, str, str]:
-        """Run ``loglab-operator``, typing ``secret`` at every prompt."""
+        """Run ``lablog-operator``, typing ``secret`` at every prompt."""
         return self.run(operator.main, argv, lambda _prompt: secret)
 
 

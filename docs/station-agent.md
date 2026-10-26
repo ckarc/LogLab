@@ -61,8 +61,8 @@ This version only reads the radio. It never tunes it and never transmits.
 
    Station Agents also lists the stations that have an Agent; Disconnect ends
    one's key. An Agent whose key stops working asks to join again. From the
-   command line, `loglab-operator agent-key STATION --write FILE` makes a key
-   directly, `--end` ends it, and `loglab-operator agent-keys` lists them.
+   command line, `lablog-operator agent-key STATION --write FILE` makes a key
+   directly, `--end` ends it, and `lablog-operator agent-keys` lists them.
 
 3. Sign in to the web client at the same station name (`shack` above). New
    QSO follows the radio until you type in Freq, Band, or Mode yourself; the

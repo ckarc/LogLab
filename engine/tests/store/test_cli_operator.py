@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""The ``loglab-operator`` command line: setting up, signing in, and managing accounts."""
+"""The ``lablog-operator`` command line: setting up, signing in, and managing accounts."""
 
 from __future__ import annotations
 

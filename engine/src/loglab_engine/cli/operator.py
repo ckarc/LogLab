@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""``loglab-operator``: operator accounts and signing in, from the command line.
+"""``lablog-operator``: operator accounts and signing in, from the command line.
 
 Set up the first administrator, sign in at a station and out again, and, as an
 administrator, add operators, grant and revoke permissions, disable accounts,
@@ -9,8 +9,8 @@ and make the station keys Station Agents sign in with (Principle XXI).
 Everything works with no internet connection (Principle V).
 
 Signing in keeps the session's token in a file only you can read
-(``$LOGLAB_SESSION_FILE``, else ``~/.local/state/loglab/session``), and
-``loglab-log`` uses it for every change it makes. Secrets are typed at a prompt
+(``$LABLOG_SESSION_FILE``, else ``~/.local/state/loglab/session``), and
+``lablog-log`` uses it for every change it makes. Secrets are typed at a prompt
 and never shown or stored.
 
 Exit codes: 0 success, 2 refused or failed.
@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Final, TextIO
 import psycopg
 
 from loglab_engine import __version__
+from loglab_engine.environment import setting
 from loglab_engine.store import (
     Actor,
     IdentityStore,
@@ -49,7 +50,8 @@ if TYPE_CHECKING:
 
 EXIT_OK: Final = 0
 EXIT_REFUSED: Final = 2
-SESSION_FILE_ENV: Final = "LOGLAB_SESSION_FILE"
+SESSION_FILE_ENV: Final = "LABLOG_SESSION_FILE"
+SESSION_FILE_SETTING: Final = "SESSION_FILE"
 DEFAULT_GRANTS: Final = (Permission.VIEW, Permission.LOG)
 
 
@@ -62,7 +64,7 @@ class RefusedError(Exception):
 
 def session_file() -> Path:
     """Where the signed-in session's token is kept."""
-    configured = os.environ.get(SESSION_FILE_ENV)
+    configured = setting(SESSION_FILE_SETTING)
     if configured:
         return Path(configured)
     return Path.home() / ".local" / "state" / "loglab" / "session"
@@ -107,7 +109,7 @@ def signed_in(identity: IdentityStore) -> Actor:
     """
     token = saved_token()
     if token is None:
-        msg = "not signed in; run 'loglab-operator sign-in CALLSIGN --station NAME' first"
+        msg = "not signed in; run 'lablog-operator sign-in CALLSIGN --station NAME' first"
         raise RefusedError(msg)
     return identity.authenticate(token)
 
@@ -116,7 +118,7 @@ def check_schema(conn: psycopg.Connection[TupleRow]) -> None:
     """Refuse to work on a database whose schema is behind this code."""
     pending = pending_migrations(conn, load_migrations())
     if pending:
-        msg = f"the database needs {len(pending)} migration(s); run 'loglab-log migrate' first"
+        msg = f"the database needs {len(pending)} migration(s); run 'lablog-log migrate' first"
         raise RefusedError(msg)
 
 
@@ -154,7 +156,7 @@ def _setup(
     identity.enroll_first_admin(callsign, _new_secret(ask, callsign))
     permissions = ", ".join(p.value for p in Permission)
     out.write(f"{callsign} is the first administrator, with {permissions}.\n")
-    out.write(f"Sign in with: loglab-operator sign-in {callsign} --station NAME\n")
+    out.write(f"Sign in with: lablog-operator sign-in {callsign} --station NAME\n")
     return EXIT_OK
 
 
@@ -291,14 +293,14 @@ def _agent_key(
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="loglab-operator",
+        prog="lablog-operator",
         description="LabLog operator accounts and sign-in (Principle XXI).",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--database",
         default=None,
-        help="libpq connection string or URL (default: $LOGLAB_DATABASE, else dbname=loglab)",
+        help="libpq connection string or URL (default: $LABLOG_DATABASE, else dbname=loglab)",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 
