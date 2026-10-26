@@ -107,6 +107,11 @@ jobs:
       # every check above has passed; it changes no gate.
       - name: Release build for download (Windows)
         if: matrix.os == 'windows-latest'
+        # RUSTFLAGS set here replaces agent/.cargo/config.toml's rustflags, so
+        # the C runtime is linked statically here too: the download then runs
+        # on a computer with no Visual C++ runtime installed.
+        env:
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
         run: cargo build --locked --release
       - name: Keep the Windows Agent for download
         if: matrix.os == 'windows-latest'
