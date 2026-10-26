@@ -4,6 +4,7 @@
 # Build the Windows Agent with Microsoft's C runtime inside it, so it runs on
 # a computer that has never had the Visual C++ runtime installed. Without
 # this, such a computer refuses to start it (exit code -1073741515, a missing
-# VCRUNTIME140.dll) and prints nothing.
+# VCRUNTIME140.dll) and prints nothing. A RUSTFLAGS environment variable
+# replaces this setting, so CI's Windows release build sets it there too.
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
