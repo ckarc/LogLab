@@ -8,17 +8,19 @@
 //! the cable ("CABLE Output") and never opens the radio's sound device
 //! itself. [`crate::audio`] keeps the two devices' clocks in step.
 //!
-//! **Receive only.** Audio played into a radio can key it (through VOX, or
-//! data mode with USB audio), so this module never plays anything to a
-//! radio: the device it plays into must be a VB-Audio virtual cable, and it
-//! refuses every other one. Sending a program's audio to the radio comes
-//! with transmitting, for the program the person at the computer checks in
-//! the tray program.
+//! **Sending is gated by PTT.** Audio played into a radio can key it (through
+//! VOX), so `rx-audio` never plays anything to a radio: the device it plays
+//! into must be a VB-Audio virtual cable, and it refuses every other one.
+//! [`Station`] also sends a program's audio, from a second virtual cable, to
+//! the radio, but only while the Agent has the radio keyed for a program
+//! (`on_air`). The rest of the time the radio is sent silence, and whatever
+//! the program plays is thrown away, so nothing builds up to play late.
 //!
 //! The sound devices are reached through cpal (Apache-2.0), which uses
 //! Windows' own audio system (WASAPI).
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver};
 use std::time::{Duration, Instant};
 
@@ -30,6 +32,7 @@ use crate::audio::{Buffer, Resampler};
 /// What a virtual cable's playing side is named: "CABLE Input
 /// (VB-Audio Virtual Cable)", "CABLE-A Input (VB-Audio Cable A)" and so on.
 const CABLE: &str = "VB-Audio";
+
 /// How often the status line is printed.
 const STATUS_EVERY: Duration = Duration::from_secs(2);
 /// Peaks louder than this are close to clipping.
@@ -74,6 +77,21 @@ pub fn devices() -> Result<(Vec<Listed>, Vec<Listed>), String> {
         })
         .collect();
     Ok((inputs, outputs))
+}
+
+/// The names of every recording and every playing sound device.
+#[must_use]
+pub fn device_names() -> (Vec<String>, Vec<String>) {
+    let host = cpal::default_host();
+    let inputs = host
+        .input_devices()
+        .map(|devices| devices.map(|device| name_of(&device)).collect())
+        .unwrap_or_default();
+    let outputs = host
+        .output_devices()
+        .map(|devices| devices.map(|device| name_of(&device)).collect())
+        .unwrap_or_default();
+    (inputs, outputs)
 }
 
 fn name_of(device: &cpal::Device) -> String {
@@ -133,11 +151,7 @@ fn find(
 ///
 /// A device isn't found, more than one matches, the playing device isn't a
 /// VB-Audio virtual cable, or a device can't be opened.
-pub fn receive(
-    from: &str,
-    to: &str,
-    running: &std::sync::atomic::AtomicBool,
-) -> Result<(), String> {
+pub fn receive(from: &str, to: &str, running: &AtomicBool) -> Result<(), String> {
     let host = cpal::default_host();
     let (radio, radio_name) = find(
         host.input_devices()
@@ -171,7 +185,7 @@ pub fn receive(
     let buffer = Buffer::new(radio_config.sample_rate());
     let (errors, heard) = mpsc::channel();
     let capture = open_capture(&radio, &radio_config, Arc::clone(&buffer), errors.clone())?;
-    let playback = open_playback(&cable, &cable_config, Arc::clone(&buffer), errors)?;
+    let playback = open_playback(&cable, &cable_config, Arc::clone(&buffer), None, errors)?;
     capture
         .play()
         .map_err(|error| format!("can't start {radio_name:?}: {error}"))?;
@@ -190,12 +204,169 @@ pub fn receive(
     Ok(())
 }
 
+/// The radio's audio, both ways, for programs on this computer: receive into
+/// VB-CABLE, and transmit from a second virtual cable, gated by `on_air`.
+pub struct Station {
+    /// The radio's receive audio, waiting for the receive cable.
+    pub receive: Arc<Buffer>,
+    /// A program's transmit audio, waiting for the radio, if there is a
+    /// transmit cable.
+    pub transmit: Option<Arc<Buffer>>,
+    /// The name of the transmit cable's playing side, which programs play
+    /// into, if there is one.
+    pub transmit_cable: Option<String>,
+    /// Why there is no transmit audio, if there isn't.
+    pub no_transmit: Option<String>,
+    /// Errors the sound devices report.
+    pub errors: Receiver<String>,
+    _streams: Vec<cpal::Stream>,
+}
+
+fn listed<T>(devices: Result<T, cpal::Error>) -> Result<T, String> {
+    devices.map_err(|error| format!("can't list sound devices: {error}"))
+}
+
+/// The one device in `devices` whose name contains `wanted` and isn't a
+/// virtual cable: the radio's.
+fn radio_device(
+    devices: impl Iterator<Item = cpal::Device>,
+    wanted: &str,
+    kind: &str,
+) -> Result<(cpal::Device, String), String> {
+    find(
+        devices.filter(|device| !name_of(device).contains(CABLE)),
+        wanted,
+        kind,
+    )
+    .map_err(|error| {
+        format!(
+            "{error}. Is the radio on and its USB cable in? Windows names the radio's sound device after its chip, such as \"USB Audio CODEC\"."
+        )
+    })
+}
+
+/// The transmit cable: a VB-Audio cable other than VB-CABLE itself, whose
+/// recording side the Agent takes a program's audio from. Returns the
+/// recording side, and the playing side's name, which programs play into.
+fn transmit_cable(host: &cpal::Host) -> Result<(cpal::Device, String, String), String> {
+    let recording: Vec<(cpal::Device, String)> = listed(host.input_devices())?
+        .map(|device| {
+            let name = name_of(&device);
+            (device, name)
+        })
+        .collect();
+    let playing: Vec<String> = listed(host.output_devices())?
+        .map(|device| name_of(&device))
+        .collect();
+    let names: Vec<String> = recording.iter().map(|(_, name)| name.clone()).collect();
+    let (from, into) = crate::audio::transmit_cable(&names, &playing)?;
+    let device = recording
+        .into_iter()
+        .find(|(_, name)| *name == from)
+        .map(|(device, _)| device)
+        .ok_or_else(|| format!("{from:?} went away"))?;
+    Ok((device, from, into))
+}
+
+impl Station {
+    /// Starts the radio's audio both ways. `radio_sound` is part of the
+    /// radio's sound device name; audio goes to the radio only while
+    /// `on_air` is set.
+    ///
+    /// # Errors
+    ///
+    /// The radio's sound device or VB-CABLE isn't found, or a device can't be
+    /// opened. A missing transmit cable is not an error: receive still works,
+    /// and [`Station::no_transmit`] says why there is no transmit audio.
+    pub fn start(radio_sound: &str, on_air: Arc<AtomicBool>) -> Result<Self, String> {
+        let host = cpal::default_host();
+        let (radio_in, radio_in_name) =
+            radio_device(listed(host.input_devices())?, radio_sound, "capturing")?;
+        let (radio_out, radio_out_name) =
+            radio_device(listed(host.output_devices())?, radio_sound, "playing")?;
+        let (cable, cable_name) = find(
+            listed(host.output_devices())?,
+            crate::audio::RECEIVE_CABLE,
+            "playing",
+        )
+            .map_err(|_| {
+                "VB-CABLE isn't installed, so the radio's audio can't reach programs: install VB-Audio's VB-CABLE".to_owned()
+            })?;
+        let config = |device: &cpal::Device, name: &str, input: bool| {
+            if input {
+                device.default_input_config()
+            } else {
+                device.default_output_config()
+            }
+            .map_err(|error| format!("can't read {name:?}'s format: {error}"))
+        };
+        let (errors, heard) = mpsc::channel();
+        let mut streams = Vec::new();
+
+        let radio_in_config = config(&radio_in, &radio_in_name, true)?;
+        let receive = Buffer::new(radio_in_config.sample_rate());
+        streams.push(open_capture(
+            &radio_in,
+            &radio_in_config,
+            Arc::clone(&receive),
+            errors.clone(),
+        )?);
+        streams.push(open_playback(
+            &cable,
+            &config(&cable, &cable_name, false)?,
+            Arc::clone(&receive),
+            None,
+            errors.clone(),
+        )?);
+
+        let (transmit, transmit_cable, no_transmit) = match transmit_cable(&host) {
+            Ok((from, from_name, playing)) => {
+                let from_config = config(&from, &from_name, true)?;
+                let buffer = Buffer::new(from_config.sample_rate());
+                streams.push(open_capture(
+                    &from,
+                    &from_config,
+                    Arc::clone(&buffer),
+                    errors.clone(),
+                )?);
+                streams.push(open_playback(
+                    &radio_out,
+                    &config(&radio_out, &radio_out_name, false)?,
+                    Arc::clone(&buffer),
+                    Some(on_air),
+                    errors.clone(),
+                )?);
+                (Some(buffer), Some(playing), None)
+            }
+            Err(why) => (None, None, Some(why)),
+        };
+        for stream in &streams {
+            stream
+                .play()
+                .map_err(|error| format!("can't start a sound device: {error}"))?;
+        }
+        Ok(Self {
+            receive,
+            transmit,
+            transmit_cable,
+            no_transmit,
+            errors: heard,
+            _streams: streams,
+        })
+    }
+
+    /// The receive level since the last call, and what to do about it.
+    pub fn receive_hint(&self) -> Option<&'static str> {
+        level_hint(self.receive.take_peak_dbfs())
+    }
+}
+
 /// Prints how the audio is doing until `running` turns false.
-fn watch(buffer: &Buffer, heard: &Receiver<String>, running: &std::sync::atomic::AtomicBool) {
+fn watch(buffer: &Buffer, heard: &Receiver<String>, running: &AtomicBool) {
     let mut last = Instant::now();
     let mut gaps = 0;
     let mut dropped = 0;
-    while running.load(std::sync::atomic::Ordering::SeqCst) {
+    while running.load(Ordering::SeqCst) {
         for error in heard.try_iter() {
             println!("{}  sound device error: {error}", crate::utc_clock());
         }
@@ -264,11 +435,11 @@ fn open_capture(
         SampleFormat::U16 => capture_as::<u16>(device, stream_config, channels, buffer, report),
         other => {
             return Err(format!(
-                "the radio's sound device uses {other:?} samples, which the Agent can't read yet"
+                "a sound device uses {other:?} samples, which the Agent can't read yet"
             ));
         }
     };
-    built.map_err(|error| format!("can't open the radio's sound device: {error}"))
+    built.map_err(|error| format!("can't open a sound device: {error}"))
 }
 
 fn capture_as<T>(
@@ -297,10 +468,13 @@ where
     )
 }
 
+/// Plays `buffer` on `device`. With a `gate`, only while it is open: the
+/// rest of the time silence plays and the buffer is emptied.
 fn open_playback(
     device: &cpal::Device,
     config: &cpal::SupportedStreamConfig,
     buffer: Arc<Buffer>,
+    gate: Option<Arc<AtomicBool>>,
     errors: mpsc::Sender<String>,
 ) -> Result<cpal::Stream, String> {
     let channels = usize::from(config.channels());
@@ -309,11 +483,16 @@ fn open_playback(
     let report = move |error: cpal::Error| {
         let _ = errors.send(error.to_string());
     };
+    let play = Play {
+        channels,
+        resampler,
+        gate,
+    };
     let built = match config.sample_format() {
-        SampleFormat::F32 => play_as::<f32>(device, stream_config, channels, resampler, report),
-        SampleFormat::I16 => play_as::<i16>(device, stream_config, channels, resampler, report),
-        SampleFormat::I32 => play_as::<i32>(device, stream_config, channels, resampler, report),
-        SampleFormat::U16 => play_as::<u16>(device, stream_config, channels, resampler, report),
+        SampleFormat::F32 => play_as::<f32>(device, stream_config, play, report),
+        SampleFormat::I16 => play_as::<i16>(device, stream_config, play, report),
+        SampleFormat::I32 => play_as::<i32>(device, stream_config, play, report),
+        SampleFormat::U16 => play_as::<u16>(device, stream_config, play, report),
         other => {
             return Err(format!(
                 "the virtual cable uses {other:?} samples, which the Agent can't write yet"
@@ -323,23 +502,38 @@ fn open_playback(
     built.map_err(|error| format!("can't open the virtual cable: {error}"))
 }
 
+/// What a playing stream needs.
+struct Play {
+    channels: usize,
+    resampler: Resampler,
+    gate: Option<Arc<AtomicBool>>,
+}
+
 fn play_as<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    channels: usize,
-    mut resampler: Resampler,
+    play: Play,
     report: impl FnMut(cpal::Error) + Send + 'static,
 ) -> Result<cpal::Stream, cpal::Error>
 where
     T: SizedSample + FromSample<f32>,
 {
+    let Play {
+        channels,
+        mut resampler,
+        gate,
+    } = play;
     let mut mono = Vec::new();
     device.build_output_stream::<T, _, _>(
         config,
         move |data: &mut [T], _| {
             let channels = channels.max(1);
             mono.resize(data.len() / channels, 0.0);
-            resampler.fill(&mut mono);
+            if gate.as_ref().is_none_or(|open| open.load(Ordering::SeqCst)) {
+                resampler.fill(&mut mono);
+            } else {
+                resampler.silence(&mut mono);
+            }
             for (frame, sample) in data.chunks_mut(channels).zip(&mono) {
                 let value = T::from_sample_(*sample);
                 frame.fill(value);

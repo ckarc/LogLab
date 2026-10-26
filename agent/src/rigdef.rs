@@ -226,6 +226,11 @@ pub struct Definition {
     pub controller_address: u8,
     /// The serial speeds to try, in order.
     pub baud_rates: Vec<u32>,
+    /// The vendor and product IDs of the radio's USB serial bridge, if it
+    /// has one, so the Agent can find its port.
+    pub usb_serial: Option<(u16, u16)>,
+    /// Part of the name of the radio's USB sound device, if it has one.
+    pub usb_audio: Option<String>,
     /// The radio's mode codes, by rig-model mode name.
     pub mode_codes: BTreeMap<String, u8>,
     /// The menu settings the Agent may read, in file order.
@@ -443,6 +448,16 @@ fn summarize(file: &File, check: &Check) -> Definition {
         default_address: file.link.default_address,
         controller_address: file.link.controller_address,
         baud_rates: file.link.baud_rates.clone(),
+        usb_serial: file
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.serial.as_ref())
+            .map(|serial| (serial.vid, serial.pid)),
+        usb_audio: file
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.audio.as_ref())
+            .map(|audio| audio.name_contains.clone()),
         mode_codes: file.modes.codes.clone(),
         settings: file
             .settings
@@ -1013,6 +1028,8 @@ explain = "Data mode audio must come from USB."
         assert_eq!(definition.model, "IC-7300");
         assert_eq!(definition.default_address, 0x94);
         assert_eq!(definition.baud_rates.first(), Some(&115_200));
+        assert_eq!(definition.usb_serial, Some((0x10C4, 0xEA60)));
+        assert_eq!(definition.usb_audio.as_deref(), Some("USB Audio CODEC"));
         assert_eq!(definition.settings.len(), 18);
         let writable: Vec<&str> = definition
             .settings

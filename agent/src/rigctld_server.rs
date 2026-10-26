@@ -327,6 +327,7 @@ pub struct Shared {
     notes: Mutex<Option<Sender<String>>>,
     keyed: Mutex<Option<Keyed>>,
     limit: Duration,
+    on_air: Arc<AtomicBool>,
 }
 
 impl Shared {
@@ -338,7 +339,15 @@ impl Shared {
             notes: Mutex::new(None),
             keyed: Mutex::new(None),
             limit,
+            on_air: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Set exactly while the Agent has the radio keyed for a program, so a
+    /// program's transmit audio is sent to the radio only then.
+    #[must_use]
+    pub fn on_air(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.on_air)
     }
 
     /// Shares `radio` for reading only.
@@ -386,6 +395,12 @@ impl Shared {
         };
         let mut keyed = self.keyed.lock().ok()?;
         let (done, note) = act(radio.as_mut(), &mut keyed);
+        // Audio goes to the radio only while it is keyed for a program and
+        // not stuck: after keying, and never after a request to unkey.
+        self.on_air.store(
+            keyed.as_ref().is_some_and(|now| !now.stuck),
+            Ordering::SeqCst,
+        );
         // Let go of the radio before telling anyone.
         drop(keyed);
         drop(held);
@@ -402,6 +417,7 @@ impl Shared {
 impl Drop for Shared {
     /// The Agent going away never leaves a radio keyed.
     fn drop(&mut self) {
+        self.on_air.store(false, Ordering::SeqCst);
         if let (Ok(Held::Key(radio)), Ok(keyed)) = (self.radio.get_mut(), self.keyed.get_mut())
             && keyed.is_some()
         {
@@ -1018,6 +1034,7 @@ fn dump_caps(identity: &RadioIdentity) -> Vec<(&'static str, String)> {
 mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+    use std::sync::atomic::Ordering;
     use std::sync::mpsc::Receiver;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -1478,11 +1495,15 @@ mod tests {
     fn keys_and_unkeys_when_programs_may_transmit() {
         let (radio, bench, heard) = keyable(MINUTE);
         assert!(radio.can_transmit() && radio.can_tune());
+        let on_air = radio.on_air();
+        assert!(!on_air.load(Ordering::SeqCst));
         assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
         assert!(transmitting(&bench));
+        assert!(on_air.load(Ordering::SeqCst), "transmit audio may flow");
         assert_eq!(as_program(&radio, PROGRAM, "t"), "1\n", "the radio says so");
         assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
         assert!(!transmitting(&bench));
+        assert!(!on_air.load(Ordering::SeqCst), "and stops");
         assert_eq!(as_program(&radio, PROGRAM, "t"), "0\n");
         let heard: Vec<String> = heard.try_iter().collect();
         assert_eq!(
@@ -1611,6 +1632,10 @@ mod tests {
         assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
         on_bench(&bench, |bench| bench.fault = Fault::Unkey);
         assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT -6\n");
+        assert!(
+            !radio.on_air().load(Ordering::SeqCst),
+            "no audio once unkeying was asked for, even if it failed"
+        );
         // Nobody may key it while it may still be transmitting.
         assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
         assert_eq!(on_bench(&bench, |bench| bench.keyed), 1);

@@ -136,6 +136,44 @@ The command exits with an error if any file is refused, and the Agent's tests
 check every file in `agent/rigs/`, so a broken definition cannot be merged
 (Principle XII).
 
+## One command for the whole station: `station`
+
+```sh
+loglab-agent station                 # finds the radio by itself
+loglab-agent station --civ COM5      # or names its port
+```
+
+`station` does everything programs on this computer need to use the radio:
+
+1. **Finds the radio.** It looks for a serial port whose USB IDs match a
+   radio it knows (an IC-7300's Silicon Labs CP210x bridge, 10C4:EA60, with a
+   USB serial number like `IC-7300_02065962` tried first), and takes the one
+   whose radio answers "who are you?", at whatever speed it answers at.
+2. **Checks the radio's settings** that digital modes need, such as DATA MOD,
+   and says what to set on the radio if one is wrong. It changes nothing on
+   the radio: no setting in its definition is verified on a real radio yet.
+3. **Carries the radio's audio both ways** (Windows). Receive audio plays into
+   VB-CABLE ("CABLE Input"), so programs record it from "CABLE Output".
+   Transmit audio goes from a second VB-Audio virtual cable to the radio's
+   USB sound device, **only while the Agent has the radio keyed for a
+   program**; the rest of the time the radio gets silence and the program's
+   audio is thrown away. Without a second cable, receive still works and the
+   window says transmit audio doesn't go through the Agent. VB-Audio's
+   Hi-Fi Cable is "free to use" for end users (vb-audio.com/Cable); its
+   cables A+B are donationware.
+4. **Sets VARA's sound devices** to those cables in `VARA.ini`, if VARA is
+   installed in `C:\VARA` or Program Files and isn't running (see the plan,
+   "The exception: VARA's sound devices"). If VARA is running, it says so and
+   leaves the file alone.
+5. **Serves the radio** at `127.0.0.1:4532`, as `serve --allow-transmit`:
+   programs may tune and key it, one at a time, with the same failing-safe
+   rules (below). After each transmission it shows how loud the program's
+   transmit audio was, or that it was silent and which device the program
+   should play into.
+
+Starting `station` is the operator's choice that programs on this computer
+may key the radio (Principle IX).
+
 ## Sharing a radio with WSJT-X and other programs
 
 The Agent can be a virtual radio for programs that speak Hamlib's `rigctld`
