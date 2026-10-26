@@ -9,7 +9,9 @@ Engine: frequency, band, mode, filter width, and whether it is transmitting
 (Principle X). The web client's New QSO box fills in from it, and the On air
 box shows it.
 
-This version only reads the radio. It never tunes it and never transmits.
+On its own it only reads the radio. It tunes or keys a radio only when the
+operator starts `serve` with `--allow-tuning` or `--allow-transmit`, for the
+program that asks (see "Sharing a radio" below).
 
 ## How it reaches a radio
 
@@ -142,8 +144,9 @@ Agent, and the Agent stays the radio's one owner (Principle IX).
 
 ```sh
 loglab-agent serve RADIO --listen 127.0.0.1:4532
-loglab-agent serve --civ COM5 --allow-tuning      # a real IC-7300, for WSJT-X or VarAC
-loglab-agent serve --civ-pretend --allow-tuning   # the pretend IC-7300
+loglab-agent serve --civ COM5 --allow-tuning      # a real IC-7300: tune, no transmit
+loglab-agent serve --civ COM5 --allow-transmit    # a real IC-7300: tune and key it
+loglab-agent serve --civ-pretend --allow-transmit # the pretend IC-7300
 ```
 
 In VarAC, open Settings > RIG and choose **Hamlib** for both PTT and
@@ -164,11 +167,34 @@ How it behaves:
   driver (`--civ PORT` or `--civ-pretend`). Allowing it is the operator's
   choice at the radio's computer, on the command line, until the tray program
   decides which program controls each radio.
-- **Never transmits.** Every request to transmit is refused, tuning allowed
-  or not. A request to **stop** transmitting (`T 0`, which WSJT-X sends
-  whenever it closes its connection) is always honored, never refused.
-  In WSJT-X set **PTT Method** to `VOX`, **Mode** to `None` and **Split
-  Operation** to `None` until transmitting through the Agent exists.
+- **Transmits only with `--allow-transmit`.** Without it, every request to
+  transmit is refused. With it (CI-V driver only, and it allows tuning too),
+  a program's PTT request keys the radio (CI-V `1C 00 01`), and in WSJT-X or
+  VarAC the PTT method is then CAT or Hamlib. A request to **stop**
+  transmitting (`T 0`, which WSJT-X sends whenever it closes its connection)
+  is always honored, never refused. Failing safe means not transmitting
+  (Principle IX):
+  - **One program at a time.** While one program has the radio keyed, a
+    request to transmit from another is refused; any program may stop it.
+  - **The radio's own PTT wins.** If the radio is already transmitting when
+    a program asks (the microphone's PTT is pressed), the request is refused.
+    A request to stop is never passed to a radio the Agent didn't key, so it
+    never cuts the operator off.
+  - **A program that disconnects while keyed is unkeyed** at once, crashed or
+    closed.
+  - **A time limit.** After 60 seconds keyed at once (`--tx-limit SECONDS`,
+    1 to 600), the Agent unkeys the radio and says why.
+  - **If unkeying fails,** the Agent says the radio may still be
+    transmitting, refuses every request to transmit, and tries again every
+    second until it is unkeyed. Stopping the Agent unkeys too.
+  - **Never on its own.** The Agent keys a radio only when a program asks:
+    never on a timer, as a retry, or after a reconnect.
+  - It also refuses to key a radio that can't say whether it is
+    transmitting.
+
+  The radio's own transmit time-out timer is still the last line of defense:
+  turn it on. Transmit audio does not go through the Agent yet, so the
+  program's sound output goes straight to the radio's USB sound device.
 - **A band the radio doesn't have** (2 m or 70 cm on an IC-7300) is refused
   by the radio itself. WSJT-X then shows "Rig Control Error" and reconnects,
   as it does with any radio. Delete those bands from WSJT-X's Settings >
@@ -186,7 +212,9 @@ How it behaves:
   21:38:26Z  a program connected (127.0.0.1:55526)
   21:38:26Z  asked to tune to 7.074000 MHz: done
   21:38:26Z  radio: 7.074000 MHz DATA-USB, receiving
-  21:38:28Z  asked to transmit: refused (the Agent doesn't transmit yet)
+  21:38:28Z  asked to transmit: transmitting (127.0.0.1:55526)
+  21:38:28Z  radio: 7.074000 MHz DATA-USB, transmitting
+  21:38:41Z  asked to stop transmitting: unkeyed after 12.7 s
   ```
 
   The `radio:` lines are read from the radio itself, so if a program's

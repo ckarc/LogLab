@@ -388,7 +388,10 @@ Each step is its own pull request, with tests and a demonstration
    instead of to the radio. Tuning first, no transmit.
 6. **The tray program and the PTT path**: the one-check-per-radio control,
    read-only unchecked programs, the watchdog, and refusal tests. WSJT-X
-   transmits through the Agent.
+   transmits through the Agent. *The PTT path is done, chosen on the command
+   line until the tray exists (`serve --allow-transmit`): one program at a
+   time, unkey on disconnect, a time limit, the radio's own PTT wins, with
+   tests.*
 7. **Audio**: the Agent owns the radio's sound device; WSJT-X uses a virtual
    one. *Receiving is done (`rx-audio`): the radio's audio into a VB-Audio
    cable, with clock-drift correction. Sending comes with transmitting.*
