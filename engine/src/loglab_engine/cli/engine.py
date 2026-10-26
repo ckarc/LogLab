@@ -1,18 +1,18 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""``loglab-engine``: run the Engine's API and web client.
+"""``lablog-engine``: run the Engine's API and web client.
 
-``loglab-engine serve`` listens on this machine only by default. To reach it
+``lablog-engine serve`` listens on this machine only by default. To reach it
 from other computers on the local network, give ``--host 0.0.0.0``; it needs
 no internet connection (Principle V). While it runs, it keeps the US and
 Canadian license lists and the POTA park list current whenever there is
 internet (unless given ``--no-license-refresh``).
 
-``loglab-engine licenses status`` says how current those lists are;
-``loglab-engine licenses import`` loads files downloaded elsewhere, for a
-station that is never online; ``loglab-engine licenses refresh`` downloads
-whatever is newer now. ``loglab-engine parks status`` and ``loglab-engine
+``lablog-engine licenses status`` says how current those lists are;
+``lablog-engine licenses import`` loads files downloaded elsewhere, for a
+station that is never online; ``lablog-engine licenses refresh`` downloads
+whatever is newer now. ``lablog-engine parks status`` and ``lablog-engine
 parks import FILE`` do the same for the Parks on the Air park list
 (``all_parks_ext.csv`` from pota.app).
 
@@ -22,7 +22,6 @@ Exit codes: 0 stopped normally, 2 refused or failed to start.
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from datetime import UTC, datetime
 from functools import partial
@@ -36,6 +35,7 @@ from loglab_engine import __version__
 from loglab_engine.api import create_app
 from loglab_engine.callbook.profiles import gateway_or_address
 from loglab_engine.cli.operator import RefusedError, check_schema
+from loglab_engine.environment import setting
 from loglab_engine.fieldlab import FieldLabBus
 from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.reference.refresh import HttpDownloads, Refresher
@@ -65,14 +65,14 @@ def _broker(text: str) -> tuple[str, int]:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="loglab-engine",
+        prog="lablog-engine",
         description="Run the LabLog Engine: its API and the web client.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--database",
         default=None,
-        help="libpq connection string or URL (default: $LOGLAB_DATABASE, else dbname=loglab)",
+        help="libpq connection string or URL (default: $LABLOG_DATABASE, else dbname=loglab)",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     serve = commands.add_parser("serve", help="serve the API and web client")
@@ -85,10 +85,10 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument(
         "--mqtt",
         type=_broker,
-        default=os.environ.get("LOGLAB_MQTT") or None,  # argparse checks it with _broker
+        default=setting("MQTT"),  # argparse checks it with _broker
         metavar="HOST[:PORT]",
         help="FieldLab's MQTT broker, to read the trailer's GPS fix and which internet"
-        " link the gateway uses (default: $LOGLAB_MQTT, else none)",
+        " link the gateway uses (default: $LABLOG_MQTT, else none)",
     )
     serve.add_argument(
         "--no-license-refresh",

@@ -1,11 +1,11 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""``loglab-log``: the log in PostgreSQL, from the command line.
+"""``lablog-log``: the log in PostgreSQL, from the command line.
 
 Migrate the schema, import ADI files, look at QSOs and their history, edit,
 delete, and restore them through the audited path (Principle VII), and export
-ADI. Every change is made by the operator signed in with ``loglab-operator
+ADI. Every change is made by the operator signed in with ``lablog-operator
 sign-in``, at their station (Principle XXI). All times are shown in UTC
 (Principle VIII).
 
@@ -328,14 +328,14 @@ def _add_actor(parser: argparse.ArgumentParser) -> None:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="loglab-log",
+        prog="lablog-log",
         description="LabLog's log in PostgreSQL: versioned, audited, never erased.",
     )
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument(
         "--database",
         default=None,
-        help="libpq connection string or URL (default: $LOGLAB_DATABASE, else dbname=loglab)",
+        help="libpq connection string or URL (default: $LABLOG_DATABASE, else dbname=loglab)",
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

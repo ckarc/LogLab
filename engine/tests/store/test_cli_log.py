@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""The ``loglab-log`` command line: the demonstration Brian runs, end to end."""
+"""The ``lablog-log`` command line: the demonstration Brian runs, end to end."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ def test_migrate_command(empty_database: str, tmp_path: Path) -> None:
     cli = Terminal(empty_database, tmp_path / "session")
     code, _, err = cli("find")
     assert code == EXIT_REFUSED
-    assert "run 'loglab-log migrate' first" in err
+    assert "run 'lablog-log migrate' first" in err
     assert cli("migrate", "--check")[0] == EXIT_DIFFERENT
     code, out, _ = cli("migrate")
     assert code == EXIT_OK

@@ -18,8 +18,8 @@ With no internet the check simply fails and is tried again later; lookups
 keep using the list already loaded. In FieldLab, nothing is fetched while the
 gateway says the internet is Starlink or another metered link: the full US
 list alone is about 143 MB, and Starlink has a data budget. A station that is never online loads the
-files by hand with ``loglab-engine licenses import`` and
-``loglab-engine parks import``.
+files by hand with ``lablog-engine licenses import`` and
+``lablog-engine parks import``.
 """
 
 from __future__ import annotations

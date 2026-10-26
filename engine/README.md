@@ -20,15 +20,24 @@ uv run mypy
 uv run pytest
 ```
 
+## Older names
+
+The project was called LogLab before it was LabLog. The commands still answer
+to their old names (`loglab-engine`, `loglab-log`, `loglab-operator`,
+`loglab-adif`), and each `$LABLOG_*` environment variable is also read as
+`$LOGLAB_*`; the new name wins when both are set. The default database is
+still `loglab`, and the session file is still under `~/.local/state/loglab/`,
+so nothing already stored moves.
+
 ## ADIF tools
 
-`loglab-adif` reads and writes ADI files (ADIF 3.1.7) losslessly and generates
+`lablog-adif` reads and writes ADI files (ADIF 3.1.7) losslessly and generates
 ghost QSOs, synthetic test contacts that can never pass for real ones.
 
 ```sh
-uv run loglab-adif ghosts -o ghosts.adi          # 1000 ghost QSOs (-n to change)
-uv run loglab-adif check ghosts.adi              # validate and summarize
-uv run loglab-adif roundtrip ghosts.adi -o copy.adi   # read, rewrite, prove nothing changed
+uv run lablog-adif ghosts -o ghosts.adi          # 1000 ghost QSOs (-n to change)
+uv run lablog-adif check ghosts.adi              # validate and summarize
+uv run lablog-adif roundtrip ghosts.adi -o copy.adi   # read, rewrite, prove nothing changed
 ```
 
 Ghost files are test data. Never import them into a real log or upload them to
@@ -36,7 +45,7 @@ any service.
 
 ## The log in PostgreSQL
 
-`loglab-log` stores QSOs in PostgreSQL. The log lives in the `log` schema and
+`lablog-log` stores QSOs in PostgreSQL. The log lives in the `log` schema and
 reference data in `reference` (Principle VI). Every QSO is a series of complete
 ADIF snapshots: an edit, a delete, and a restore each add a version that
 records the operator, station, and UTC time, and nothing is ever erased
@@ -44,21 +53,21 @@ records the operator, station, and UTC time, and nothing is ever erased
 
 ```sh
 createdb loglab                                   # once
-uv run loglab-log migrate                         # apply schema migrations
-uv run loglab-operator setup K9KSU                # once: the first administrator
-uv run loglab-operator sign-in K9KSU --station shack
-uv run loglab-log import ghosts.adi
-uv run loglab-log find -n 5                       # QSO IDs, newest last
-uv run loglab-log edit 1a2b3c4d --set RST_RCVD=339 --note "typo"
-uv run loglab-log delete 1a2b3c4d
-uv run loglab-log history 1a2b3c4d                # every version, who, when, what changed
-uv run loglab-log restore 1a2b3c4d
-uv run loglab-log export --import 1 -o copy.adi   # that import, with its own header
-uv run loglab-log export -o log.adi               # the whole log, with a LabLog header
-uv run loglab-operator sign-out
+uv run lablog-log migrate                         # apply schema migrations
+uv run lablog-operator setup K9KSU                # once: the first administrator
+uv run lablog-operator sign-in K9KSU --station shack
+uv run lablog-log import ghosts.adi
+uv run lablog-log find -n 5                       # QSO IDs, newest last
+uv run lablog-log edit 1a2b3c4d --set RST_RCVD=339 --note "typo"
+uv run lablog-log delete 1a2b3c4d
+uv run lablog-log history 1a2b3c4d                # every version, who, when, what changed
+uv run lablog-log restore 1a2b3c4d
+uv run lablog-log export --import 1 -o copy.adi   # that import, with its own header
+uv run lablog-log export -o log.adi               # the whole log, with a LabLog header
+uv run lablog-operator sign-out
 ```
 
-`--database` (or `$LOGLAB_DATABASE`) takes any libpq connection string; the
+`--database` (or `$LABLOG_DATABASE`) takes any libpq connection string; the
 default is `dbname=loglab`.
 
 ## Operators and signing in
@@ -68,19 +77,19 @@ Every request is made by an identified operator at an identified station
 signing in works with no internet connection (Principle V).
 
 ```sh
-uv run loglab-operator add W0XYZ                  # administrators; default view,log
-uv run loglab-operator add N0ABC --grant view,log,radio
-uv run loglab-operator grant W0XYZ radio          # or revoke
-uv run loglab-operator disable W0XYZ              # ends their sessions; enable undoes it
-uv run loglab-operator set-pin                    # change your own PIN or passphrase
-uv run loglab-operator list                       # everyone and what they may do
-uv run loglab-operator whoami
+uv run lablog-operator add W0XYZ                  # administrators; default view,log
+uv run lablog-operator add N0ABC --grant view,log,radio
+uv run lablog-operator grant W0XYZ radio          # or revoke
+uv run lablog-operator disable W0XYZ              # ends their sessions; enable undoes it
+uv run lablog-operator set-pin                    # change your own PIN or passphrase
+uv run lablog-operator list                       # everyone and what they may do
+uv run lablog-operator whoami
 ```
 
 - A secret is a PIN or passphrase of 6 to 128 characters, typed at a prompt.
   Only a salted scrypt hash is stored.
 - Signing in keeps a session token in `~/.local/state/loglab/session`
-  (or `$LOGLAB_SESSION_FILE`), readable only by you. Sessions last 24 hours.
+  (or `$LABLOG_SESSION_FILE`), readable only by you. Sessions last 24 hours.
   Only the token's SHA-256 is in the database.
 - Five wrong secrets for a callsign within 15 minutes lock it for 15 minutes.
 - Permissions are `view`, `log`, `radio`, and `admin`, each granted on its own.
@@ -92,7 +101,7 @@ uv run loglab-operator whoami
 ## The web page and the API
 
 ```sh
-uv run loglab-engine serve                        # http://127.0.0.1:8073
+uv run lablog-engine serve                        # http://127.0.0.1:8073
 ```
 
 The Engine serves LabLog's HTTP API at `/api/v1` and a web page at `/` that
@@ -174,10 +183,10 @@ own reference is at `/api/docs`.
   online, download the files elsewhere and load them by hand:
 
   ```sh
-  uv run loglab-engine licenses import --fcc l_amat.zip --canada amateur_delim.zip
-  uv run loglab-engine licenses import --fcc-daily l_am_mon.zip   # oldest first
-  uv run loglab-engine licenses status
-  uv run loglab-engine licenses refresh   # download whatever is newer, now
+  uv run lablog-engine licenses import --fcc l_amat.zip --canada amateur_delim.zip
+  uv run lablog-engine licenses import --fcc-daily l_am_mon.zip   # oldest first
+  uv run lablog-engine licenses status
+  uv run lablog-engine licenses refresh   # download whatever is newer, now
   ```
 
   A lookup answers from these lists first; QRZ.com, when set up, only fills
@@ -200,7 +209,7 @@ own reference is at `/api/docs`.
   it alone for a minute. The Engine has to send the password to QRZ.com, so
   it is stored as typed: anyone who can read the database can read it.
 - **Kept QRZ.com profiles stay current** on their own. Once an hour,
-  `loglab-engine serve` looks up again (at most 60, three seconds apart)
+  `lablog-engine serve` looks up again (at most 60, three seconds apart)
   the calls whose biography or photo it keeps and whose entry is over 30
   days old. That is QRZ.com's small callsign answer; the biography and photo
   are downloaded again only when it shows a newer biography date or a
@@ -211,8 +220,8 @@ own reference is at `/api/docs`.
   api.ipify.org); an admin can set it to run on any internet, or never, in
   the **QRZ.com** window (`GET`/`PUT /api/v1/callbook/refresh`,
   `{"mode": "auto" | "always" | "off"}`). With no internet it tries nothing.
-  In FieldLab, give `loglab-engine serve --mqtt HOST[:PORT]` (or set
-  `$LOGLAB_MQTT`) to the kiosk's MQTT broker: the gateway's own word there
+  In FieldLab, give `lablog-engine serve --mqtt HOST[:PORT]` (or set
+  `$LABLOG_MQTT`) to the kiosk's MQTT broker: the gateway's own word there
   (`fieldlab/facts/host`, from github.com/ckarc/fieldlab-kiosk) decides
   instead, and re-checking runs only on `wan1`, the shop link, never on
   Starlink or the phone tether. The Engine only reads the bus, with an MQTT

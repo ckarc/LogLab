@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""The ``loglab-adif`` command line: the demonstration Brian runs."""
+"""The ``lablog-adif`` command line: the demonstration Brian runs."""
 
 from __future__ import annotations
 

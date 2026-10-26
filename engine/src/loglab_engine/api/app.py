@@ -167,7 +167,7 @@ MAX_NOTE: Final = 1000
 MAX_LIST: Final = 500
 MAX_P12_BASE64: Final = 96 * 1024
 # An ADIF file the web client takes in, in base64: about 30 MB of ADIF, or
-# some 100,000 QSOs. Bigger logs go in with ``loglab-log import``.
+# some 100,000 QSOs. Bigger logs go in with ``lablog-log import``.
 MAX_IMPORT_BASE64: Final = 40 * 1024 * 1024
 MAX_IMPORT_WARNINGS: Final = 20
 # The web client loads nothing from anywhere else, so it works offline (Principle V).

@@ -5,19 +5,20 @@
 
 from __future__ import annotations
 
-import os
 from typing import Final
 
 import psycopg
 from psycopg.rows import TupleRow
 
-DATABASE_ENV: Final = "LOGLAB_DATABASE"
+from loglab_engine.environment import setting
+
+DATABASE_SETTING: Final = "DATABASE"
 DEFAULT_DATABASE: Final = "dbname=loglab"
 
 
 def default_database() -> str:
-    """The connection string to use when none is given: ``$LOGLAB_DATABASE`` or ``loglab``."""
-    return os.environ.get(DATABASE_ENV) or DEFAULT_DATABASE
+    """The connection string to use when none is given: ``$LABLOG_DATABASE`` or ``loglab``."""
+    return setting(DATABASE_SETTING) or DEFAULT_DATABASE
 
 
 def connect(conninfo: str) -> psycopg.Connection[TupleRow]:
