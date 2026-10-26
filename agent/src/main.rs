@@ -22,6 +22,7 @@ mod civ;
 mod civ_demo;
 mod civ_pretend;
 mod civ_radio;
+mod civ_serial;
 mod engine;
 mod flex;
 mod hamlib;
@@ -75,14 +76,14 @@ Usage:
                                        definition lists; keep the first
                                        reading as its as-received record,
                                        and compare later ones against it
-                                       (only --civ-pretend can, for now)
+                                       (--civ or --civ-pretend only)
   loglab-agent serve RADIO [--listen 127.0.0.1:4532] [--allow-tuning]
                                        be a virtual radio for programs like
                                        WSJT-X (Rig: Hamlib NET rigctl), on
                                        this computer only; read-only unless
-                                       --allow-tuning (--civ-pretend only,
-                                       for now); transmitting is always
-                                       refused
+                                       --allow-tuning (--civ or
+                                       --civ-pretend only); transmitting is
+                                       always refused
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -96,9 +97,12 @@ Usage:
 
 RADIO is one of:
   --pretend                            the built-in pretend radio
-  --civ-pretend                        the Agent's own CI-V driver, talking
-                                       to a pretend IC-7300 (no real radio
-                                       yet: the serial port comes later)
+  --civ PORT                           an Icom radio on a serial port, such
+                                       as COM5 or /dev/ttyUSB0, through the
+                                       Agent's own CI-V driver; it finds the
+                                       speed and the radio by itself
+  --civ-pretend                        the same driver, talking to a pretend
+                                       IC-7300
   --hamlib-model N --device PORT [--baud N] [--rigctld-program PATH]
                                        start Hamlib's rigctld for a radio
                                        (3073 is the Icom IC-7300)
@@ -130,6 +134,8 @@ fn banner() -> String {
 enum RadioChoice {
     Pretend,
     CivPretend,
+    /// The Agent's own CI-V driver, on a real serial port (`COM5`).
+    Civ(String),
     Hamlib(HamlibChoice),
     Flex(String),
 }
@@ -184,6 +190,7 @@ struct Options {
     station: Option<String>,
     pretend: bool,
     civ_pretend: bool,
+    civ: Option<String>,
     model: Option<u32>,
     device: Option<String>,
     baud: Option<u32>,
@@ -261,6 +268,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--baud" => options.baud = Some(number(flag, &value)?),
             "--rigctld-program" => options.program = Some(value),
             "--flex" => options.flex = Some(value),
+            "--civ" => options.civ = Some(value),
             "--journal" => options.journal = Some(value),
             "--records" => options.records = Some(value),
             "--listen" => {
@@ -326,9 +334,9 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.allow_tuning && verb != "serve" {
         return Err("--allow-tuning goes with serve".to_owned());
     }
-    if options.allow_tuning && radio != RadioChoice::CivPretend {
+    if options.allow_tuning && !matches!(radio, RadioChoice::CivPretend | RadioChoice::Civ(_)) {
         return Err(
-            "--allow-tuning works only with --civ-pretend for now: real radios stay read-only until the tray program chooses which program controls them"
+            "--allow-tuning works only with the Agent's own CI-V driver (--civ PORT or --civ-pretend) for now"
                 .to_owned(),
         );
     }
@@ -379,12 +387,14 @@ fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     let chosen = [
         options.pretend,
         options.civ_pretend,
+        options.civ.is_some(),
         hamlib,
         options.flex.is_some(),
     ];
     if chosen.iter().filter(|c| **c).count() > 1 {
         return Err(
-            "choose one radio: --pretend, --civ-pretend, a Hamlib radio, or --flex".to_owned(),
+            "choose one radio: --pretend, --civ-pretend, --civ, a Hamlib radio, or --flex"
+                .to_owned(),
         );
     }
     if options.pretend {
@@ -393,12 +403,15 @@ fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     if options.civ_pretend {
         return Ok(RadioChoice::CivPretend);
     }
+    if let Some(port) = options.civ.take() {
+        return Ok(RadioChoice::Civ(port));
+    }
     if let Some(address) = options.flex.take() {
         return Ok(RadioChoice::Flex(address));
     }
     let model = options
         .model
-        .ok_or("choose a radio: --pretend, --flex, or --hamlib-model with --device or --rigctld")?;
+        .ok_or("choose a radio: --pretend, --civ PORT, --flex, or --hamlib-model with --device or --rigctld")?;
     match (options.device.take(), options.rigctld) {
         (Some(device), None) => Ok(RadioChoice::Hamlib(HamlibChoice::Start(Launch {
             program: options
@@ -429,10 +442,19 @@ fn civ_pretend_radio() -> Result<CivRadio<PretendPort>, rig::RadioError> {
     CivRadio::find(port, &definitions)
 }
 
+/// The CI-V driver on a real serial port, finding which known radio answers
+/// and at what speed.
+fn civ_serial_radio(port: &str) -> Result<CivRadio<civ_serial::SerialPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let port = civ_serial::SerialPort::open(port).map_err(rig::RadioError)?;
+    CivRadio::find(port, &definitions)
+}
+
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
+        RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
         RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
             Box::new(HamlibRadio::open(&Source::Started(launch.clone()))?)
@@ -806,9 +828,14 @@ fn utc_clock() -> String {
 fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result<(), String> {
     let (notes, heard) = mpsc::channel();
     let shared: Arc<dyn rigctld_server::Source> = if allow_tuning {
-        // Only the pretend radio, for now (checked when the command is read).
-        let radio = civ_pretend_radio().map_err(|error| error.to_string())?;
-        Arc::new(rigctld_server::Shared::with_tuning(Box::new(radio)).with_notes(notes))
+        // Only the CI-V driver can tune (checked when the command is read).
+        let radio: Box<dyn rig::Tunable + Send> = match choice {
+            RadioChoice::Civ(port) => {
+                Box::new(civ_serial_radio(port).map_err(|error| error.to_string())?)
+            }
+            _ => Box::new(civ_pretend_radio().map_err(|error| error.to_string())?),
+        };
+        Arc::new(rigctld_server::Shared::with_tuning(radio).with_notes(notes))
     } else {
         let radio = open(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::new(radio).with_notes(notes))
@@ -876,15 +903,25 @@ fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result
 /// Read a radio's menu settings, keep the first reading as its as-received
 /// record, and report (Principles X and XIV).
 fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
-    let RadioChoice::CivPretend = choice else {
-        return Err(
-            "only the Agent's own CI-V driver can read settings, and for now only with --civ-pretend"
+    match choice {
+        RadioChoice::CivPretend => record_from(
+            &mut civ_pretend_radio().map_err(|error| error.to_string())?,
+            dir,
+        ),
+        RadioChoice::Civ(port) => record_from(
+            &mut civ_serial_radio(port).map_err(|error| error.to_string())?,
+            dir,
+        ),
+        _ => Err(
+            "only the Agent's own CI-V driver can read settings: use --civ PORT or --civ-pretend"
                 .to_owned(),
-        );
-    };
-    let mut radio = civ_pretend_radio().map_err(|error| error.to_string())?;
+        ),
+    }
+}
+
+fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Result<(), String> {
     let now = settings_record::read(
-        &mut radio,
+        radio,
         std::time::SystemTime::now(),
         &settings_record::computer_name(),
     );
@@ -1098,6 +1135,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_a_civ_radio_on_a_serial_port() {
+        assert_eq!(
+            parse(&args("read --civ COM5")),
+            Ok(Command::Read(RadioChoice::Civ("COM5".to_owned())))
+        );
+        assert_eq!(
+            parse(&args("record --civ /dev/ttyUSB0 --records r")),
+            Ok(Command::Record {
+                radio: RadioChoice::Civ("/dev/ttyUSB0".to_owned()),
+                records: "r".to_owned()
+            })
+        );
+        assert!(parse(&args("read --civ")).is_err(), "needs a port");
+        assert!(parse(&args("read --civ COM5 --civ-pretend")).is_err());
+        assert!(parse(&args("read --civ COM5 --hamlib-model 3073 --device COM5")).is_err());
+    }
+
+    #[test]
     fn reads_a_flexradio() {
         assert_eq!(
             parse(&args("read --flex 192.168.1.20")),
@@ -1137,7 +1192,15 @@ mod tests {
         ));
         assert!(
             parse(&args("serve --pretend --allow-tuning")).is_err(),
-            "only the CI-V pretend radio may be tuned"
+            "only the CI-V driver may tune"
+        );
+        assert_eq!(
+            parse(&args("serve --civ COM5 --allow-tuning")),
+            Ok(Command::Serve {
+                radio: RadioChoice::Civ("COM5".to_owned()),
+                listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+                allow_tuning: true,
+            })
         );
         assert!(parse(&args("read --civ-pretend --allow-tuning")).is_err());
         assert!(parse(&args("read --civ-pretend --listen 127.0.0.1:5000")).is_err());

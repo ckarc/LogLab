@@ -382,6 +382,7 @@ Each step is its own pull request, with tests and a demonstration
    bench. The existing pretend radio grows into this.
 3. **Icom CI-V driver, reading only:** finding the radio, baud search,
    identity, live state, transceive. This replaces Hamlib for the IC-7300.
+   *Done, on a real serial port too (`--civ COM5`).*
 4. **Settings record** on first connect.
 5. **rigctld personality** on `127.0.0.1`: WSJT-X connects to the Agent
    instead of to the radio. Tuning first, no transmit.

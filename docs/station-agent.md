@@ -28,10 +28,13 @@ This version only reads the radio. It never tunes it and never transmits.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
-  and whether it is transmitting. It is not yet connected to a serial port:
-  `--civ-pretend` runs it against a pretend IC-7300, and the serial port comes
-  once there is a radio to test it on. LabLog shows the connection as
-  "Icom CI-V".
+  and whether it is transmitting. `--civ COM5` (or `--civ /dev/ttyUSB0`) uses
+  the radio's own USB serial port; `--civ-pretend` runs it against a pretend
+  IC-7300. On Windows the IC-7300's port needs Silicon Labs' CP210x driver
+  (Device Manager shows "CP2102 USB to UART Bridge Controller" with an error
+  until it is installed). The Agent holds the port's DTR and RTS lines off, so
+  a radio set to key from them (USB SEND) is never keyed by opening it. LabLog
+  shows the connection as "Icom CI-V".
 - **The pretend radio.** Built in, for trying LabLog with no radio. It visits
   a few spots on the bands and "transmits" for a few seconds at each.
 
@@ -139,8 +142,13 @@ Agent, and the Agent stays the radio's one owner (Principle IX).
 
 ```sh
 loglab-agent serve RADIO --listen 127.0.0.1:4532
-loglab-agent serve --civ-pretend --allow-tuning   # for WSJT-X
+loglab-agent serve --civ COM5 --allow-tuning      # a real IC-7300, for WSJT-X or VarAC
+loglab-agent serve --civ-pretend --allow-tuning   # the pretend IC-7300
 ```
+
+In VarAC, open Settings > RIG and choose **Hamlib** for both PTT and
+Frequency Control, with Host `localhost` and Port `4532`. Close any other
+program that has the radio's COM port open first: the Agent is its one owner.
 
 In WSJT-X, open Settings > Radio and set **Rig** to `Hamlib NET rigctl` and
 **Network Server** to `127.0.0.1:4532` (the default if `--listen` is left
@@ -152,9 +160,10 @@ How it behaves:
   request to tune or change mode is refused with Hamlib's "command rejected
   by the rig" (`RPRT -9`). WSJT-X needs to tune: it sets the frequency as
   soon as it connects, and stops with a rig error when refused. So for
-  WSJT-X, use `--allow-tuning`, which for now works only with
-  `--civ-pretend`. Real radios stay read-only until the tray program decides
-  which program controls each radio.
+  WSJT-X, use `--allow-tuning`, which works only with the Agent's own CI-V
+  driver (`--civ PORT` or `--civ-pretend`). Allowing it is the operator's
+  choice at the radio's computer, on the command line, until the tray program
+  decides which program controls each radio.
 - **Never transmits.** Every request to transmit is refused, tuning allowed
   or not. A request to **stop** transmitting (`T 0`, which WSJT-X sends
   whenever it closes its connection) is always honored, never refused.
@@ -185,7 +194,7 @@ How it behaves:
   asked for rather than what the radio did (Principle X).
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
-- Any radio the Agent can read can be served: `--civ-pretend`, `--pretend`,
+- Any radio the Agent can read can be served: `--civ PORT`, `--civ-pretend`, `--pretend`,
   `--flex`, or a Hamlib radio. Hamlib's own network client, the one WSJT-X
   uses, has been checked against it with Hamlib 4.5.5.
 
