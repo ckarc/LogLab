@@ -17,10 +17,10 @@
 //! (to everyone, address 00h), so neither is mistaken for the answer.
 //!
 //! [`Ask`] is the whole list of what the driver may say to a radio, and none
-//! of it tunes the radio or keys it. A real serial port is not here yet: it
-//! comes once there is a radio to test it on. Until then the driver runs
-//! against the pretend radio through [`PretendPort`], which is how it is
-//! tested and what `loglab-agent read --civ-pretend` uses.
+//! of it tunes the radio or keys it. A real radio is reached through a serial
+//! port (`civ_serial`, `--civ COM5`); the pretend radio through
+//! [`PretendPort`], which is how the driver is tested and what
+//! `loglab-agent read --civ-pretend` uses.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, Instant};
