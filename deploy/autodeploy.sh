@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 # Self-deploy for a development box (loglab-dev). Run it every two minutes

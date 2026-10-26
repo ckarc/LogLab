@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Reading the US and Canadian amateur license lists, as their agencies publish them.
@@ -77,7 +77,7 @@ class Tally:
 
 @dataclass(frozen=True, slots=True)
 class Header:
-    """One FCC license (``HD.dat``). ``kept`` is false for one LogLab does not keep."""
+    """One FCC license (``HD.dat``). ``kept`` is false for one LabLog does not keep."""
 
     usi: str
     call: str
@@ -230,7 +230,7 @@ def _fcc_records(
 
 
 def fcc_headers(archive: zipfile.ZipFile, today: date, tally: Tally) -> Iterator[Header]:
-    """Every license in an FCC download, marking the ones LogLab keeps.
+    """Every license in an FCC download, marking the ones LabLog keeps.
 
     An active license is kept; so is an expired one still within the two-year
     grace period in which it can be renewed. Cancelled and terminated ones are not.

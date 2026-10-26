@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Operation overlays. An overlay (a contest template the Engine serves,
@@ -15,7 +15,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const EVERYDAY = "everyday";
   const CHECK_AFTER_MS = 250;
   const form = $("#entry");
@@ -32,30 +32,30 @@
 
   const byId = (list, id) => list.find((x) => x.id === id) || null;
   const everyday = () => byId(overlays, EVERYDAY);
-  const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
+  const isAdmin = () => (LabLog.session()?.permissions || []).includes("admin");
   // Who may change an operation, ended or not, until it is archived.
-  const mayChange = (op) => !op.archived_at && (isAdmin() || (op.station_call === LogLab.session()?.operator && !op.gota_call));
+  const mayChange = (op) => !op.archived_at && (isAdmin() || (op.station_call === LabLog.session()?.operator && !op.gota_call));
 
   // -- Loading -------------------------------------------------------------
 
   async function load() {
     try {
       [overlays, operations, everyOperation] = await Promise.all([
-        LogLab.api("GET", "/overlays"),
-        LogLab.api("GET", "/operations"),
-        LogLab.api("GET", "/operations?include_ended=true"),
+        LabLog.api("GET", "/overlays"),
+        LabLog.api("GET", "/operations"),
+        LabLog.api("GET", "/operations?include_ended=true"),
       ]);
     } catch (e) {
       $("#op-error").textContent = `Operations could not be loaded: ${e.message}`;
       return;
     }
     $("#op-error").textContent = "";
-    const chosen = LogLab.layout().operation;
+    const chosen = LabLog.layout().operation;
     operation = chosen ? byId(operations, chosen.id) : null;
     if (chosen && !operation) {
       // Ended or gone: back to everyday logging, and say so in the menu.
       $("#op-error").textContent = "The operation you were logging in has ended. You are logging under your own call.";
-      LogLab.useLayout({ operation: null });
+      LabLog.useLayout({ operation: null });
     }
     overlay = (operation && byId(overlays, operation.overlay)) || everyday();
     show();
@@ -88,7 +88,7 @@
         input.title = `${part.label}: ${part.hint}`;
       }
     }
-    LogLab.setDefaultLayout(overlay.layout ? arrangement(overlay) : null);
+    LabLog.setDefaultLayout(overlay.layout ? arrangement(overlay) : null);
     // The page shows the map this overlay calls for (app.js, map.js).
     document.dispatchEvent(new CustomEvent("loglab:overlay-shown", { detail: { overlay } }));
     showLoggingAs();
@@ -130,7 +130,7 @@
   // The operation and the call QSOs are made as, beside New QSO's title.
   function showLoggingAs() {
     const name = $("#overlay-name");
-    const gota = Boolean(LogLab.layout().operation?.gota && operation?.gota_call);
+    const gota = Boolean(LabLog.layout().operation?.gota && operation?.gota_call);
     name.hidden = !operation;
     if (operation) {
       const when = shortHours(operation);
@@ -192,7 +192,7 @@
   // Moving to another overlay keeps how the page was arranged in this one,
   // and brings back how it was arranged in the other (or its starting layout).
   function useOperation(next, gota) {
-    const now = LogLab.layout();
+    const now = LabLog.layout();
     const from = overlay ? overlay.id : EVERYDAY;
     const nextOverlay = (next && byId(overlays, next.overlay)) || everyday();
     const change = { operation: next ? { id: next.id, gota: Boolean(gota && next.gota_call) } : null };
@@ -206,7 +206,7 @@
         change.tables = { ...now.tables, ...back.tables };
       }
     }
-    LogLab.useLayout(change);
+    LabLog.useLayout(change);
     operation = next;
     overlay = nextOverlay;
     show();
@@ -220,7 +220,7 @@
     select.replaceChildren();
     const own = document.createElement("option");
     own.value = "";
-    own.textContent = `Everyday logging as ${LogLab.session()?.operator || "yourself"}`;
+    own.textContent = `Everyday logging as ${LabLog.session()?.operator || "yourself"}`;
     select.append(own);
     for (const op of operations) {
       const option = document.createElement("option");
@@ -231,7 +231,7 @@
     select.value = operation ? operation.id : "";
     const gotaRow = $("#op-gota-row");
     gotaRow.hidden = !operation?.gota_call;
-    $("#op-gota").checked = Boolean(LogLab.layout().operation?.gota);
+    $("#op-gota").checked = Boolean(LabLog.layout().operation?.gota);
     $("#op-gota-call").textContent = operation?.gota_call ? `(logs as ${operation.gota_call})` : "";
     $("#op-current").textContent = operation ? describe(operation) : "Everyday logging: QSOs are made as your own call, with no dupe check.";
     $("#op-edit").hidden = !operation || !mayChange(operation);
@@ -281,7 +281,7 @@
     }
     let summary;
     try {
-      summary = await LogLab.api("GET", `/operations/${id}/summary`);
+      summary = await LabLog.api("GET", `/operations/${id}/summary`);
     } catch {
       box.hidden = true;
       return;
@@ -330,7 +330,7 @@
     }
     select.value = op ? op.overlay : (byId(overlays, "arrl-fd") ? "arrl-fd" : EVERYDAY);
     setup.name.value = op ? op.name : "";
-    setup.station_call.value = op ? op.station_call : (isAdmin() ? "" : LogLab.session()?.operator || "");
+    setup.station_call.value = op ? op.station_call : (isAdmin() ? "" : LabLog.session()?.operator || "");
     setup.gota_call.value = op?.gota_call || "";
     setup.practice.checked = Boolean(op?.practice);
     setup.practice.disabled = Boolean(op); // set when the operation is made
@@ -369,8 +369,8 @@
         name.className = "park-name hint";
         name.setAttribute("aria-live", "polite");
         label.append(name);
-        input.addEventListener("input", () => window.LogLabParks.nameInto(input.value, name));
-        window.LogLabParks.nameInto(input.value, name);
+        input.addEventListener("input", () => window.LabLogParks.nameInto(input.value, name));
+        window.LabLogParks.nameInto(input.value, name);
       }
       box.append(label);
     }
@@ -403,16 +403,16 @@
       practice: editing ? Boolean(editing.practice) : setup.practice.checked,
     };
     try {
-      const saved = editing ? await LogLab.api("PUT", `/operations/${editing.id}`, body) : await LogLab.api("POST", "/operations", body);
+      const saved = editing ? await LabLog.api("PUT", `/operations/${editing.id}`, body) : await LabLog.api("POST", "/operations", body);
       dialog.close();
       [operations, everyOperation] = await Promise.all([
-        LogLab.api("GET", "/operations"),
-        LogLab.api("GET", "/operations?include_ended=true"),
+        LabLog.api("GET", "/operations"),
+        LabLog.api("GET", "/operations?include_ended=true"),
       ]);
       const current = !editing || editing.id === operation?.id;
       if (!current) refreshLog(); // changed from the Log: whatever you log as stays
       else if (saved.ended) useOperation(null, false);
-      else useOperation(byId(operations, saved.id), LogLab.layout().operation?.gota);
+      else useOperation(byId(operations, saved.id), LabLog.layout().operation?.gota);
     } catch (e) {
       error.textContent = e.message;
     }
@@ -431,9 +431,9 @@
     error.textContent = "";
     if (!editing || !confirm(`Archive ${editing.name}? Its settings and QSOs are locked for good and can't be changed or unlocked. Do this once its log has been submitted, and after any LoTW or QRZ upload.`)) return;
     try {
-      await LogLab.api("POST", `/operations/${editing.id}/archive`);
+      await LabLog.api("POST", `/operations/${editing.id}/archive`);
       dialog.close();
-      everyOperation = await LogLab.api("GET", "/operations?include_ended=true");
+      everyOperation = await LabLog.api("GET", "/operations?include_ended=true");
       refreshLog();
     } catch (e) {
       error.textContent = e.message;
@@ -479,15 +479,15 @@
   }
 
   async function runCheck() {
-    const fields = LogLab.entryFields();
+    const fields = LabLog.entryFields();
     if (!fields.some((f) => f.name === "CALL")) return clearNote();
     const ask = ++asked;
     const body = { fields };
-    const chosen = LogLab.layout().operation;
+    const chosen = LabLog.layout().operation;
     if (operation && chosen) body.operation = { id: operation.id, gota: Boolean(chosen.gota) };
     let result;
     try {
-      result = await LogLab.api("POST", `/overlays/${overlay.id}/check`, body);
+      result = await LabLog.api("POST", `/overlays/${overlay.id}/check`, body);
     } catch {
       return clearNote(); // no Engine, no check: logging still works (Principle V)
     }
@@ -535,7 +535,7 @@
   }, { capture: true });
 
   // Another position may have set up or ended an operation since.
-  $("#menu-open").addEventListener("click", () => { if (LogLab.session()) load(); });
+  $("#menu-open").addEventListener("click", () => { if (LabLog.session()) load(); });
   $("#op-choice").addEventListener("change", (event) => {
     useOperation(byId(operations, event.target.value), false);
   });

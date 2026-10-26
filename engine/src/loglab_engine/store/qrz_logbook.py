@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """QRZ logbook keys, and what was sent to each QRZ logbook.
@@ -53,7 +53,7 @@ class LogbookTakenError(StoreError):
 
 @dataclass(frozen=True, slots=True)
 class Logbook:
-    """A QRZ logbook LogLab sends QSOs to."""
+    """A QRZ logbook LabLog sends QSOs to."""
 
     book_call: str
     api_key: str

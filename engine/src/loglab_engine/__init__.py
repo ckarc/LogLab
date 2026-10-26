@@ -1,7 +1,7 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""LogLab Engine.
+"""LabLog Engine.
 
 The Engine owns the log, contest templates, reference data, operator
 identities, and the event stream. It never touches radio hardware.

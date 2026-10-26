@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Versioned schema migrations: numbered SQL files, applied in order, recorded with checksums.
@@ -37,8 +37,8 @@ if TYPE_CHECKING:
 
 _FILE_NAME: Final = re.compile(r"^(\d{4})_([a-z0-9_]+)\.sql$")
 
-# Serializes migration runs across processes; any constant unique to LogLab works.
-_LOCK_KEY: Final = 0x4C6F674C6162  # "LogLab"
+# Serializes migration runs across processes; any constant unique to LabLog works.
+_LOCK_KEY: Final = 0x4C6F674C6162  # "LogLab", the old name; kept so every Engine shares one lock
 
 _BOOTSTRAP: Final = b"""
 CREATE SCHEMA IF NOT EXISTS meta;

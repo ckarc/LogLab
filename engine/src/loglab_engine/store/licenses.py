@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """The US and Canadian license lists in the Engine's database, for lookups with no internet.
@@ -112,7 +112,7 @@ LEFT JOIN (SELECT DISTINCT ON (usi) * FROM stage_am ORDER BY usi) a USING (usi)
 
 # One day's changes: a license the FCC now lists as cancelled is removed; one
 # it changed or added is written; licensee and class changes are applied to
-# the licenses LogLab keeps.
+# the licenses LabLog keeps.
 _DAILY_FCC: Final = (
     """
     DELETE FROM reference.license l USING stage_hd h

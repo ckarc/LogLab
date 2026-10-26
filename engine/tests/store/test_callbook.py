@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """QRZ.com lookups through the API: optional (V), cached (VI), per operator (XXI)."""

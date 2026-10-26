@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 LogLab contributors
+-- SPDX-FileCopyrightText: 2026 LabLog contributors
 -- SPDX-License-Identifier: AGPL-3.0-only
 
 -- The Parks on the Air park list, kept by the Engine itself so a park

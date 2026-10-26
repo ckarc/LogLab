@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The section map: every ARRL and RAC section, coloured in once the log has a
 // QSO with it, the way ARRL Field Day counts them. The Engine says which
 // sections are worked (Principle I); this page only draws what it says
-// (Principle II). The map's shapes ship with LogLab, so it draws with no
+// (Principle II). The map's shapes ship with LabLog, so it draws with no
 // internet connection (Principle V). It is one of the page's modules: the
 // operator moves, widens or hides it like any other box.
 "use strict";
@@ -116,15 +116,15 @@
   }
 
   async function refresh() {
-    if (!window.LogLab || $("#app").hidden || box.classList.contains("off")) return;
+    if (!window.LabLog || $("#app").hidden || box.classList.contains("off")) return;
     try {
       if (!shapes) {
         loading = loading || loadShapes();
         await loading;
       }
       // In an operation, only its QSOs count; logging under your own call, the whole log.
-      const op = window.LogLab.layout().operation;
-      const result = await window.LogLab.api("GET", op ? `/sections?operation=${op.id}` : "/sections");
+      const op = window.LabLog.layout().operation;
+      const result = await window.LabLog.api("GET", op ? `/sections?operation=${op.id}` : "/sections");
       $("#map-scope").textContent = op ? "with a QSO in this operation" : "with a QSO in the log";
       sections = new Map(result.sections.map((s) => [s.code, s]));
       paint();

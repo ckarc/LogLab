@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The pretend radio: a stand-in for trying LogLab with no radio attached.
+//! The pretend radio: a stand-in for trying LabLog with no radio attached.
 //!
 //! It moves through a few typical spots on the bands, tuning slowly at each,
 //! and says it is transmitting for a few seconds now and then, so every part

@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The zone maps: every CQ zone (CQ WW) or every ITU zone (IARU HF), coloured
 // in once the log has a QSO with it. The Engine says which zones are worked
 // (Principle I); this page only draws what it says (Principle II). The
-// zones' shapes and the countries under them ship with LogLab, so the maps
+// zones' shapes and the countries under them ship with LabLog, so the maps
 // draw with no internet connection (Principle V). Each map is one of the
 // page's modules, and its list of zones still to work is a panel in it.
 "use strict";
@@ -113,17 +113,17 @@
     }
 
     async function refresh() {
-      if (!window.LogLab || $("#app").hidden || box.classList.contains("off")) return;
+      if (!window.LabLog || $("#app").hidden || box.classList.contains("off")) return;
       try {
         if (!shapes) {
           loading = loading || load();
           await loading;
         }
         // In an operation, only its QSOs count; logging under your own call, the whole log.
-        const op = window.LogLab.layout().operation;
+        const op = window.LabLog.layout().operation;
         const params = new URLSearchParams({ kind });
         if (op) params.set("operation", op.id);
-        const result = await window.LogLab.api("GET", `/zones?${params}`);
+        const result = await window.LabLog.api("GET", `/zones?${params}`);
         $(`#${id}-scope`).textContent = op ? "with a QSO in this operation" : "with a QSO in the log";
         zones = new Map(result.zones.map((z) => [z.zone, z.qsos]));
         paint();

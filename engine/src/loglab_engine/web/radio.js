@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The radio at this station, live, as its Station Agent reports it. The Agent
@@ -16,7 +16,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const form = $("#entry");
   const label = $("#radio-label");
   const line = $("#onair-radio");
@@ -127,7 +127,7 @@
     try {
       for (;;) {
         const { done, value } = await reader.read();
-        if (done || LogLab.session()?.token !== token) break;
+        if (done || LabLog.session()?.token !== token) break;
         wake();
         buffered += decoder.decode(value, { stream: true });
         let newline;
@@ -149,7 +149,7 @@
   // whenever it ends: the Engine ends each one after a while on purpose.
   async function keepListening() {
     for (;;) {
-      const session = LogLab.session();
+      const session = LabLog.session();
       if (!session?.token || !session.permissions?.includes("view")) {
         streaming = null;
         if (state) { state = null; show(); fromRadio.hidden = true; }

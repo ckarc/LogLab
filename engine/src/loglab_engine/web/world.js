@@ -1,10 +1,10 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The world map: a path from the station to each of the latest QSOs, along
 // the great circle, the way the signal went. The Engine says where each end
 // was (Principle I); this page only draws it. The map's shapes ship with
-// LogLab, so it draws with no internet connection (Principle V). The map is
+// LabLog, so it draws with no internet connection (Principle V). The map is
 // centred on the station, so paths seldom run off its edge; the countries are
 // drawn three times side by side so the edge never cuts one off.
 "use strict";
@@ -152,8 +152,8 @@
   }
 
   async function refresh() {
-    if (!window.LogLab || $("#app").hidden || box.classList.contains("off")) return;
-    const layout = window.LogLab.layout();
+    if (!window.LabLog || $("#app").hidden || box.classList.contains("off")) return;
+    const layout = window.LabLog.layout();
     if (document.activeElement !== qsos) qsos.value = String(layout.world_qsos);
     try {
       if (!world) {
@@ -163,7 +163,7 @@
       // In an operation, only its QSOs; logging under your own call, the whole log.
       const params = new URLSearchParams({ limit: String(layout.world_qsos) });
       if (layout.operation) params.set("operation", layout.operation.id);
-      latest = await window.LogLab.api("GET", `/paths?${params}`);
+      latest = await window.LabLog.api("GET", `/paths?${params}`);
       draw(latest);
       showSummary(latest);
       $("#world-error").textContent = "";
@@ -178,10 +178,10 @@
   qsos.addEventListener("change", () => {
     const n = Number(qsos.value);
     if (!Number.isInteger(n) || n < 1 || n > Number(qsos.max)) {
-      qsos.value = String(window.LogLab.layout().world_qsos);
+      qsos.value = String(window.LabLog.layout().world_qsos);
       return;
     }
-    window.LogLab.useLayout({ world_qsos: n });
+    window.LabLog.useLayout({ world_qsos: n });
     refresh();
   });
 

@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The US and Canada call lists: how current LogLab's own copies of the FCC's
+// The US and Canada call lists: how current LabLog's own copies of the FCC's
 // and ISED's amateur lists are (Principle VI: each list's source and date are
 // shown), with the credit Canada's licence asks for. The Engine keeps them
 // current by itself whenever it has internet; an admin can ask it to check now.
@@ -37,7 +37,7 @@
   async function show() {
     problem("");
     try {
-      const state = await window.LogLab.api("GET", "/licenses");
+      const state = await window.LabLog.api("GET", "/licenses");
       list.replaceChildren(...state.sources.map(line));
       $("#licenses-problem").textContent = state.problem ? `Last check: ${state.problem}` : "";
       const credits = $("#licenses-credits");
@@ -54,7 +54,7 @@
 
   $("#licenses-open").addEventListener("click", () => {
     $("#menu-dialog").close();
-    const session = window.LogLab.session();
+    const session = window.LabLog.session();
     check.hidden = !session || !session.permissions.includes("admin");
     show();
     dialog.showModal();
@@ -62,7 +62,7 @@
   check.addEventListener("click", async () => {
     problem("");
     try {
-      await window.LogLab.api("POST", "/licenses/refresh");
+      await window.LabLog.api("POST", "/licenses/refresh");
       $("#licenses-problem").textContent = "Checking now. Loading a new FCC list takes a few minutes; lookups keep working meanwhile.";
     } catch (e) {
       problem(e.message);

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Reading QRZ Logbook API answers: untrusted input (Principle XII)."""
@@ -35,7 +35,7 @@ def test_unusable_answers_are_refused(body: bytes) -> None:
 
 
 def _client(answer: bytes) -> QrzLogbookClient:
-    return QrzLogbookClient("LogLab/test", lambda _url, _body, _agent: answer)
+    return QrzLogbookClient("LabLog/test", lambda _url, _body, _agent: answer)
 
 
 def test_insert_reads_logid_either_way_the_guide_writes_it() -> None:

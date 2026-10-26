@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Data clean-up: an administrator clears the QRZ.com lookups LabLog kept for
@@ -9,14 +9,14 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const dialog = $("#cleanup-dialog");
   const opener = $("#cleanup-open");
   const age = $("#cleanup-days");
   const count = $("#cleanup-count");
   const clear = $("#cleanup-clear");
 
-  const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
+  const isAdmin = () => (LabLog.session()?.permissions || []).includes("admin");
   const problem = (text) => { $(".error", dialog).textContent = text; };
 
   function size(bytes) {
@@ -31,7 +31,7 @@
     problem("");
     count.classList.remove("done");
     try {
-      const state = await LogLab.api("GET", `/callbook/cleanup?days=${age.value}`);
+      const state = await LabLog.api("GET", `/callbook/cleanup?days=${age.value}`);
       found = state.calls;
       if (!found) {
         count.textContent = `Nothing to clear: every saved lookup older than ${state.days} days is of a logged call.`;
@@ -55,7 +55,7 @@
     if (!found || !confirm(`Clear ${found.toLocaleString()} saved lookups? Logged calls and the log itself are not touched.`)) return;
     problem("");
     try {
-      const done = await LogLab.api("POST", "/callbook/cleanup", { days: Number(age.value) });
+      const done = await LabLog.api("POST", "/callbook/cleanup", { days: Number(age.value) });
       found = 0;
       clear.disabled = true;
       count.textContent = `Cleared ${done.removed.toLocaleString()}.`;

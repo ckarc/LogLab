@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Import an ADIF file: the QSOs of another program's log (WSJT-X's
@@ -10,7 +10,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const dialog = $("#import-dialog");
   const form = $("#import-form");
   const result = $("#import-result");
@@ -30,7 +30,7 @@
 
   // The operation the operator is logging in now, as the Menu names it.
   function current() {
-    const chosen = LogLab.layout()?.operation;
+    const chosen = LabLog.layout()?.operation;
     if (!chosen) return null;
     const option = $("#op-choice").selectedOptions[0];
     const name = option && option.value === chosen.id ? option.textContent.replace(/ \(.*$/, "") : "This operation";
@@ -75,7 +75,7 @@
       const body = { file_name: file.name.slice(0, 255) || "import.adi", data_base64: await readFile(file) };
       const op = current();
       if (op && form.where.value === "operation") body.operation = { id: op.id, gota: Boolean(op.gota) };
-      const out = await LogLab.api("POST", "/imports", body);
+      const out = await LabLog.api("POST", "/imports", body);
       result.textContent = describe(out);
       result.hidden = false;
       for (const w of out.warnings) warnings.append(Object.assign(document.createElement("li"), { textContent: w }));

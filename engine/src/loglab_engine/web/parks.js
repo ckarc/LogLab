@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// The POTA park list: how current LogLab's own copy of the Parks on the Air
+// The POTA park list: how current LabLog's own copy of the Parks on the Air
 // park list is (Principle VI: its source and date are shown), and a search to
 // find a park in it with no internet (Principle V). The Engine keeps it
 // current by itself; an admin can ask it to check now.
@@ -41,7 +41,7 @@
   async function show() {
     problem("");
     try {
-      const state = await window.LogLab.api("GET", "/park-list");
+      const state = await window.LabLog.api("GET", "/park-list");
       $("#parks-state").textContent = state.imported
         ? `${state.parks.toLocaleString()} parks, from the list of ${day(state.published || state.imported)}.`
         : "Not loaded yet. LabLog loads it the next time it is on the shop line.";
@@ -57,7 +57,7 @@
     const mine = ++asked;
     if (!text) { found.replaceChildren(); return; }
     try {
-      const answer = await window.LogLab.api("GET", `/parks?q=${encodeURIComponent(text)}&limit=10`);
+      const answer = await window.LabLog.api("GET", `/parks?q=${encodeURIComponent(text)}&limit=10`);
       if (mine !== asked) return;
       if (!answer.parks.length) {
         const none = document.createElement("li");
@@ -86,7 +86,7 @@
     into.classList.remove("unknown");
     if (!PARK.test(ref)) return;
     try {
-      if (!names.has(ref)) names.set(ref, window.LogLab.api("GET", `/parks/${encodeURIComponent(ref)}`).catch(() => null));
+      if (!names.has(ref)) names.set(ref, window.LabLog.api("GET", `/parks/${encodeURIComponent(ref)}`).catch(() => null));
       const park = await names.get(ref);
       if (mine !== naming.get(into)) return;
       if (park) {
@@ -101,7 +101,7 @@
       // no Engine: logging still works (Principle V)
     }
   }
-  window.LogLabParks = Object.freeze({ nameInto });
+  window.LabLogParks = Object.freeze({ nameInto });
 
   const their = document.querySelector('#entry input[name="SIG_INFO"]');
   const theirName = $("#their-park-name");
@@ -112,7 +112,7 @@
 
   $("#parks-open").addEventListener("click", () => {
     $("#menu-dialog").close();
-    const session = window.LogLab.session();
+    const session = window.LabLog.session();
     check.hidden = !session || !session.permissions.includes("admin");
     show();
     dialog.showModal();
@@ -126,7 +126,7 @@
   check.addEventListener("click", async () => {
     problem("");
     try {
-      await window.LogLab.api("POST", "/park-list/refresh");
+      await window.LabLog.api("POST", "/park-list/refresh");
       $("#parks-problem").textContent = "Checking now. Lookups keep working meanwhile.";
     } catch (e) {
       problem(e.message);

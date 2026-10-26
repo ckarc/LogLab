@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Sending QSOs to QRZ logbooks: never in logging's way (V), per operator (XXI)."""
@@ -213,7 +213,7 @@ def test_edits_deletes_and_restores_follow_the_log(
     sync.run_once()
     (first,) = qrz.books[KEY]
 
-    # An edit removes LogLab's own copy and sends the QSO as it stands now.
+    # An edit removes LabLog's own copy and sends the QSO as it stands now.
     fields = [*W1AW, {"name": "NAME", "value": "Hiram"}]
     edited = client.put(
         f"/api/v1/qsos/{qso_id}", headers=k9ksu, json={"base_version": 1, "fields": fields}
@@ -243,7 +243,7 @@ def test_edits_deletes_and_restores_follow_the_log(
 def test_qsos_qrz_got_another_way_are_never_touched(
     client: TestClient, k9ksu: dict[str, str], qrz: FakeLogbook, sync: LogbookSync
 ) -> None:
-    """A QSO QRZ.com got from LoTW is never changed or removed, whatever LogLab does."""
+    """A QSO QRZ.com got from LoTW is never changed or removed, whatever LabLog does."""
     lotw = {
         "CALL": "K0ABC",
         "QSO_DATE": "20261018",
@@ -254,12 +254,12 @@ def test_qsos_qrz_got_another_way_are_never_touched(
     }
     qrz.books[KEY][1] = dict(lotw)
     _save(client, k9ksu)
-    # The same QSO typed into LogLab: QRZ.com says it has it, and keeps its own.
+    # The same QSO typed into LabLog: QRZ.com says it has it, and keeps its own.
     same = _log(client, k9ksu, CALL="K0ABC")
     sync.run_once()
     assert qrz.books[KEY] == {1: lotw}
     assert _status(client, k9ksu)["refused"] == 1
-    # A LogLab QSO edited to match it, then deleted: QRZ.com's copy stays as it was.
+    # A LabLog QSO edited to match it, then deleted: QRZ.com's copy stays as it was.
     other = _log(client, k9ksu, CALL="W1AW")
     sync.run_once()
     fields = [{**f, "value": "K0ABC"} if f["name"] == "CALL" else f for f in W1AW]
