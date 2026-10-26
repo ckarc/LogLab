@@ -170,3 +170,16 @@ pub trait Tunable: Radio {
     /// radio.
     fn tune(&mut self, tuning: Tuning) -> Result<(), RadioError>;
 }
+
+/// A radio whose driver can key its transmitter. Only the rigctld server's
+/// transmit path uses it, and only when the operator started it with
+/// `serve --allow-transmit` (Principle IX).
+pub trait Keyable: Tunable {
+    /// Key the transmitter (`true`) or unkey it (`false`). Whether the radio
+    /// is transmitting afterwards is the radio's to say (Principle X).
+    ///
+    /// # Errors
+    ///
+    /// The radio refused or didn't answer: it may or may not be transmitting.
+    fn transmit(&mut self, on: bool) -> Result<(), RadioError>;
+}

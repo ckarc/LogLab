@@ -10,13 +10,29 @@
 //! Agent stays the radio's one owner (Principle IX).
 //!
 //! It answers questions about frequency, mode, PTT, VFO and split. Whether
-//! programs may also **tune** the radio (frequency, mode, VFO and split) is
-//! the [`Source`]'s choice: by default they may not, and with tuning allowed
-//! (`serve --allow-tuning`, for the pretend radio only, until the tray
-//! program decides which program controls a radio) they may. **Transmitting
-//! is always refused** here, tuning allowed or not: every PTT request gets
-//! `RPRT -9`, Hamlib's "command rejected by the rig", and so does every
-//! other change the server doesn't make.
+//! programs may also **tune** the radio (frequency, mode, VFO and split), and
+//! whether they may **key** it, is the [`Source`]'s choice, made by the
+//! operator on the command line until the tray program decides which program
+//! controls a radio: by default they may do neither (`RPRT -9`, Hamlib's
+//! "command rejected by the rig", which every other change the server doesn't
+//! make gets too). With `serve --allow-tuning` they may tune, and with
+//! `serve --allow-transmit` they may also key it (the Agent's CI-V driver
+//! only).
+//!
+//! When programs may key the radio, failing safe means not transmitting
+//! (Principle IX):
+//!
+//! - one program at a time has it keyed, and a request to transmit from
+//!   another is refused;
+//! - the radio's own PTT wins: if the radio is already transmitting when a
+//!   program asks, the request is refused, and a request to stop is never
+//!   passed to a radio the Agent didn't key;
+//! - a program that disconnects while keyed is unkeyed;
+//! - the radio is unkeyed once it has been keyed longer than the time limit;
+//! - if unkeying fails, the Agent says the radio may still be transmitting
+//!   and keeps trying to unkey it; and
+//! - the Agent never keys a radio on its own: not on a timer, not as a
+//!   retry, not after a reconnect.
 //!
 //! The protocol has no sign-in, so the server listens only on this computer
 //! and refuses connections from anywhere else (Principle XXI). Every line it
@@ -38,7 +54,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
-use crate::rig::{Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
+use crate::rig::{Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
 
 /// The longest command line accepted.
 const MAX_LINE: usize = 256;
@@ -47,8 +63,11 @@ const MAX_CLIENTS: usize = 8;
 /// How long a reading is reused before the radio is asked again, so several
 /// programs polling at once don't crowd the radio.
 const FRESH: Duration = Duration::from_millis(150);
-/// How often the server looks up from waiting to see if it should stop.
+/// How often the server looks up from waiting to see if it should stop, and
+/// checks the transmit time limit.
 const TICK: Duration = Duration::from_millis(100);
+/// How long after a failed attempt to unkey the radio it is tried again.
+const UNKEY_RETRY: Duration = Duration::from_secs(1);
 
 /// Hamlib's result codes the server gives.
 const RPRT_OK: i32 = 0;
@@ -93,6 +112,31 @@ pub trait Source: Send + Sync {
         Err("tuning isn't allowed here".to_owned())
     }
 
+    /// Whether programs may key the radio through the server.
+    fn can_transmit(&self) -> bool {
+        false
+    }
+
+    /// Keys the radio (`on`) for `program`, or unkeys it.
+    ///
+    /// # Errors
+    ///
+    /// Transmitting isn't allowed, something else is transmitting, or the
+    /// radio refused.
+    fn transmit(&self, program: SocketAddr, on: bool) -> Result<(), String> {
+        let _ = (program, on);
+        Err("transmitting isn't allowed here".to_owned())
+    }
+
+    /// `program` has disconnected: if it has the radio keyed, unkey it.
+    fn gone(&self, program: SocketAddr) {
+        let _ = program;
+    }
+
+    /// Called every [`TICK`] while the server runs, to keep the transmit time
+    /// limit.
+    fn watch(&self) {}
+
     /// Something worth telling the person at the computer: a program came
     /// or went, or asked for a change and what became of it.
     fn note(&self, event: &str) {
@@ -136,11 +180,141 @@ pub fn describe(tuning: Tuning) -> String {
     }
 }
 
-/// The radio a [`Shared`] holds: one that can only be read, or one programs
-/// may tune.
+/// The radio a [`Shared`] holds: one that can only be read, one programs may
+/// tune, or one programs may tune and key.
 enum Held {
     Read(Box<dyn Radio + Send>),
     Tune(Box<dyn Tunable + Send>),
+    Key(Box<dyn Keyable + Send>),
+}
+
+/// The radio is keyed, by the Agent, for a program.
+struct Keyed {
+    /// The program it was keyed for.
+    by: SocketAddr,
+    /// When it was keyed.
+    since: Instant,
+    /// When the Agent next unkeys it unasked: at the time limit, or, after a
+    /// failed attempt, a moment later.
+    unkey_at: Instant,
+    /// An attempt to unkey it failed: it may still be transmitting.
+    stuck: bool,
+}
+
+/// Keys `radio` for `program`, unless something else is transmitting.
+/// Returns what happened, and what to tell the person at the computer.
+fn key(
+    radio: &mut dyn Keyable,
+    keyed: &mut Option<Keyed>,
+    program: SocketAddr,
+    limit: Duration,
+) -> (Result<(), String>, Option<String>) {
+    let refuse = |why: String| {
+        let note = format!("asked to transmit: refused ({why})");
+        (Err(why), Some(note))
+    };
+    match keyed {
+        Some(now) if now.stuck => {
+            return refuse("the radio may still be transmitting: the Agent is unkeying it".into());
+        }
+        // Asked again while keyed for it: still keyed, nothing to do.
+        Some(now) if now.by == program => return (Ok(()), None),
+        Some(now) => return refuse(format!("another program ({}) is transmitting", now.by)),
+        None => {}
+    }
+    // The radio's own PTT wins (Principle X): the operator is transmitting.
+    match radio.read() {
+        Ok(Reading {
+            ptt: Some(false), ..
+        }) => {}
+        Ok(Reading {
+            ptt: Some(true), ..
+        }) => {
+            return refuse(
+                "the radio is already transmitting: its own PTT wins until it's released".into(),
+            );
+        }
+        Ok(Reading { ptt: None, .. }) => {
+            return refuse("the radio can't say whether it is transmitting".into());
+        }
+        Err(error) => return refuse(format!("the radio couldn't be read: {error}")),
+    }
+    let since = Instant::now();
+    match radio.transmit(true) {
+        Ok(()) => {
+            *keyed = Some(Keyed {
+                by: program,
+                since,
+                unkey_at: since + limit,
+                stuck: false,
+            });
+            (
+                Ok(()),
+                Some(format!("asked to transmit: transmitting ({program})")),
+            )
+        }
+        // It may have keyed anyway: unkey it, and if that fails too, say so
+        // and keep trying.
+        Err(error) => {
+            let mut note = format!("asked to transmit: refused (the radio refused: {error})");
+            if let Err(again) = radio.transmit(false) {
+                *keyed = Some(Keyed {
+                    by: program,
+                    since,
+                    unkey_at: Instant::now() + UNKEY_RETRY,
+                    stuck: true,
+                });
+                note.push_str(&stuck_hint(&again.to_string()));
+            }
+            (Err(error.to_string()), Some(note))
+        }
+    }
+}
+
+/// Unkeys `radio` if the Agent keyed it, saying `why`. A radio the Agent
+/// didn't key is left alone: the operator's own PTT wins.
+fn unkey(
+    radio: &mut dyn Keyable,
+    keyed: &mut Option<Keyed>,
+    why: &str,
+) -> (Result<(), String>, String) {
+    let Some(now) = keyed.as_mut() else {
+        return (
+            Ok(()),
+            format!("{why}: done (the Agent hadn't keyed anything)"),
+        );
+    };
+    match radio.transmit(false) {
+        Ok(()) => {
+            let held = now.since.elapsed().as_secs_f64();
+            *keyed = None;
+            (Ok(()), format!("{why}: unkeyed after {held:.1} s"))
+        }
+        Err(error) => {
+            now.stuck = true;
+            now.unkey_at = Instant::now() + UNKEY_RETRY;
+            let error = error.to_string();
+            let note = format!("{why}: unkeying failed ({error}){}", stuck_hint(&error));
+            (Err(error), note)
+        }
+    }
+}
+
+/// A time limit in seconds, in plain words.
+fn seconds(limit: Duration) -> String {
+    if limit.subsec_millis() == 0 {
+        format!("{} s", limit.as_secs())
+    } else {
+        format!("{:.1} s", limit.as_secs_f64())
+    }
+}
+
+/// What to do when the radio may still be transmitting.
+fn stuck_hint(error: &str) -> String {
+    format!(
+        "\n-> The radio may still be transmitting ({error}). Check it now, and unkey it \
+         there if it is. The Agent keeps trying to unkey it."
+    )
 }
 
 /// A radio shared between the programs connected to the server. Readings
@@ -151,19 +325,27 @@ pub struct Shared {
     identity: RadioIdentity,
     last: Mutex<Option<(Instant, Reading)>>,
     notes: Mutex<Option<Sender<String>>>,
+    keyed: Mutex<Option<Keyed>>,
+    limit: Duration,
 }
 
 impl Shared {
+    fn holding(radio: Held, identity: RadioIdentity, limit: Duration) -> Self {
+        Self {
+            radio: Mutex::new(radio),
+            identity,
+            last: Mutex::new(None),
+            notes: Mutex::new(None),
+            keyed: Mutex::new(None),
+            limit,
+        }
+    }
+
     /// Shares `radio` for reading only.
     #[must_use]
     pub fn new(radio: Box<dyn Radio + Send>) -> Self {
         let identity = radio.identity().clone();
-        Self {
-            radio: Mutex::new(Held::Read(radio)),
-            identity,
-            last: Mutex::new(None),
-            notes: Mutex::new(None),
-        }
+        Self::holding(Held::Read(radio), identity, Duration::ZERO)
     }
 
     /// Sends what happens (programs coming and going, the changes they ask
@@ -180,11 +362,50 @@ impl Shared {
     #[must_use]
     pub fn with_tuning(radio: Box<dyn Tunable + Send>) -> Self {
         let identity = radio.identity().clone();
-        Self {
-            radio: Mutex::new(Held::Tune(radio)),
-            identity,
-            last: Mutex::new(None),
-            notes: Mutex::new(None),
+        Self::holding(Held::Tune(radio), identity, Duration::ZERO)
+    }
+
+    /// Shares `radio`, and lets programs tune it and key it, one program at
+    /// a time, for at most `limit` at once.
+    #[must_use]
+    pub fn with_transmit(radio: Box<dyn Keyable + Send>, limit: Duration) -> Self {
+        let identity = radio.identity().clone();
+        Self::holding(Held::Key(radio), identity, limit)
+    }
+
+    /// Runs `act` on the radio and who has it keyed, if programs may key it,
+    /// then tells the person at the computer what happened. The next reading
+    /// comes from the radio, the truth about what changed (Principle X).
+    fn keying<T>(
+        &self,
+        act: impl FnOnce(&mut dyn Keyable, &mut Option<Keyed>) -> (T, Option<String>),
+    ) -> Option<T> {
+        let mut held = self.radio.lock().ok()?;
+        let Held::Key(radio) = &mut *held else {
+            return None;
+        };
+        let mut keyed = self.keyed.lock().ok()?;
+        let (done, note) = act(radio.as_mut(), &mut keyed);
+        // Let go of the radio before telling anyone.
+        drop(keyed);
+        drop(held);
+        if let Ok(mut last) = self.last.lock() {
+            *last = None;
+        }
+        if let Some(note) = note {
+            self.note(&note);
+        }
+        Some(done)
+    }
+}
+
+impl Drop for Shared {
+    /// The Agent going away never leaves a radio keyed.
+    fn drop(&mut self) {
+        if let (Ok(Held::Key(radio)), Ok(keyed)) = (self.radio.get_mut(), self.keyed.get_mut())
+            && keyed.is_some()
+        {
+            let _ = radio.transmit(false);
         }
     }
 }
@@ -211,6 +432,7 @@ impl Source for Shared {
         let reading = match &mut *radio {
             Held::Read(radio) => radio.read(),
             Held::Tune(radio) => radio.read(),
+            Held::Key(radio) => radio.read(),
         }
         .map_err(|error| error.to_string())?;
         *last = Some((Instant::now(), reading.clone()));
@@ -220,7 +442,7 @@ impl Source for Shared {
     fn can_tune(&self) -> bool {
         self.radio
             .lock()
-            .is_ok_and(|radio| matches!(*radio, Held::Tune(_)))
+            .is_ok_and(|radio| matches!(*radio, Held::Tune(_) | Held::Key(_)))
     }
 
     fn tune(&self, tuning: Tuning) -> Result<(), String> {
@@ -228,10 +450,12 @@ impl Source for Shared {
             .radio
             .lock()
             .map_err(|_| "the radio is unavailable".to_owned())?;
-        let Held::Tune(radio) = &mut *held else {
-            return Err("tuning isn't allowed here".to_owned());
-        };
-        let done = radio.tune(tuning).map_err(|error| error.to_string());
+        let done = match &mut *held {
+            Held::Tune(radio) => radio.tune(tuning),
+            Held::Key(radio) => radio.tune(tuning),
+            Held::Read(_) => return Err("tuning isn't allowed here".to_owned()),
+        }
+        .map_err(|error| error.to_string());
         // Let go of the radio before telling anyone.
         drop(held);
         // Whatever happened, the next reading comes from the radio, which is
@@ -248,6 +472,58 @@ impl Source for Shared {
             ),
         });
         done
+    }
+
+    fn can_transmit(&self) -> bool {
+        self.radio
+            .lock()
+            .is_ok_and(|radio| matches!(*radio, Held::Key(_)))
+    }
+
+    fn transmit(&self, program: SocketAddr, on: bool) -> Result<(), String> {
+        let limit = self.limit;
+        self.keying(|radio, keyed| {
+            if on {
+                key(radio, keyed, program, limit)
+            } else {
+                let (done, note) = unkey(radio, keyed, "asked to stop transmitting");
+                (done, Some(note))
+            }
+        })
+        .unwrap_or_else(|| Err("transmitting isn't allowed here".to_owned()))
+    }
+
+    fn gone(&self, program: SocketAddr) {
+        self.keying(|radio, keyed| {
+            if keyed.as_ref().is_some_and(|now| now.by == program) {
+                let (_, note) = unkey(radio, keyed, "the program disconnected while transmitting");
+                ((), Some(note))
+            } else {
+                ((), None)
+            }
+        });
+    }
+
+    fn watch(&self) {
+        let limit = self.limit;
+        self.keying(|radio, keyed| match keyed.as_ref() {
+            Some(now) if Instant::now() >= now.unkey_at => {
+                let why = if now.stuck {
+                    "trying again to unkey the radio".to_owned()
+                } else {
+                    format!("transmitting longer than the {} limit", seconds(limit))
+                };
+                let (done, mut note) = unkey(radio, keyed, &why);
+                if done.is_ok() && !why.starts_with("trying") {
+                    note.push_str(
+                        "\n-> If a program needs to transmit longer at a time, start serve with \
+                         a longer --tx-limit.",
+                    );
+                }
+                ((), Some(note))
+            }
+            _ => ((), None),
+        });
     }
 
     fn note(&self, event: &str) {
@@ -317,6 +593,7 @@ impl Drop for Server {
 fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBool>) {
     let clients = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
+        source.watch();
         match listener.accept() {
             Ok((stream, peer)) => {
                 if !peer.ip().is_loopback() || clients.load(Ordering::SeqCst) >= MAX_CLIENTS {
@@ -328,7 +605,8 @@ fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBoo
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
-                    let _ = serve(stream, source.as_ref(), &stop);
+                    let _ = serve(stream, peer, source.as_ref(), &stop);
+                    source.gone(peer);
                     clients.fetch_sub(1, Ordering::SeqCst);
                     source.note(&format!("a program disconnected ({peer})"));
                 });
@@ -339,9 +617,14 @@ fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBoo
     }
 }
 
-/// Answers one program until it leaves, sends something unreadable, or the
-/// server stops.
-fn serve(stream: TcpStream, source: &dyn Source, stop: &AtomicBool) -> std::io::Result<()> {
+/// Answers one program, connected from `program`, until it leaves, sends
+/// something unreadable, or the server stops.
+fn serve(
+    stream: TcpStream,
+    program: SocketAddr,
+    source: &dyn Source,
+    stop: &AtomicBool,
+) -> std::io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(TICK))?;
     let mut writer = stream.try_clone()?;
@@ -356,7 +639,7 @@ fn serve(stream: TcpStream, source: &dyn Source, stop: &AtomicBool) -> std::io::
                     writer.write_all(format!("RPRT {RPRT_PROTOCOL}\n").as_bytes())?;
                     return Ok(());
                 };
-                match respond(text, source) {
+                match respond(text, program, source) {
                     Reply::Text(answer) => writer.write_all(answer.as_bytes())?,
                     Reply::Quit => return Ok(()),
                 }
@@ -420,9 +703,9 @@ impl Get {
     }
 }
 
-/// The reply to one command line.
+/// The reply to one command line from `program`.
 #[must_use]
-pub fn respond(line: &str, source: &dyn Source) -> Reply {
+pub fn respond(line: &str, program: SocketAddr, source: &dyn Source) -> Reply {
     let line = line.trim_end_matches('\r');
     let (extended, command) = match line.strip_prefix('+') {
         Some(rest) => (true, rest.trim()),
@@ -443,8 +726,7 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
         "\\chk_vfo" => Get::CheckVfo,
         "\\dump_state" => Get::DumpState,
         "1" | "\\dump_caps" => Get::DumpCaps,
-        // Transmitting is refused, always, whatever else is allowed.
-        "T" | "\\set_ptt" => return Reply::Text(ptt(word, command, extended, source)),
+        "T" | "\\set_ptt" => return Reply::Text(ptt(word, command, extended, program, source)),
         _ if source.can_tune() && tuning_command(word) => {
             return Reply::Text(tune(word, command, extended, source));
         }
@@ -463,19 +745,41 @@ pub fn respond(line: &str, source: &dyn Source) -> Reply {
 
 /// A PTT request. A request to **stop** transmitting (`T 0`) is always
 /// honored, never refused: a program that sends it, as WSJT-X does whenever
-/// it closes its connection, must never be told no. The Agent keys nothing
-/// yet, so today there is nothing to unkey. Every request to transmit is
-/// refused.
-fn ptt(word: &str, command: &str, extended: bool, source: &dyn Source) -> String {
-    if command.split_whitespace().nth(1) == Some("0") {
+/// it closes its connection, must never be told no. Unless programs may key
+/// the radio, every request to transmit is refused. Hamlib's 1, 2 and 3 all
+/// mean transmit (from the radio's choice of audio, its microphone, or its
+/// data input): the radio sends whatever its own data mode setting chooses.
+fn ptt(
+    word: &str,
+    command: &str,
+    extended: bool,
+    program: SocketAddr,
+    source: &dyn Source,
+) -> String {
+    let on = match command.split_whitespace().nth(1) {
+        Some("0") => false,
+        Some("1" | "2" | "3") if source.can_transmit() => true,
+        _ if source.can_transmit() => return result(extended, word, RPRT_INVALID),
+        _ => {
+            source.note(
+                "asked to transmit: refused (transmitting isn't allowed)\n\
+                 -> To let the program key the radio, start serve with --allow-transmit. \
+                 Or set the program's PTT to the radio's VOX (in WSJT-X, Settings > Radio > \
+                 PTT Method: VOX).",
+            );
+            return result(extended, word, RPRT_REJECTED);
+        }
+    };
+    if !source.can_transmit() {
         source.note("asked to stop transmitting: done (the Agent hadn't keyed anything)");
         return result(extended, word, RPRT_OK);
     }
-    source.note(
-        "asked to transmit: refused (the Agent doesn't transmit yet)\n\
-         -> Until it does, in WSJT-X set Settings > Radio > PTT Method: VOX.",
-    );
-    result(extended, word, RPRT_REJECTED)
+    match (source.transmit(program, on), on) {
+        (Ok(()), _) => result(extended, word, RPRT_OK),
+        (Err(_), true) => result(extended, word, RPRT_REJECTED),
+        // Unkeying failed: the radio didn't do it, and the program is told.
+        (Err(_), false) => result(extended, word, RPRT_IO),
+    }
 }
 
 /// The commands that tune: frequency, transmit frequency, mode, VFO, split.
@@ -713,16 +1017,24 @@ fn dump_caps(identity: &RadioIdentity) -> Vec<(&'static str, String)> {
 #[cfg(test)]
 mod tests {
     use std::io::{BufRead, BufReader, Write};
-    use std::net::{SocketAddr, TcpStream};
-    use std::sync::Arc;
-    use std::time::Duration;
+    use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4, TcpStream};
+    use std::sync::mpsc::Receiver;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use super::{Reply, Server, Shared, Source, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
-    use crate::rig::{Mode, Radio};
+    use crate::rig::{
+        ControlPath, Keyable, Mode, Radio, RadioError, RadioIdentity, Reading, Tunable, Tuning,
+    };
     use crate::rigdef;
+
+    /// The program the tests speak as.
+    const PROGRAM: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_001));
+    /// Another program.
+    const OTHER: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_002));
 
     fn pretend_ic_7300() -> Arc<dyn Source> {
         let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
@@ -733,7 +1045,7 @@ mod tests {
     }
 
     fn text(line: &str) -> String {
-        match respond(line, pretend_ic_7300().as_ref()) {
+        match respond(line, PROGRAM, pretend_ic_7300().as_ref()) {
             Reply::Text(text) => text,
             Reply::Quit => unreachable!("{line} is not quit"),
         }
@@ -785,7 +1097,7 @@ mod tests {
     }
 
     fn say(source: &Arc<dyn Source>, line: &str) -> String {
-        match respond(line, source.as_ref()) {
+        match respond(line, PROGRAM, source.as_ref()) {
             Reply::Text(text) => text,
             Reply::Quit => unreachable!("{line} is not quit"),
         }
@@ -870,9 +1182,10 @@ mod tests {
             "{heard:?}"
         );
         assert!(
-            heard[2].starts_with("asked to transmit: refused (the Agent doesn't transmit yet)"),
+            heard[2].starts_with("asked to transmit: refused (transmitting isn't allowed)"),
             "{heard:?}"
         );
+        assert!(heard[2].contains("--allow-transmit"), "{heard:?}");
         assert!(heard[2].contains("PTT Method: VOX"), "{heard:?}");
         assert!(
             heard[1].contains("Settings > Frequencies"),
@@ -889,7 +1202,10 @@ mod tests {
     fn says_what_it_does_not_have() {
         assert_eq!(text("\\get_lock_mode"), "RPRT -11\n");
         assert_eq!(text("l RFPOWER"), "RPRT -11\n");
-        assert_eq!(respond("q", pretend_ic_7300().as_ref()), Reply::Quit);
+        assert_eq!(
+            respond("q", PROGRAM, pretend_ic_7300().as_ref()),
+            Reply::Quit
+        );
         assert_eq!(text(""), "");
     }
 
@@ -1046,5 +1362,366 @@ mod tests {
         let mut reply = String::new();
         let _ = BufReader::new(stream).read_line(&mut reply);
         assert_eq!(reply, "RPRT -8\n");
+    }
+
+    /// What goes wrong with a test radio.
+    #[derive(Clone, Copy, Default, PartialEq, Eq)]
+    enum Fault {
+        #[default]
+        None,
+        /// It refuses to key.
+        Key,
+        /// It refuses to unkey.
+        Unkey,
+        /// It can't say whether it is transmitting.
+        PttUnknown,
+    }
+
+    /// What a test radio does, seen from outside it.
+    #[derive(Default)]
+    struct Bench {
+        /// Whether it is transmitting, whoever keyed it.
+        transmitting: bool,
+        /// How many times it was asked to key.
+        keyed: usize,
+        /// How many times it was asked to unkey.
+        unkeyed: usize,
+        fault: Fault,
+    }
+
+    /// A radio the tests can watch and press the PTT of.
+    struct TestRadio {
+        identity: RadioIdentity,
+        bench: Arc<Mutex<Bench>>,
+    }
+
+    fn transmitting(on: &Arc<Mutex<Bench>>) -> bool {
+        on_bench(on, |bench| bench.transmitting)
+    }
+
+    fn on_bench<T>(bench: &Arc<Mutex<Bench>>, look: impl FnOnce(&mut Bench) -> T) -> T {
+        let mut bench = bench
+            .lock()
+            .unwrap_or_else(|_| unreachable!("not poisoned"));
+        look(&mut bench)
+    }
+
+    impl Radio for TestRadio {
+        fn identity(&self) -> &RadioIdentity {
+            &self.identity
+        }
+
+        fn read(&mut self) -> Result<Reading, RadioError> {
+            Ok(on_bench(&self.bench, |bench| Reading {
+                frequency_hz: 14_105_000,
+                mode: Some(Mode::DataUsb),
+                passband_hz: None,
+                ptt: (bench.fault != Fault::PttUnknown).then_some(bench.transmitting),
+                vfo: None,
+            }))
+        }
+    }
+
+    impl Tunable for TestRadio {
+        fn tune(&mut self, _: Tuning) -> Result<(), RadioError> {
+            Ok(())
+        }
+    }
+
+    impl Keyable for TestRadio {
+        fn transmit(&mut self, on: bool) -> Result<(), RadioError> {
+            on_bench(&self.bench, |bench| {
+                if on {
+                    bench.keyed += 1;
+                    if bench.fault == Fault::Key {
+                        return Err(RadioError("no answer".to_owned()));
+                    }
+                } else {
+                    bench.unkeyed += 1;
+                    if bench.fault == Fault::Unkey {
+                        return Err(RadioError("no answer".to_owned()));
+                    }
+                }
+                bench.transmitting = on;
+                Ok(())
+            })
+        }
+    }
+
+    /// A radio programs may key, for at most `limit` at once, the bench it
+    /// sits on, and what the person at the computer is told.
+    fn keyable(limit: Duration) -> (Arc<Shared>, Arc<Mutex<Bench>>, Receiver<String>) {
+        let bench = Arc::new(Mutex::new(Bench::default()));
+        let radio = TestRadio {
+            identity: RadioIdentity {
+                maker: "Icom".to_owned(),
+                model: "IC-7300".to_owned(),
+                path: ControlPath::Civ,
+            },
+            bench: Arc::clone(&bench),
+        };
+        let (notes, heard) = std::sync::mpsc::channel();
+        let shared = Shared::with_transmit(Box::new(radio), limit).with_notes(notes);
+        (Arc::new(shared), bench, heard)
+    }
+
+    fn as_program(source: &Shared, program: SocketAddr, line: &str) -> String {
+        match respond(line, program, source) {
+            Reply::Text(text) => text,
+            Reply::Quit => unreachable!("{line} is not quit"),
+        }
+    }
+
+    const MINUTE: Duration = Duration::from_mins(1);
+
+    #[test]
+    fn keys_and_unkeys_when_programs_may_transmit() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        assert!(radio.can_transmit() && radio.can_tune());
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        assert!(transmitting(&bench));
+        assert_eq!(as_program(&radio, PROGRAM, "t"), "1\n", "the radio says so");
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        assert!(!transmitting(&bench));
+        assert_eq!(as_program(&radio, PROGRAM, "t"), "0\n");
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert_eq!(
+            heard[0],
+            "asked to transmit: transmitting (127.0.0.1:50001)"
+        );
+        assert!(
+            heard[1].starts_with("asked to stop transmitting: unkeyed after "),
+            "{heard:?}"
+        );
+    }
+
+    #[test]
+    fn every_hamlib_transmit_value_keys_and_nothing_else_does() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        for on in ["T 1", "T 2", "T 3", "\\set_ptt 1", "+T 1"] {
+            assert!(
+                as_program(&radio, PROGRAM, on).ends_with("RPRT 0\n"),
+                "{on}"
+            );
+            assert!(transmitting(&bench), "{on}");
+            assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        }
+        for nonsense in ["T", "T x", "T 4", "T -1"] {
+            assert_eq!(as_program(&radio, PROGRAM, nonsense), "RPRT -1\n");
+        }
+        assert_eq!(on_bench(&bench, |bench| bench.keyed), 5, "once each");
+        assert!(!transmitting(&bench));
+    }
+
+    #[test]
+    fn asking_again_while_keyed_keys_nothing_more() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        assert_eq!(on_bench(&bench, |bench| bench.keyed), 1);
+        assert_eq!(heard.try_iter().count(), 1, "noted once");
+    }
+
+    #[test]
+    fn one_program_at_a_time_and_any_program_may_stop_it() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        assert_eq!(as_program(&radio, OTHER, "T 1"), "RPRT -9\n");
+        assert_eq!(on_bench(&bench, |bench| bench.keyed), 1);
+        // A request to stop is never refused, whoever sends it.
+        assert_eq!(as_program(&radio, OTHER, "T 0"), "RPRT 0\n");
+        assert!(!transmitting(&bench));
+        // Now the other program may key it.
+        assert_eq!(as_program(&radio, OTHER, "T 1"), "RPRT 0\n");
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert_eq!(
+            heard[1],
+            "asked to transmit: refused (another program (127.0.0.1:50001) is transmitting)"
+        );
+    }
+
+    #[test]
+    fn the_radios_own_ptt_wins() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        // The operator presses the microphone's PTT.
+        on_bench(&bench, |bench| bench.transmitting = true);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
+        assert_eq!(
+            on_bench(&bench, |bench| bench.keyed),
+            0,
+            "never asked to key"
+        );
+        // A program's request to stop leaves the operator transmitting.
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        assert_eq!(
+            on_bench(&bench, |bench| bench.unkeyed),
+            0,
+            "never asked to unkey"
+        );
+        assert!(transmitting(&bench));
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(heard[0].contains("its own PTT wins"), "{heard:?}");
+        assert_eq!(
+            heard[1],
+            "asked to stop transmitting: done (the Agent hadn't keyed anything)"
+        );
+        // Released: the program may key it.
+        on_bench(&bench, |bench| bench.transmitting = false);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+    }
+
+    #[test]
+    fn wont_key_a_radio_that_cant_say_whether_it_is_transmitting() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        on_bench(&bench, |bench| bench.fault = Fault::PttUnknown);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
+        assert_eq!(on_bench(&bench, |bench| bench.keyed), 0);
+    }
+
+    #[test]
+    fn unkeys_at_the_time_limit_and_never_keys_again_on_its_own() {
+        let limit = Duration::from_millis(200);
+        let (radio, bench, heard) = keyable(limit);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        radio.watch();
+        assert!(transmitting(&bench), "not yet");
+        std::thread::sleep(limit + Duration::from_millis(50));
+        radio.watch();
+        assert!(!transmitting(&bench), "unkeyed at the limit");
+        for _ in 0..5 {
+            radio.watch();
+        }
+        assert_eq!(
+            on_bench(&bench, |bench| (bench.keyed, bench.unkeyed)),
+            (1, 1)
+        );
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(
+            heard[1].starts_with("transmitting longer than the 0.2 s limit: unkeyed after "),
+            "{heard:?}"
+        );
+        assert!(heard[1].contains("--tx-limit"), "{heard:?}");
+        // The program may key it again, by asking.
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+    }
+
+    #[test]
+    fn says_the_radio_may_be_transmitting_when_it_wont_unkey_and_keeps_trying() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        on_bench(&bench, |bench| bench.fault = Fault::Unkey);
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT -6\n");
+        // Nobody may key it while it may still be transmitting.
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
+        assert_eq!(on_bench(&bench, |bench| bench.keyed), 1);
+        radio.watch();
+        assert_eq!(on_bench(&bench, |bench| bench.unkeyed), 1, "a moment first");
+        on_bench(&bench, |bench| bench.fault = Fault::None);
+        std::thread::sleep(super::UNKEY_RETRY + Duration::from_millis(50));
+        radio.watch();
+        assert!(!transmitting(&bench), "unkeyed on the retry");
+        assert_eq!(
+            on_bench(&bench, |bench| bench.keyed),
+            1,
+            "never keyed again"
+        );
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(
+            heard[1].starts_with("asked to stop transmitting: unkeying failed (no answer)"),
+            "{heard:?}"
+        );
+        assert!(heard[1].contains("may still be transmitting"), "{heard:?}");
+        assert!(heard[2].contains("the Agent is unkeying it"), "{heard:?}");
+        assert!(
+            heard[3].starts_with("trying again to unkey the radio: unkeyed after "),
+            "{heard:?}"
+        );
+    }
+
+    #[test]
+    fn a_radio_that_refuses_to_key_is_unkeyed_to_be_sure() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        on_bench(&bench, |bench| bench.fault = Fault::Key);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
+        assert_eq!(
+            on_bench(&bench, |bench| (bench.keyed, bench.unkeyed)),
+            (1, 1)
+        );
+        on_bench(&bench, |bench| bench.fault = Fault::None);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n", "not stuck");
+    }
+
+    #[test]
+    fn unkeys_when_the_program_that_keyed_it_goes() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        radio.gone(OTHER);
+        assert!(
+            transmitting(&bench),
+            "another program going changes nothing"
+        );
+        radio.gone(PROGRAM);
+        assert!(!transmitting(&bench));
+        radio.gone(PROGRAM);
+        assert_eq!(
+            on_bench(&bench, |bench| (bench.keyed, bench.unkeyed)),
+            (1, 1)
+        );
+    }
+
+    #[test]
+    fn the_agent_going_away_unkeys() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        drop(radio);
+        assert!(!transmitting(&bench));
+    }
+
+    #[test]
+    fn a_program_disconnecting_while_keyed_is_unkeyed_over_the_network() {
+        let (radio, bench, _heard) = keyable(MINUTE);
+        let address: SocketAddr = "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable!());
+        let server = Server::start(address, radio).unwrap_or_else(|error| unreachable!("{error}"));
+        let stream =
+            TcpStream::connect(server.address()).unwrap_or_else(|error| unreachable!("{error}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let mut writer = stream
+            .try_clone()
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let mut reader = BufReader::new(stream);
+        writer
+            .write_all(b"T 1\n")
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let mut reply = String::new();
+        reader
+            .read_line(&mut reply)
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reply, "RPRT 0\n");
+        assert!(transmitting(&bench));
+        // The program crashes, or is closed, without unkeying.
+        drop(writer);
+        drop(reader);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while transmitting(&bench) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!transmitting(&bench), "unkeyed when it left");
+    }
+
+    #[test]
+    fn the_network_server_keeps_the_time_limit() {
+        let (radio, bench, _heard) = keyable(Duration::from_millis(200));
+        let address: SocketAddr = "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable!());
+        let server = Server::start(address, Arc::clone(&radio) as Arc<dyn Source>)
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while transmitting(&bench) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(!transmitting(&bench), "unkeyed by the server's watch");
+        drop(server);
     }
 }

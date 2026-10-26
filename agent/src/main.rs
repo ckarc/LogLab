@@ -65,6 +65,11 @@ const HEARTBEAT: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(3);
 /// How long QSOs wait in the journal before the Engine is tried again.
 const QSO_RETRY: Duration = Duration::from_secs(15);
+/// How long a program may keep the radio keyed at once, unless
+/// `--tx-limit` says otherwise.
+const TX_LIMIT: Duration = Duration::from_mins(1);
+/// The longest `--tx-limit` accepted, in seconds.
+const MAX_TX_LIMIT: u64 = 600;
 
 const USAGE: &str = "\
 Usage:
@@ -78,12 +83,15 @@ Usage:
                                        and compare later ones against it
                                        (--civ or --civ-pretend only)
   loglab-agent serve RADIO [--listen 127.0.0.1:4532] [--allow-tuning]
+                    [--allow-transmit [--tx-limit SECONDS]]
                                        be a virtual radio for programs like
                                        WSJT-X (Rig: Hamlib NET rigctl), on
                                        this computer only; read-only unless
-                                       --allow-tuning (--civ or
-                                       --civ-pretend only); transmitting is
-                                       always refused
+                                       --allow-tuning; --allow-transmit also
+                                       lets a program key the radio, one at
+                                       a time, for at most 60 seconds at
+                                       once (--tx-limit, up to 600); both
+                                       --civ or --civ-pretend only
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -162,6 +170,8 @@ enum Command {
         radio: RadioChoice,
         listen: SocketAddr,
         allow_tuning: bool,
+        /// Programs may key the radio, for at most this long at once.
+        transmit_limit: Option<Duration>,
     },
     Record {
         radio: RadioChoice,
@@ -183,6 +193,25 @@ struct Wsjtx {
     journal: String,
 }
 
+/// What programs connected to `serve` may do to the radio, beyond reading it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
+enum Allowed {
+    #[default]
+    Reading,
+    Tuning,
+    Transmitting,
+}
+
+impl Allowed {
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Reading => "",
+            Self::Tuning => "--allow-tuning",
+            Self::Transmitting => "--allow-transmit",
+        }
+    }
+}
+
 #[derive(Default)]
 struct Options {
     engine: Option<String>,
@@ -201,7 +230,8 @@ struct Options {
     journal: Option<String>,
     records: Option<String>,
     listen: Option<SocketAddr>,
-    allow_tuning: bool,
+    allowed: Allowed,
+    tx_limit: Option<u64>,
 }
 
 fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
@@ -252,7 +282,11 @@ fn parse(args: &[String]) -> Result<Command, String> {
             continue;
         }
         if flag == "--allow-tuning" {
-            options.allow_tuning = true;
+            options.allowed = options.allowed.max(Allowed::Tuning);
+            continue;
+        }
+        if flag == "--allow-transmit" {
+            options.allowed = Allowed::Transmitting;
             continue;
         }
         let value = words
@@ -271,6 +305,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--civ" => options.civ = Some(value),
             "--journal" => options.journal = Some(value),
             "--records" => options.records = Some(value),
+            "--tx-limit" => options.tx_limit = Some(number(flag, &value)?),
             "--listen" => {
                 options.listen = Some(value.parse().map_err(|_| {
                     format!("--listen needs an address like 127.0.0.1:4532, not {value:?}")
@@ -331,15 +366,34 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.listen.is_some() && verb != "serve" {
         return Err("--listen goes with serve".to_owned());
     }
-    if options.allow_tuning && verb != "serve" {
-        return Err("--allow-tuning goes with serve".to_owned());
+    let allowed = options.allowed;
+    if allowed != Allowed::Reading && verb != "serve" {
+        return Err(format!("{} goes with serve", allowed.flag()));
     }
-    if options.allow_tuning && !matches!(radio, RadioChoice::CivPretend | RadioChoice::Civ(_)) {
-        return Err(
-            "--allow-tuning works only with the Agent's own CI-V driver (--civ PORT or --civ-pretend) for now"
-                .to_owned(),
-        );
+    if options.tx_limit.is_some() && allowed != Allowed::Transmitting {
+        return Err("--tx-limit goes with --allow-transmit".to_owned());
     }
+    if allowed != Allowed::Reading
+        && !matches!(radio, RadioChoice::CivPretend | RadioChoice::Civ(_))
+    {
+        return Err(format!(
+            "{} works only with the Agent's own CI-V driver (--civ PORT or --civ-pretend) for now",
+            allowed.flag()
+        ));
+    }
+    let transmitting = allowed == Allowed::Transmitting;
+    let transmit_limit = match (transmitting, options.tx_limit) {
+        (false, _) => None,
+        (true, None) => Some(TX_LIMIT),
+        (true, Some(seconds)) if (1..=MAX_TX_LIMIT).contains(&seconds) => {
+            Some(Duration::from_secs(seconds))
+        }
+        (true, Some(seconds)) => {
+            return Err(format!(
+                "--tx-limit is in seconds, 1 to {MAX_TX_LIMIT}, not {seconds}"
+            ));
+        }
+    };
     match verb {
         "read" | "record" | "serve" if options.wsjtx.is_some() => {
             Err("--wsjtx goes with run".to_owned())
@@ -349,7 +403,9 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
             listen: options
                 .listen
                 .unwrap_or_else(|| SocketAddr::from(([127, 0, 0, 1], 4532))),
-            allow_tuning: options.allow_tuning,
+            // A program that may key the radio may tune it too.
+            allow_tuning: allowed >= Allowed::Tuning,
+            transmit_limit,
         }),
         "record" => Ok(Command::Record {
             radio,
@@ -448,6 +504,19 @@ fn civ_serial_radio(port: &str) -> Result<CivRadio<civ_serial::SerialPort>, rig:
     let definitions = rigdef::built_in().map_err(rig::RadioError)?;
     let port = civ_serial::SerialPort::open(port).map_err(rig::RadioError)?;
     CivRadio::find(port, &definitions)
+}
+
+/// The Agent's own CI-V driver, the only one that can tune or key a radio.
+fn civ_keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
+    Ok(match choice {
+        RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
+        RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
+        _ => {
+            return Err(rig::RadioError(
+                "only the Agent's own CI-V driver can tune or key a radio".to_owned(),
+            ));
+        }
+    })
 }
 
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> {
@@ -823,18 +892,20 @@ fn utc_clock() -> String {
         .map_or(text.clone(), |(_, time)| time.to_owned())
 }
 
-/// Be a read-only virtual radio for other programs until stopped
-/// (Principles IX and XXI).
-fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result<(), String> {
+/// Be a virtual radio for other programs until stopped: read-only, or one
+/// they may tune, or tune and key (Principles IX and XXI).
+fn serve(
+    choice: &RadioChoice,
+    listen: SocketAddr,
+    allow_tuning: bool,
+    transmit_limit: Option<Duration>,
+) -> Result<(), String> {
     let (notes, heard) = mpsc::channel();
-    let shared: Arc<dyn rigctld_server::Source> = if allow_tuning {
-        // Only the CI-V driver can tune (checked when the command is read).
-        let radio: Box<dyn rig::Tunable + Send> = match choice {
-            RadioChoice::Civ(port) => {
-                Box::new(civ_serial_radio(port).map_err(|error| error.to_string())?)
-            }
-            _ => Box::new(civ_pretend_radio().map_err(|error| error.to_string())?),
-        };
+    let shared: Arc<dyn rigctld_server::Source> = if let Some(limit) = transmit_limit {
+        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
+        Arc::new(rigctld_server::Shared::with_transmit(radio, limit).with_notes(notes))
+    } else if allow_tuning {
+        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::with_tuning(radio).with_notes(notes))
     } else {
         let radio = open(choice).map_err(|error| error.to_string())?;
@@ -851,7 +922,9 @@ fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result
         identity.maker,
         identity.model,
         server.address(),
-        if allow_tuning {
+        if transmit_limit.is_some() {
+            "and programs may tune it and key it"
+        } else if allow_tuning {
             "and programs may tune it"
         } else {
             "read-only"
@@ -861,7 +934,12 @@ fn serve(choice: &RadioChoice, listen: SocketAddr, allow_tuning: bool) -> Result
         "In WSJT-X: Settings > Radio > Rig: Hamlib NET rigctl, Network Server: {}",
         server.address()
     );
-    if allow_tuning {
+    if let Some(limit) = transmit_limit {
+        println!(
+            "One program at a time may key it, for at most {} s at once; the radio's own PTT wins. Ctrl-C stops.",
+            limit.as_secs()
+        );
+    } else if allow_tuning {
         println!("Requests to transmit are refused. Ctrl-C stops.");
     } else {
         println!("Requests to tune or transmit are refused. Ctrl-C stops.");
@@ -1025,7 +1103,8 @@ fn main() -> ExitCode {
             radio,
             listen,
             allow_tuning,
-        }) => serve(&radio, listen, allow_tuning),
+            transmit_limit,
+        }) => serve(&radio, listen, allow_tuning, transmit_limit),
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
@@ -1061,6 +1140,8 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{Command, HamlibChoice, RadioChoice, VERSION, Wsjtx, banner, parse};
+    use std::time::Duration;
+
     use crate::hamlib::Launch;
 
     fn args(text: &str) -> Vec<String> {
@@ -1180,6 +1261,7 @@ mod tests {
                 radio: RadioChoice::CivPretend,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 allow_tuning: false,
+                transmit_limit: None,
             })
         );
         assert!(parse(&args("serve --civ-pretend --listen 127.0.0.1:5000")).is_ok());
@@ -1200,8 +1282,46 @@ mod tests {
                 radio: RadioChoice::Civ("COM5".to_owned()),
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 allow_tuning: true,
+                transmit_limit: None,
             })
         );
+        // Transmitting is the operator's choice on the command line, and
+        // means tuning too.
+        assert_eq!(
+            parse(&args("serve --civ COM5 --allow-transmit")),
+            Ok(Command::Serve {
+                radio: RadioChoice::Civ("COM5".to_owned()),
+                listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+                allow_tuning: true,
+                transmit_limit: Some(Duration::from_mins(1)),
+            })
+        );
+        assert!(matches!(
+            parse(&args("serve --civ COM5 --allow-tuning --allow-transmit --tx-limit 15")),
+            Ok(Command::Serve {
+                allow_tuning: true,
+                transmit_limit: Some(limit),
+                ..
+            }) if limit == Duration::from_secs(15)
+        ));
+        assert!(matches!(
+            parse(&args("serve --civ-pretend --allow-transmit --allow-tuning")),
+            Ok(Command::Serve {
+                transmit_limit: Some(_),
+                ..
+            })
+        ));
+        for refused in [
+            "serve --pretend --allow-transmit",
+            "serve --hamlib-model 3073 --device COM5 --allow-transmit",
+            "serve --civ COM5 --tx-limit 15",
+            "serve --civ COM5 --allow-transmit --tx-limit 0",
+            "serve --civ COM5 --allow-transmit --tx-limit 601",
+            "serve --civ COM5 --allow-transmit --tx-limit soon",
+            "read --civ COM5 --allow-transmit",
+        ] {
+            assert!(parse(&args(refused)).is_err(), "{refused}");
+        }
         assert!(parse(&args("read --civ-pretend --allow-tuning")).is_err());
         assert!(parse(&args("read --civ-pretend --listen 127.0.0.1:5000")).is_err());
     }

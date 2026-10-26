@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The Agent's own driver for Icom radios over CI-V. It only reads.
+//! The Agent's own driver for Icom radios over CI-V. It reads and tunes, and
+//! keys the transmitter only through [`Keyable`], which only
+//! `serve --allow-transmit` uses.
 //!
 //! Given a [`Port`] and the rig definitions the Agent knows, the driver:
 //!
@@ -16,8 +18,10 @@
 //! with echo-back on sends first, and any report a radio sends on its own
 //! (to everyone, address 00h), so neither is mistaken for the answer.
 //!
-//! [`Ask`] is the whole list of what the driver may say to a radio, and none
-//! of it tunes the radio or keys it. A real radio is reached through a serial
+//! [`Ask`] is the whole list of questions the driver may ask a radio, and
+//! none of it tunes the radio or keys it. [`Change`] is the whole list of
+//! changes it may ask for, and none of it keys it either: the one transmit
+//! command is [`transmit_payload`], kept apart. A real radio is reached through a serial
 //! port (`civ_serial`, `--civ COM5`); the pretend radio through
 //! [`PretendPort`], which is how the driver is tested and what
 //! `loglab-agent read --civ-pretend` uses.
@@ -28,8 +32,8 @@ use std::time::{Duration, Instant};
 use crate::civ::{self, Decoder, Frame, NG, OK};
 use crate::civ_pretend::PretendCiv;
 use crate::rig::{
-    ControlPath, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading, Tunable,
-    Tuning, Vfo,
+    ControlPath, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading,
+    Tunable, Tuning, Vfo,
 };
 use crate::rigdef::Definition;
 
@@ -142,6 +146,13 @@ impl Change {
     }
 }
 
+/// The driver's one transmit command: `1C 00 01` keys the transmitter and
+/// `1C 00 00` unkeys it.
+#[must_use]
+pub fn transmit_payload(on: bool) -> Vec<u8> {
+    vec![0x1C, 0x00, u8::from(on)]
+}
+
 /// An Icom radio found on a port, read over CI-V.
 pub struct CivRadio<P: Port> {
     port: P,
@@ -246,12 +257,16 @@ impl<P: Port> CivRadio<P> {
 
     /// Asks for one change, and returns once the radio says it's done (FB).
     fn change(&mut self, change: Change) -> Result<(), RadioError> {
-        let payload = change.payload();
-        match self.exchange(&payload)?.as_slice() {
+        self.command(&change.payload())
+    }
+
+    /// Sends one command, and returns once the radio says it's done (FB).
+    fn command(&mut self, payload: &[u8]) -> Result<(), RadioError> {
+        match self.exchange(payload)?.as_slice() {
             [OK] => Ok(()),
             other => Err(RadioError(format!(
                 "odd answer to {}: {}",
-                civ::hex(&payload),
+                civ::hex(payload),
                 civ::hex(other)
             ))),
         }
@@ -359,6 +374,12 @@ impl<P: Port> Tunable for CivRadio<P> {
     }
 }
 
+impl<P: Port> Keyable for CivRadio<P> {
+    fn transmit(&mut self, on: bool) -> Result<(), RadioError> {
+        self.command(&transmit_payload(on))
+    }
+}
+
 impl<P: Port> Radio for CivRadio<P> {
     fn identity(&self) -> &RadioIdentity {
         &self.identity
@@ -457,10 +478,10 @@ impl Port for PretendPort {
 
 #[cfg(test)]
 mod tests {
-    use super::{Ask, Change, CivRadio, Port, PretendPort};
+    use super::{Ask, Change, CivRadio, Port, PretendPort, transmit_payload};
     use crate::civ::Frame;
     use crate::civ_pretend::PretendCiv;
-    use crate::rig::{ControlPath, Mode, Radio, Tunable, Tuning, Vfo};
+    use crate::rig::{ControlPath, Keyable, Mode, Radio, Tunable, Tuning, Vfo};
     use crate::rigdef::{self, Definition};
 
     fn ic_7300() -> Definition {
@@ -602,6 +623,21 @@ mod tests {
             assert!(radio.tune(tuning).is_ok(), "{tuning:?}");
             assert!(!radio.port.radio().transmitting(), "{tuning:?} keyed it");
         }
+    }
+
+    #[test]
+    fn keys_and_unkeys_only_when_asked_and_the_radio_reports_it() {
+        assert_eq!(transmit_payload(true), [0x1C, 0x00, 0x01]);
+        assert_eq!(transmit_payload(false), [0x1C, 0x00, 0x00]);
+        let mut radio = found(115_200);
+        assert!(radio.transmit(true).is_ok());
+        assert!(radio.port.radio().transmitting());
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.ptt, Some(true), "the radio says so");
+        assert!(radio.transmit(false).is_ok());
+        assert!(!radio.port.radio().transmitting());
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.ptt, Some(false));
     }
 
     #[test]
