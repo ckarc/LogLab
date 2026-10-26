@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The Operation stats box: how the whole group is doing in an operation like
@@ -14,7 +14,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const box = $("#stats");
   const body = $("#stats-body");
   const EVERY_MS = 20000;
@@ -26,7 +26,7 @@
   // kept across refreshes, so a refresh never opens or closes them.
   const inside = el("div", { className: "stat-more-body" });
   let moreLabel = "Each hour, bands and modes, operators";
-  const more = LogLab.expander({ id: "stats", box, part: inside, over: true, label: () => moreLabel });
+  const more = LabLog.expander({ id: "stats", box, part: inside, over: true, label: () => moreLabel });
 
   const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
   const hhmm = (iso) => `${iso.slice(11, 13)}${iso.slice(14, 16)}Z`;
@@ -150,7 +150,7 @@
       el("th", { textContent: "Operator" }), el("th", { textContent: "QSOs" }), el("th", { textContent: "Last hour" }),
       ...(scored ? [el("th", { textContent: "Points" })] : []))));
     table.append(el("tbody", {}, ...s.operators.map((o) => el("tr", {},
-      el("td", {}, LogLab.callsign(o.operator)), el("td", { textContent: String(o.qsos) }), el("td", { textContent: String(o.last_hour) }),
+      el("td", {}, LabLog.callsign(o.operator)), el("td", { textContent: String(o.qsos) }), el("td", { textContent: String(o.last_hour) }),
       ...(scored ? [el("td", { textContent: String(o.points) })] : [])))));
     return el("div", {}, el("h3", { textContent: "By operator" }), el("div", { className: "table-wrap" }, table));
   }
@@ -236,8 +236,8 @@
   }
 
   async function refresh() {
-    const signedIn = Boolean(LogLab.session());
-    const op = signedIn && LogLab.layout().operation;
+    const signedIn = Boolean(LabLog.session());
+    const op = signedIn && LabLog.layout().operation;
     $("#stats-none").hidden = signedIn;
     body.hidden = !signedIn;
     if (!signedIn) {
@@ -246,10 +246,10 @@
       return;
     }
     if (!shown() || asking) return;
-    asking = LogLab.api("GET", op ? `/operations/${op.id}/stats` : "/stats/personal");
+    asking = LabLog.api("GET", op ? `/operations/${op.id}/stats` : "/stats/personal");
     try {
       const s = await asking;
-      if ((LogLab.layout().operation?.id || null) !== (op ? op.id : null)) return; // moved to another operation while asking
+      if ((LabLog.layout().operation?.id || null) !== (op ? op.id : null)) return; // moved to another operation while asking
       if (op) render(s);
       else renderPersonal(s);
       $("#stats-error").textContent = "";

@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Station Agents: an administrator approves an Agent that asks to join as a
@@ -10,14 +10,14 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const dialog = $("#agents-dialog");
   const opener = $("#agents-open");
   const waitingLabel = $("#agents-waiting");
   const WATCH_MS = 10000; // how often an administrator's page looks for Agents asking to join
   const OPEN_MS = 3000; // and how often while this dialog is open
 
-  const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
+  const isAdmin = () => (LabLog.session()?.permissions || []).includes("admin");
   const problem = (text) => { $(".error", dialog).textContent = text; };
 
   function button(text, onClick, secondary = true) {
@@ -35,7 +35,7 @@
     if (confirmText && !confirm(confirmText)) return;
     problem("");
     try {
-      await LogLab.api(method, path);
+      await LabLog.api(method, path);
     } catch (e) {
       problem(e.message);
     }
@@ -83,10 +83,10 @@
       return;
     }
     try {
-      const waiting = await LogLab.api("GET", "/agent/pairings");
+      const waiting = await LabLog.api("GET", "/agent/pairings");
       showWaiting(waiting.length);
       if (!dialog.open) return;
-      const { stations } = await LogLab.api("GET", "/agent/keys");
+      const { stations } = await LabLog.api("GET", "/agent/keys");
       $("#agents-waiting-list").replaceChildren(...waiting.map(waitingRow));
       $("#agents-none").hidden = waiting.length > 0;
       $("#agents-keyed").replaceChildren(...stations.map(keyedRow));

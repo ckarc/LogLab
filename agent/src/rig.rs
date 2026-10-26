@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! The common rig model (Principle IX).
@@ -76,7 +76,7 @@ pub enum ControlPath {
     Flex,
     /// Over a serial port, in Icom's CI-V protocol, by the Agent's own driver.
     Civ,
-    /// The Agent's built-in pretend radio, for trying LogLab without one.
+    /// The Agent's built-in pretend radio, for trying LabLog without one.
     Pretend,
 }
 

@@ -1,11 +1,11 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Build the CQ zone and ITU zone maps the web client draws.
 
 This is a developer tool, not part of the Engine: its output,
 ``src/loglab_engine/web/maps/cq-zones.json`` and ``itu-zones.json``, is
-committed, so LogLab draws the maps with no internet connection
+committed, so LabLog draws the maps with no internet connection
 (Principle V) and nothing here runs in the field. Run it only to rebuild the
 maps, in a scratch environment with Shapely installed
 (``pip install shapely``)::

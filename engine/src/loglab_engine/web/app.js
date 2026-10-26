@@ -1,7 +1,7 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-// LogLab's default web client. It uses only the Engine's published API
+// LabLog's default web client. It uses only the Engine's published API
 // (Principle I) and loads nothing from the internet (Principle V). The Engine
 // is the authority: after every change this page shows what the Engine
 // returned, not what it sent (Principle II). Every time is UTC (Principle VIII).
@@ -179,7 +179,7 @@
     return held.answer;
   }
   let overlayDefault = null; // the operator's overlay's starting layout, if it has one
-  window.LogLab = Object.freeze({
+  window.LabLog = Object.freeze({
     api,
     session: () => session,
     layout: () => layout,

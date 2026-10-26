@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """The ``loglab-log`` command line: the demonstration Brian runs, end to end."""
@@ -91,7 +91,7 @@ def test_the_demo(cli: Terminal, visitor_cli: Terminal, tmp_path: Path) -> None:
 
 
 def test_whole_log_export_has_a_loglab_header(cli: Terminal, tmp_path: Path) -> None:
-    """Exporting the whole log writes LogLab's own header over the stored QSOs."""
+    """Exporting the whole log writes LabLog's own header over the stored QSOs."""
     ghosts = tmp_path / "ghosts.adi"
     ghosts.write_bytes(write_adi(generate(20)))
     assert cli("import", str(ghosts))[0] == EXIT_OK

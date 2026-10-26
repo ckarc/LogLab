@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Real PostgreSQL databases for the storage tests.
@@ -73,7 +73,7 @@ def migrated_template() -> Iterator[str]:
 
 @pytest.fixture
 def empty_database() -> Iterator[str]:
-    """A brand-new database with no LogLab schema at all."""
+    """A brand-new database with no LabLog schema at all."""
     name = create_database()
     try:
         yield name

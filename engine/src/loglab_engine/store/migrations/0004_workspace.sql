@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 LogLab contributors
+-- SPDX-FileCopyrightText: 2026 LabLog contributors
 -- SPDX-License-Identifier: AGPL-3.0-only
 
 -- Each operator's workspace layout: which modules the web page shows, in what

@@ -1,5 +1,5 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 # Proper names that Clippy's doc_markdown lint would otherwise ask to backtick.
-doc-valid-idents = ["LabLog", "LogLab", "FlexRadio", "SmartSDR", "WSJT-X", "..",]
+doc-valid-idents = ["LabLog", "FlexRadio", "SmartSDR", "WSJT-X", "..",]

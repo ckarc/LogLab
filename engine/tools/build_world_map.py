@@ -1,10 +1,10 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Build the world map the web client draws QSO paths on.
 
 This is a developer tool, not part of the Engine: its output,
-``src/loglab_engine/web/maps/world.json``, is committed, so LogLab draws the
+``src/loglab_engine/web/maps/world.json``, is committed, so LabLog draws the
 map with no internet connection (Principle V) and nothing here runs in the
 field. Run it only to rebuild the map, in a scratch environment with Shapely
 installed (``pip install shapely``)::

@@ -1,4 +1,4 @@
--- SPDX-FileCopyrightText: 2026 LogLab contributors
+-- SPDX-FileCopyrightText: 2026 LabLog contributors
 -- SPDX-License-Identifier: AGPL-3.0-only
 
 -- When the Engine may re-check, in the background, the QRZ.com profiles whose

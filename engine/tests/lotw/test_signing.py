@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Signing QSOs for LoTW: the certificate, the QSO's signed text, and the ``.tq8`` file."""
@@ -121,9 +121,9 @@ def test_a_tq8_file_carries_the_certificate_location_and_signed_qsos() -> None:
         contact_from_record(_record(FREQ="14.205")),
         contact_from_record(_record(CALL="N0OY")),
     ]
-    tq8 = build_tq8(cert, KANSAS, contacts, "LogLab Engine test")
+    tq8 = build_tq8(cert, KANSAS, contacts, "LabLog Engine test")
     records = read_gabbi(tq8)
-    assert records[0]["TQSL_IDENT"].startswith("LogLab Engine test")
+    assert records[0]["TQSL_IDENT"].startswith("LabLog Engine test")
     assert records[0]["Rec_Type"] == "tCERT"
     station = records[1]
     assert station == {

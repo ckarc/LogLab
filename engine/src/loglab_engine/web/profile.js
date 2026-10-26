@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The station profile: a box that shows who the call being typed in New QSO
@@ -36,7 +36,7 @@
   let channel = null;
   try { channel = new BroadcastChannel("loglab-call"); } catch { /* one window only */ }
 
-  const table = window.LogLab.qsoTable({
+  const table = window.LabLog.qsoTable({
     id: "profile",
     table: $("#profile-log"),
     toolbar: $("#profile-tools"),
@@ -78,9 +78,9 @@
   function homePlace() {
     if (home && Date.now() - home.at < HOME_KEEP_MS) return home.place;
     const params = new URLSearchParams({ limit: "1" });
-    const op = window.LogLab.layout().operation;
+    const op = window.LabLog.layout().operation;
     if (op) params.set("operation", op.id);
-    const place = window.LogLab.api("GET", `/paths?${params}`).then((r) => r.home || null, () => null);
+    const place = window.LabLog.api("GET", `/paths?${params}`).then((r) => r.home || null, () => null);
     home = { at: Date.now(), place };
     return place;
   }
@@ -103,7 +103,7 @@
   function showPath() {
     $("#profile-path").hidden = !path;
     if (!path) return;
-    const unit = window.LogLab.layout().distance_unit === "km" ? "km" : "mi";
+    const unit = window.LabLog.layout().distance_unit === "km" ? "km" : "mi";
     const amount = unit === "km" ? path.km : path.km / KM_PER_MI;
     $("#profile-distance").textContent = `≈ ${Math.round(amount).toLocaleString()} ${unit}`;
     $("#profile-heading").textContent = `heading ${String(Math.round(path.heading) % 360).padStart(3, "0")}°`;
@@ -126,8 +126,8 @@
   }
 
   $("#profile-distance").addEventListener("click", () => {
-    const unit = window.LogLab.layout().distance_unit === "km" ? "mi" : "km";
-    window.LogLab.useLayout({ distance_unit: unit });
+    const unit = window.LabLog.layout().distance_unit === "km" ? "mi" : "km";
+    window.LabLog.useLayout({ distance_unit: unit });
     showPath();
   });
   document.addEventListener("loglab:layout-loaded", () => { home = null; showPath(); });
@@ -150,7 +150,7 @@
   // The photo is read with the operator's sign-in, so it comes as data the
   // page shows itself, never as a link to QRZ.com (Principles I and V).
   async function loadPhoto(call, question, refresh) {
-    const session = window.LogLab.session();
+    const session = window.LabLog.session();
     if (!session) return;
     const query = new URLSearchParams({ call });
     if (refresh) query.set("refresh", "true");
@@ -176,7 +176,7 @@
   async function loadBio(call, question, refresh) {
     let bio;
     try {
-      bio = await window.LogLab.api("GET", `/lookup/bio?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
+      bio = await window.LabLog.api("GET", `/lookup/bio?call=${encodeURIComponent(call)}${refresh ? "&refresh=true" : ""}`);
     } catch {
       return;
     }
@@ -214,8 +214,8 @@
   async function lookUp(call, question, refresh = false) {
     let found;
     try {
-      found = refresh ? await window.LogLab.api("GET", `/lookup?call=${encodeURIComponent(call)}&refresh=true`)
-        : await window.LogLab.lookup(call);
+      found = refresh ? await window.LabLog.api("GET", `/lookup?call=${encodeURIComponent(call)}&refresh=true`)
+        : await window.LabLog.lookup(call);
     } catch {
       found = { status: "unreachable", message: "The Engine can't be reached right now." };
     }
@@ -231,20 +231,20 @@
 
   async function loadWorked() {
     const call = shown;
-    if (!call || !window.LogLab.session()) return;
+    if (!call || !window.LabLog.session()) return;
     const order = table.state();
     const params = new URLSearchParams({
       call, limit: String(LIMIT), sort: order.sort, newest_first: String(order.descending),
     });
     let qsos;
     try {
-      qsos = await window.LogLab.api("GET", `/qsos?${params}`);
+      qsos = await window.LabLog.api("GET", `/qsos?${params}`);
     } catch (e) {
       if (call === shown) $("#profile-worked").textContent = e.message;
       return;
     }
     if (call !== shown) return;
-    table.render(qsos, (row, qso) => row.addEventListener("click", () => window.LogLab.openQso(qso.id)));
+    table.render(qsos, (row, qso) => row.addEventListener("click", () => window.LabLog.openQso(qso.id)));
     const worked = $("#profile-worked");
     worked.classList.toggle("first", qsos.length === 0);
     worked.textContent = qsos.length === 0 ? "Not worked before"
@@ -257,7 +257,7 @@
     if (!CALL.test(call) || call.length < 3 || !LOOKS_COMPLETE.test(call)) { clear(); return; }
     shown = call;
     asked += 1;
-    $("#profile-call").replaceChildren(window.LogLab.callsign(call));
+    $("#profile-call").replaceChildren(window.LabLog.callsign(call));
     path = null;
     showPath();
     $("#profile-name").textContent = "";
@@ -307,7 +307,7 @@
   // The biography and the QSOs worked before fold away under the name and
   // photo, behind a bar that says how many and opens them over the page
   // (app.js, expander).
-  window.LogLab.expander({
+  window.LabLog.expander({
     id: "profile",
     box: $("#profile"),
     part: $("#profile-more"),
@@ -343,7 +343,7 @@
     if (!shown) return;
     asked += 1;
     $("#profile-source").textContent = "Asking QRZ.com…";
-    window.LogLab.forgetLookups();
+    window.LabLog.forgetLookups();
     lookUp(shown, asked, true);
   });
 

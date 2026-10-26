@@ -1,9 +1,9 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Ghost QSOs: synthetic, deterministic test data shaped by the ADIF specification.
 
-Ghosts let LogLab be exercised without anyone's real log. Every ghost is
+Ghosts let LabLog be exercised without anyone's real log. Every ghost is
 unmistakably fake:
 
 * callsigns use the ``Q`` prefix, which the ITU does not issue to stations;

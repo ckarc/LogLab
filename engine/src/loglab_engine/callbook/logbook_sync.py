@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Sending logged QSOs to QRZ.com logbooks, in the background.
@@ -10,11 +10,11 @@ each run sends every QSO whose current version QRZ.com does not have yet. A
 new QSO is inserted; an edited one takes the place of its earlier copy; a deleted one is
 removed from the QRZ logbook, and sent again if it is restored.
 
-Only LogLab's own copies are ever touched, by the logid QRZ.com gave them. An
-edited QSO's old copy is removed and the new one inserted; LogLab never asks
+Only LabLog's own copies are ever touched, by the logid QRZ.com gave them. An
+edited QSO's old copy is removed and the new one inserted; LabLog never asks
 QRZ.com to replace a matching QSO, so one that reached QRZ.com another way
 (from LoTW, or an earlier upload) is never changed or removed. A QSO whose
-only change is LogLab marking it sent to or confirmed by LoTW is not sent
+only change is LabLog marking it sent to or confirmed by LoTW is not sent
 again at all: QRZ.com's copy is left as it is.
 
 It runs when a QSO changes, and while anything is still waiting, again every
@@ -64,7 +64,7 @@ def _adif(record: Record, book_call: str) -> str:
 
 
 def _without_lotw(record: Record) -> list[tuple[str, str]]:
-    """The record's fields, leaving out the LOTW_ fields LogLab's LoTW sending writes."""
+    """The record's fields, leaving out the LOTW_ fields LabLog's LoTW sending writes."""
     return [(f.key, f.value) for f in record.fields if not f.key.startswith("LOTW_")]
 
 
@@ -158,13 +158,13 @@ class LogbookSync:
         if qso.logid is not None and qso.sent_version is not None:
             sent = log.history(qso.qso_id)[qso.sent_version - 1].record
             if _without_lotw(sent) == _without_lotw(record):
-                # Only LogLab's own LoTW marks changed. QRZ.com keeps its copy as it
+                # Only LabLog's own LoTW marks changed. QRZ.com keeps its copy as it
                 # is, with whatever it merged from LoTW itself (the maintainer's rule).
                 store.record(qso, book, outcome="sent", logid=qso.logid)
                 return
         if qso.logid is not None:
-            # An edit or a restore: remove LogLab's own earlier copy by its logid,
-            # then send the QSO as it stands. LogLab never asks QRZ.com to replace
+            # An edit or a restore: remove LabLog's own earlier copy by its logid,
+            # then send the QSO as it stands. LabLog never asks QRZ.com to replace
             # a matching QSO, so a QSO that reached QRZ.com another way (from LoTW,
             # say) is never changed or removed (Principle VII).
             self.client.delete(book.api_key, qso.logid)

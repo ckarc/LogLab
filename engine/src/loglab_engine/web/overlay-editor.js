@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The overlay editor, for administrators. An overlay is data (Principle III):
@@ -11,7 +11,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   // ADIF 3.1.7 bands, lowest frequency first.
   const BANDS = [
     "2190m", "630m", "560m", "160m", "80m", "60m", "40m", "30m", "20m", "17m", "15m", "12m", "10m", "8m",
@@ -37,7 +37,7 @@
     ["p2p", "Park-to-park contacts (POTA only)"],
   ];
 
-  const isAdmin = () => (LogLab.session()?.permissions || []).includes("admin");
+  const isAdmin = () => (LabLog.session()?.permissions || []).includes("admin");
   const plain = (o) => JSON.parse(JSON.stringify(o));
   const words = (text) => text.split(/[\s,]+/).map((w) => w.trim().toUpperCase()).filter(Boolean);
   const slug = (text, max = 32) => text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^[^a-z]+|-+$/g, "").slice(0, max).replace(/-+$/, "");
@@ -190,7 +190,7 @@
     $(".error", listView).textContent = "";
     try {
       // Retired ones too, so a new overlay never takes a retired one's short name.
-      overlays = await LogLab.api("GET", "/overlays?include_retired=true");
+      overlays = await LabLog.api("GET", "/overlays?include_retired=true");
     } catch (e) {
       $(".error", listView).textContent = e.message;
       return;
@@ -231,7 +231,7 @@
   async function retire(o) {
     if (!confirm(`Retire ${o.name}? It disappears from the list of overlays. QSOs logged in it stay in the log, and you can bring it back later.`)) return;
     try {
-      await LogLab.api("DELETE", `/overlays/${o.id}?base_version=${o.version}`);
+      await LabLog.api("DELETE", `/overlays/${o.id}?base_version=${o.version}`);
       changed();
       await openList();
     } catch (e) {
@@ -575,7 +575,7 @@
   }
 
   function useMyLayout() {
-    const now = LogLab.layout();
+    const now = LabLog.layout();
     const columns = (now.tables?.log?.columns || draft.layout?.log_columns || ["time", "call", "band", "mode", "operator"]).filter((c) => COLUMN.test(c));
     draft.layout = {
       modules: now.modules.map((m) => ({ id: m.id, width: m.width, side: m.side, hidden: Boolean(m.hidden) })),
@@ -681,7 +681,7 @@
     }
     error.textContent = "";
     try {
-      await LogLab.api("PUT", `/overlays/${definition.id}`, { definition, base_version: base });
+      await LabLog.api("PUT", `/overlays/${definition.id}`, { definition, base_version: base });
     } catch (e) {
       error.textContent = e.message;
       return;

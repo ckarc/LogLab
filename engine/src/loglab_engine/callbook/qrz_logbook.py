@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """The QRZ Logbook API, from QRZ.com's published developer guide.
@@ -150,7 +150,7 @@ class QrzLogbookClient:
             QrzUnreachableError: QRZ.com could not be reached.
             QrzReplyError: The answer could not be read.
         """
-        # No OPTION=REPLACE, ever: it would overwrite a QSO LogLab did not send.
+        # No OPTION=REPLACE, ever: it would overwrite a QSO LabLog did not send.
         answer = self._ask({"KEY": key, "ACTION": "INSERT", "ADIF": adif})
         result = answer["RESULT"].upper()
         # The guide documents LOGID; its own example answers with LOGIDS.

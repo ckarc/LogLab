@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """Reading QRZ.com's answers: untrusted input, validated where it enters (Principle XII)."""
@@ -108,7 +108,7 @@ def _client(*answers: bytes) -> tuple[QrzClient, list[str]]:
         asked.append(url)
         return queue.pop(0)
 
-    return QrzClient("LogLab-test", fetch), asked
+    return QrzClient("LabLog-test", fetch), asked
 
 
 def test_login_sends_the_agent_and_refuses_a_bad_password() -> None:
@@ -119,7 +119,7 @@ def test_login_sends_the_agent_and_refuses_a_bad_password() -> None:
     )
     assert client.login("k9ksu", "pw").startswith("2331")
     assert asked[0].startswith("https://xmldata.qrz.com/xml/current/?")
-    assert "agent=LogLab-test" in asked[0]
+    assert "agent=LabLog-test" in asked[0]
     with pytest.raises(QrzLoginError, match="incorrect"):
         client.login("k9ksu", "wrong")
 
@@ -210,7 +210,7 @@ def _large(*answers: bytes) -> tuple[QrzClient, list[tuple[str, int]]]:
     def fetch(url: str) -> bytes:
         raise AssertionError(url)
 
-    return QrzClient("LogLab-test", fetch, fetch_large), asked
+    return QrzClient("LabLog-test", fetch, fetch_large), asked
 
 
 def test_biography_reads_the_page_and_tells_an_ended_session() -> None:

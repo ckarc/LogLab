@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // The On air box: every workstation in the operation, with the band and mode
@@ -14,7 +14,7 @@
 
 (() => {
   const $ = (selector, root = document) => root.querySelector(selector);
-  const LogLab = window.LogLab;
+  const LabLog = window.LabLog;
   const box = $("#onair");
   // Folded, only this workstation's own row shows (it comes first), with no
   // scroll bar; the bar opens the other stations (app.js, expander).
@@ -23,9 +23,9 @@
     const table = $("#onair-list");
     const own = [...table.tBodies[0].rows].filter((row) => row.classList.contains("you")).length;
     // Not on the air here: just the heading, and the bar for the rest.
-    return own ? LogLab.rowsHeight(table, own) : table.offsetHeight && table.tHead ? table.tHead.offsetHeight + 2 : 0;
+    return own ? LabLog.rowsHeight(table, own) : table.offsetHeight && table.tHead ? table.tHead.offsetHeight + 2 : 0;
   };
-  LogLab.expander({
+  LabLog.expander({
     id: "onair",
     box,
     part: $("#onair-wrap"),
@@ -68,7 +68,7 @@
       dot.className = `onair-dot ${s.active ? "active" : "idle"}`;
       dot.title = s.active ? `Active: logged in the last ${list.active_minutes} minutes` : "Idle: no QSO lately";
       const who = document.createDocumentFragment();
-      who.append(LogLab.callsign(s.operator));
+      who.append(LabLog.callsign(s.operator));
       if (s.you) who.append(Object.assign(document.createElement("span"), { className: "hint", textContent: " (you)" }));
       if (s.pretend) {
         who.append(Object.assign(document.createElement("span"), {
@@ -93,7 +93,7 @@
       if (s.transmitting) {
         mode.append(" ", Object.assign(document.createElement("span"), { className: "radio-tx on", textContent: "TX", title: "The radio says it is transmitting" }));
       }
-      row.append(cell(dot), cell(who), cell(s.station), cell(LogLab.callsign(s.call)), cell(band), cell(mode), cell(ago(s.last_qso)));
+      row.append(cell(dot), cell(who), cell(s.station), cell(LabLog.callsign(s.call)), cell(band), cell(mode), cell(ago(s.last_qso)));
       return row;
     });
     $("#onair-list tbody").replaceChildren(...rows);
@@ -106,17 +106,17 @@
   function entry() {
     const band = $("#entry [name=BAND]").value || null;
     const mode = $("#entry [name=MODE]").value || null;
-    return { band, mode, gota: Boolean(LogLab.layout().operation?.gota) };
+    return { band, mode, gota: Boolean(LabLog.layout().operation?.gota) };
   }
 
   async function report() {
-    const session = LogLab.session();
-    const op = session && LogLab.layout().operation;
+    const session = LabLog.session();
+    const op = session && LabLog.layout().operation;
     $("#onair-none").hidden = Boolean(op);
     if (reportedTo && reportedTo !== op?.id) {
       const left = reportedTo;
       reportedTo = null;
-      LogLab.api("DELETE", `/operations/${left}/on-air`).catch(() => {}); // it drops off on its own anyway
+      LabLog.api("DELETE", `/operations/${left}/on-air`).catch(() => {}); // it drops off on its own anyway
     }
     if (!op) {
       $("#onair-wrap").hidden = true;
@@ -128,7 +128,7 @@
       let list;
       if (ended !== op.id && session.permissions.includes("log")) {
         try {
-          list = await LogLab.api("PUT", `/operations/${op.id}/on-air`, entry());
+          list = await LabLog.api("PUT", `/operations/${op.id}/on-air`, entry());
           reportedTo = op.id;
         } catch (e) {
           if (!/ended/.test(e.message)) throw e;
@@ -136,7 +136,7 @@
         }
       }
       if (!shown()) return;
-      list ??= await LogLab.api("GET", `/operations/${op.id}/on-air`);
+      list ??= await LabLog.api("GET", `/operations/${op.id}/on-air`);
       render(list);
       $("#onair-error").textContent = "";
     } catch (e) {

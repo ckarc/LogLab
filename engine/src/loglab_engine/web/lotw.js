@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // Logbook of the World. The LoTW link in the Log box says how many QSOs wait
@@ -15,7 +15,7 @@
   const US = new Set([291, 6, 110]);
   const CANADA = 1;
   const $ = (selector, root = document) => root.querySelector(selector);
-  const api = (...args) => window.LogLab.api(...args);
+  const api = (...args) => window.LabLog.api(...args);
   const dialog = $("#lotw-dialog");
   const link = $("#lotw-open");
   const certForm = $("#lotw-cert-form");

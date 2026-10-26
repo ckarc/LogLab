@@ -1,10 +1,10 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
-"""Build the tables LogLab needs to sign QSOs for Logbook of the World.
+"""Build the tables LabLog needs to sign QSOs for Logbook of the World.
 
 This is a developer tool, not part of the Engine: its output,
-``src/loglab_engine/lotw/tqsl-tables.json``, is committed, so LogLab signs
+``src/loglab_engine/lotw/tqsl-tables.json``, is committed, so LabLog signs
 QSOs with no internet connection (Principle V) and nothing here runs in the
 field. Run it only to refresh the tables from a newer TrustedQSL release::
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: 2026 LogLab contributors
+# SPDX-FileCopyrightText: 2026 LabLog contributors
 # SPDX-License-Identifier: AGPL-3.0-only
 
 """The log store: lossless (IV), UTC (VIII), versioned and audited (VII), atomic (XIV)."""
@@ -155,12 +155,12 @@ def test_nul_is_refused_with_the_record_number_and_nothing_is_stored(
 def test_whole_log_export_uses_the_given_header_and_entry_order(
     store: LogStore, shack: Actor
 ) -> None:
-    """A whole-log export carries LogLab's header, then every live QSO in the order entered."""
+    """A whole-log export carries LabLog's header, then every live QSO in the order entered."""
     first = generate(3, seed=1)
     second = generate(2, seed=2)
     _import(store, first, shack, "one.adi")
     _import(store, second, shack, "two.adi")
-    header = Header("LogLab test export\n", (Field("PROGRAMID", "LogLab"),))
+    header = Header("LabLog test export\n", (Field("PROGRAMID", "LabLog"),))
     exported = store.export_log(header)
     assert exported.header == header
     assert exported.records == first.records + second.records

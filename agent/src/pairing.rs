@@ -1,11 +1,11 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Asking to join as a station, to get the station's key.
 //!
 //! An Agent with no key asks the Engine to join as a station. The Engine
 //! answers with a short code, which the Agent shows, and a private ticket.
-//! An administrator sees the same code in LogLab and approves the request
+//! An administrator sees the same code in LabLog and approves the request
 //! (Principle XXI); the Agent then collects its key with the ticket, once,
 //! and keeps it in its key file, readable only by this account. Nobody copies
 //! a key by hand.

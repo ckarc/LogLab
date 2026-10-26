@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: 2026 LogLab contributors
+// SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
 // QRZ.com: the operator's logbook (sent with its API key) and the callsign
@@ -47,7 +47,7 @@
     if (!CALL.test(call)) return;
     let found;
     try {
-      found = await window.LogLab.lookup(call); // shared with the profile box
+      found = await window.LabLog.lookup(call); // shared with the profile box
     } catch {
       return; // the Engine is out of reach: the journal handles logging, nothing to fill
     }
@@ -97,7 +97,7 @@
     problem("");
     setup.password.value = "";
     try {
-      showState(await window.LogLab.api("GET", "/callbook/qrz"));
+      showState(await window.LabLog.api("GET", "/callbook/qrz"));
     } catch (e) {
       problem(e.message);
     }
@@ -109,7 +109,7 @@
     event.preventDefault();
     problem("");
     try {
-      const saved = await window.LogLab.api("PUT", "/callbook/qrz", {
+      const saved = await window.LabLog.api("PUT", "/callbook/qrz", {
         username: setup.username.value.trim(),
         password: setup.password.value,
       });
@@ -117,7 +117,7 @@
       showState(saved);
       if (saved.status === null) {
         asked = ""; // look the current call up with the new login
-        window.LogLab.forgetLookups();
+        window.LabLog.forgetLookups();
         if (form.CALL.value.trim()) lookUp();
       } else if (saved.status === "login_failed") {
         problem(saved.message);
@@ -129,10 +129,10 @@
 
   remove.addEventListener("click", async () => {
     try {
-      await window.LogLab.api("DELETE", "/callbook/qrz");
+      await window.LabLog.api("DELETE", "/callbook/qrz");
       setup.username.value = "";
       setup.password.value = "";
-      showState(await window.LogLab.api("GET", "/callbook/qrz"));
+      showState(await window.LabLog.api("GET", "/callbook/qrz"));
     } catch (e) {
       problem(e.message);
     }
@@ -162,7 +162,7 @@
     bookProblem("");
     book.api_key.value = "";
     try {
-      showBook(await window.LogLab.api("GET", "/logbook/qrz"));
+      showBook(await window.LabLog.api("GET", "/logbook/qrz"));
     } catch (e) {
       bookProblem(e.message);
     }
@@ -175,7 +175,7 @@
     const call = book.book_call.value.trim().toUpperCase();
     if (call) body.book_call = call;
     try {
-      const saved = await window.LogLab.api("PUT", "/logbook/qrz", body);
+      const saved = await window.LabLog.api("PUT", "/logbook/qrz", body);
       book.api_key.value = "";
       showBook(saved);
       if (saved.message.includes("refused")) bookProblem("QRZ.com refused this API key.");
@@ -186,7 +186,7 @@
 
   stop.addEventListener("click", async () => {
     try {
-      await window.LogLab.api("DELETE", "/logbook/qrz");
+      await window.LabLog.api("DELETE", "/logbook/qrz");
       book.book_call.value = "";
       await loadBook();
     } catch (e) {
@@ -202,7 +202,7 @@
   function refreshProblem(text) { $(".error", refresh).textContent = text; }
 
   function showRefresh(state, saved) {
-    const admin = (window.LogLab.session()?.permissions || []).includes("admin");
+    const admin = (window.LabLog.session()?.permissions || []).includes("admin");
     refresh.mode.value = state.mode;
     refresh.mode.disabled = !admin;
     const parts = [];
@@ -221,7 +221,7 @@
   async function loadRefresh() {
     refreshProblem("");
     try {
-      showRefresh(await window.LogLab.api("GET", "/callbook/refresh"), false);
+      showRefresh(await window.LabLog.api("GET", "/callbook/refresh"), false);
     } catch (e) {
       refreshProblem(e.message);
     }
@@ -230,7 +230,7 @@
   refresh.mode.addEventListener("change", async () => {
     refreshProblem("");
     try {
-      showRefresh(await window.LogLab.api("PUT", "/callbook/refresh", { mode: refresh.mode.value }), true);
+      showRefresh(await window.LabLog.api("PUT", "/callbook/refresh", { mode: refresh.mode.value }), true);
     } catch (e) {
       refreshProblem(e.message);
       loadRefresh();
