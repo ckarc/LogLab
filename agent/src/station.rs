@@ -88,6 +88,36 @@ fn find(port: Option<&str>) -> Result<Found, String> {
     ))
 }
 
+/// How often the radio is looked for again while it isn't there.
+const LOOK_AGAIN: Duration = Duration::from_secs(5);
+
+/// Looks for the radio until it is found or `running` turns false, so the
+/// Agent can start before the radio is turned on (at Windows sign-in, for
+/// example). Says why it isn't found once, and again only when the reason
+/// changes.
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
+    let mut said = String::new();
+    while running.load(Ordering::SeqCst) {
+        match find(port) {
+            Ok(found) => return Some(found),
+            Err(why) => {
+                if why != said {
+                    crate::print_event(&format!(
+                        "waiting for the radio: {why}\n-> The Agent keeps looking every {} s; Ctrl-C stops.",
+                        LOOK_AGAIN.as_secs()
+                    ));
+                    said = why;
+                }
+            }
+        }
+        let until = std::time::Instant::now() + LOOK_AGAIN;
+        while running.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
+    None
+}
+
 /// Says what in the radio's settings stops digital modes working.
 fn check_settings(radio: &mut CivRadio<SerialPort>) {
     let definition = radio.definition().clone();
@@ -202,7 +232,14 @@ fn vara(station: &crate::audio_windows::Station) {
 ///
 /// The radio isn't found, or the virtual radio can't listen.
 pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<(), String> {
-    let mut found = find(port)?;
+    let running = Arc::new(AtomicBool::new(true));
+    let flag = Arc::clone(&running);
+    ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
+        .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
+    let Some(mut found) = wait_for_radio(port, &running) else {
+        println!("stopped");
+        return Ok(());
+    };
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -245,10 +282,6 @@ pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<()
         server.address()
     );
     println!("Ctrl-C stops.");
-    let running = Arc::new(AtomicBool::new(true));
-    let flag = Arc::clone(&running);
-    ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
-        .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     #[cfg(windows)]
     let mut hint: Option<&'static str> = None;
     #[cfg(windows)]
@@ -298,4 +331,108 @@ pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<()
     drop(station);
     println!("stopped");
     Ok(())
+}
+
+/// Where Windows keeps the programs it runs at each sign-in, for this user
+/// (Microsoft Learn, "Run and `RunOnce` Registry Keys").
+#[cfg(windows)]
+const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+/// The Agent's entry under it.
+#[cfg(windows)]
+const RUN_NAME: &str = "LabLog Station Agent";
+
+/// The command line Windows runs at sign-in: this program's `station`.
+/// Windows takes at most 260 characters there.
+#[cfg(any(windows, test))]
+fn startup_command(exe: &std::path::Path) -> Result<String, String> {
+    let command = format!("\"{}\" station", exe.display());
+    if command.chars().count() > 260 {
+        return Err(format!(
+            "the Agent's path is too long for Windows to start it at sign-in ({command})"
+        ));
+    }
+    Ok(command)
+}
+
+/// `startup on`, `startup off` or `startup status`: whether Windows starts
+/// `station` each time this user signs in.
+///
+/// # Errors
+///
+/// Windows' registry couldn't be read or changed, or this isn't Windows.
+pub fn startup(what: &str) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        let reg = |args: &[&str]| {
+            std::process::Command::new("reg")
+                .args(args)
+                .output()
+                .map_err(|error| format!("can't run reg: {error}"))
+        };
+        match what {
+            "on" => {
+                let exe = std::env::current_exe()
+                    .map_err(|error| format!("can't tell where the Agent is: {error}"))?;
+                let command = startup_command(&exe)?;
+                let done = reg(&[
+                    "add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &command, "/f",
+                ])?;
+                if !done.status.success() {
+                    return Err(format!(
+                        "Windows refused: {}",
+                        String::from_utf8_lossy(&done.stderr).trim()
+                    ));
+                }
+                println!("Windows will run {command} each time you sign in.");
+                println!("Windows may wait a little after sign-in before starting it.");
+                Ok(())
+            }
+            "off" => {
+                let done = reg(&["delete", RUN_KEY, "/v", RUN_NAME, "/f"])?;
+                if done.status.success() {
+                    println!("Windows won't start the Agent at sign-in any more.");
+                } else {
+                    println!("Windows wasn't starting the Agent at sign-in.");
+                }
+                Ok(())
+            }
+            "status" => {
+                let done = reg(&["query", RUN_KEY, "/v", RUN_NAME])?;
+                let text = String::from_utf8_lossy(&done.stdout);
+                match text.lines().find(|line| line.contains("REG_SZ")) {
+                    Some(line) if done.status.success() => println!(
+                        "Windows starts the Agent at sign-in: {}",
+                        line.split("REG_SZ").nth(1).unwrap_or_default().trim()
+                    ),
+                    _ => println!("Windows doesn't start the Agent at sign-in."),
+                }
+                Ok(())
+            }
+            other => Err(format!("startup takes on, off or status, not {other:?}")),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = what;
+        Err(
+            "startup is for Windows; elsewhere, use the system's own way to start programs"
+                .to_owned(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::startup_command;
+
+    #[test]
+    fn the_sign_in_command_runs_station_and_fits_windows() {
+        let exe = std::path::Path::new(r"C:\LabLog\loglab-agent.exe");
+        assert_eq!(
+            startup_command(exe).as_deref(),
+            Ok(r#""C:\LabLog\loglab-agent.exe" station"#)
+        );
+        let deep = std::path::PathBuf::from("x".repeat(300));
+        assert!(startup_command(&deep).is_err(), "over 260 characters");
+    }
 }

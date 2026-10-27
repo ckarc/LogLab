@@ -174,6 +174,21 @@ loglab-agent station --civ COM5      # or names its port
 Starting `station` is the operator's choice that programs on this computer
 may key the radio (Principle IX).
 
+If the radio isn't there yet (off, or its USB cable out), `station` says why
+once and keeps looking every 5 seconds until it is, so it can be started
+before the radio is.
+
+**Starting with Windows.** `loglab-agent startup on` adds the Agent to the
+programs Windows runs each time you sign in (the `Run` key under
+`HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run`, as
+Microsoft Learn's "Run and RunOnce Registry Keys" describes), running
+`station` from wherever the Agent is. `startup off` removes it, and
+`startup status` says whether it is there. Windows doesn't promise how soon
+after sign-in it starts the programs listed there, or in what order, so the
+Agent may start after VARA the first time. Then it leaves VARA's file alone
+and says so; once set, VARA keeps the setting. A Windows service, which
+runs before anyone signs in, comes with the tray program.
+
 ## Sharing a radio with WSJT-X and other programs
 
 The Agent can be a virtual radio for programs that speak Hamlib's `rigctld`

@@ -103,6 +103,9 @@ Usage:
                                        VARA's sound devices, and lets
                                        programs like VarAC and WSJT-X tune
                                        and key it (as serve --allow-transmit)
+                                       (it waits for the radio if it is off)
+  loglab-agent startup on|off|status   whether Windows runs `station` each
+                                       time you sign in
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -193,6 +196,7 @@ enum Command {
         listen: SocketAddr,
         limit: Duration,
     },
+    Startup(String),
     Run {
         engine: String,
         key_file: String,
@@ -275,6 +279,14 @@ fn parse(args: &[String]) -> Result<Command, String> {
     }
     if verb == "station" {
         return station_command(rest);
+    }
+    if verb == "startup" {
+        return match rest {
+            [what] if matches!(what.as_str(), "on" | "off" | "status") => {
+                Ok(Command::Startup(what.clone()))
+            }
+            _ => Err("startup takes one of: on, off, status".to_owned()),
+        };
     }
     if verb == "civ-demo" {
         return if rest.is_empty() {
@@ -1178,6 +1190,7 @@ fn main() -> ExitCode {
             listen,
             limit,
         }) => station::run(port.as_deref(), listen, limit),
+        Ok(Command::Startup(what)) => station::startup(&what),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1418,6 +1431,12 @@ mod tests {
                 limit: Duration::from_secs(30),
             })
         );
+        assert_eq!(
+            parse(&args("startup on")),
+            Ok(Command::Startup("on".to_owned()))
+        );
+        assert!(parse(&args("startup")).is_err());
+        assert!(parse(&args("startup maybe")).is_err());
         for refused in [
             "station --tx-limit 0",
             "station --tx-limit 601",
