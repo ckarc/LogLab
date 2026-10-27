@@ -149,9 +149,13 @@ loglab-agent station --civ COM5      # or names its port
    radio it knows (an IC-7300's Silicon Labs CP210x bridge, 10C4:EA60, with a
    USB serial number like `IC-7300_02065962` tried first), and takes the one
    whose radio answers "who are you?", at whatever speed it answers at.
-2. **Checks the radio's settings** that digital modes need, such as DATA MOD,
-   and says what to set on the radio if one is wrong. It changes nothing on
-   the radio: no setting in its definition is verified on a real radio yet.
+2. **Reads all the radio's settings** (259 on the IC-7300) and keeps the
+   first reading of each radio, by its serial number, as its as-received
+   record in `records` beside the Agent. On later starts it lists what has
+   changed since. It checks the settings digital modes need, such as DATA
+   MOD, and says what to set on the radio if one is wrong. It changes nothing
+   on the radio: no setting in its definition is verified on a real radio
+   yet.
 3. **Carries the radio's audio both ways** (Windows). Receive audio plays into
    VB-CABLE ("CABLE Input"), so programs record it from "CABLE Output".
    Transmit audio goes from a second VB-Audio virtual cable to the radio's
@@ -332,22 +336,28 @@ and asks for more of the name.
 
 ## A radio's settings record
 
-The first time the Agent meets a radio, it can read every menu setting the
-radio's rig definition lists and keep them as the radio's **as-received
-record**: when (UTC), on which computer, and every value. It never
+The first time the Agent meets a radio, it reads every setting the radio's
+rig definition lists and keeps them as the radio's **as-received record**:
+when (UTC), on which computer, the radio's serial number, and every value,
+with the exact bytes the radio sent. For the IC-7300 that is every menu item
+(0001 to 0216) and the front-panel controls: filters, NR, NB, RF gain, AGC,
+preamp, attenuator, RF power and the rest, 259 settings in all. It never
 overwrites that record. Reading the radio again compares it against the
 record and lists what has changed since the radio arrived.
 
+`station` does this by itself, keeping records in `records` beside the
+Agent, one per radio by its serial number. To do it on its own:
+
 ```sh
+loglab-agent record --civ COM5 --records FOLDER
 loglab-agent record --civ-pretend --records FOLDER
 ```
 
 The report also names any setting that stops a job from working, in plain
 words. For example, with DATA MOD on MIC, WSJT-X and VARA would transmit
-silence. It never changes a setting; offering a change, with your OK, comes
-later. Records are JSON files in FOLDER, one per radio, written whole and
-renamed into place. For now only `--civ-pretend` can be recorded: the
-Agent's CI-V driver is not yet connected to a serial port.
+silence. It never changes a setting: nothing in the definition is verified on
+a radio yet. Records are JSON files, one per radio, written whole and renamed
+into place.
 
 ## Watching CI-V
 
