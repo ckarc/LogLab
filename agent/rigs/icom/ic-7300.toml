@@ -903,6 +903,7 @@ write = true
 source = "full_manual"
 verified = false
 write_checked = "fieldlab_write_check"
+note = "FieldLab, 2026-10-27: the radio's menu showed MIC (00h) and MIC,USB (04h) for the codes the Agent read and wrote. ACC and MIC,ACC are not checked yet, so verified stays false."
 
 [[settings]]
 id = "data_mod"
@@ -913,6 +914,7 @@ write = true
 source = "full_manual"
 verified = false
 write_checked = "fieldlab_write_check"
+note = "FieldLab, 2026-10-27: the radio's menu showed MIC (00h) and USB (03h) for the codes the Agent read and wrote. ACC and MIC,ACC are not checked yet, so verified stays false."
 
 [[settings]]
 id = "external_keypad_for_voice"

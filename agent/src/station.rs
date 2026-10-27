@@ -734,13 +734,23 @@ fn vara(station: &crate::audio_windows::Station) {
             now.input.as_deref(),
             &recording,
         )),
-        output: station
-            .transmit_cable
-            .as_deref()
-            .map(|cable| vara::as_vara_names_it(cable, now.output.as_deref(), &playing)),
+        // Without a transmit cable, VARA plays straight into the radio's
+        // own USB sound device, so it doesn't transmit silence.
+        output: Some(vara::as_vara_names_it(
+            station
+                .transmit_cable
+                .as_deref()
+                .unwrap_or(&station.radio_playing),
+            now.output.as_deref(),
+            &playing,
+        )),
     };
     match vara::set(&path, &wanted) {
-        Ok(Outcome::AlreadySet) => println!("VARA: its sound devices are already the Agent's."),
+        Ok(Outcome::AlreadySet) => println!(
+            "VARA: its sound devices are already right (input {:?}, output {:?}).",
+            wanted.input.as_deref().unwrap_or(""),
+            wanted.output.as_deref().unwrap_or("")
+        ),
         Ok(Outcome::Changed(before)) => println!(
             "VARA: sound devices set in {} (input {:?} was {:?}, output {:?} was {:?}). \
              The file as first found is kept as VARA.ini.lablog-original.",
