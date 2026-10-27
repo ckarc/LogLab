@@ -384,7 +384,8 @@ recorded like a restore (`restore-...json`). Value codes not yet checked on a
 real radio are said to be so, so you can look at the radio's menu afterwards.
 
 **Reading one setting.** Type `show DATA MOD` (any setting's menu name, or
-part of one: `show PBT`) to read it from the radio now.
+part of one: `show PBT`) to read it from the radio now. Type `fix` to see
+again what the Agent can fix, and say `yes` to it.
 
 ### Setups kept on the Engine
 
