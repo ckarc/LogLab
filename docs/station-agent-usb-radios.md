@@ -177,6 +177,12 @@ and the Agent keeps its own copy so this works with no connection to the
 Engine (Principle V). Files are written in full and renamed into place
 (Principle XIV).
 
+Every record also keeps each setting's bytes exactly as the radio sent them,
+and the radio's own serial number (from its USB serial port), so each radio
+has its own record, even beside another of the same model. `station` reads
+and keeps the record by itself, in `records` beside the Agent, and says what
+has changed since the radio arrived.
+
 **Restoring settings.** An operator can ask the Agent to put a radio's
 recorded settings back. The Agent restores only on that explicit request,
 only after the operator confirms it, and records the restore like any other
@@ -355,8 +361,16 @@ Each file says:
 - **Modes**: the radio's mode codes, mapped to the rig model's modes.
 - **Commands**: the protocol commands the driver uses for each rig-model
   operation, where they differ from the family's usual ones.
-- **Settings**: every menu setting the Agent may read, with its command, its
-  values, and whether it may be written.
+- **Settings**: every setting the radio exposes, each with what reads it and
+  whether it may be written. A menu item is given by its `item` number (read
+  with `1A 05` on Icom); a front-panel control, such as the RF gain or the
+  noise reduction, by its own `command` (`14 02`, `16 40`). The Agent reads
+  settings only with commands that just ask when sent with nothing after
+  them; a definition naming any other command (`07 00`, which selects a VFO,
+  or anything in `1C`, which keys the radio or starts the tuner) is refused.
+  A setting has named `values`, a `range`, or `raw = true` when no source
+  says what its values mean: then the Agent keeps, compares and would put
+  back the bytes the radio sends, without saying what they mean.
 - **Requirements**: the settings a job needs (digital modes, CAT PTT), with
   the acceptable values and a plain-words explanation for the operator.
 - **Sources**: the documents each part came from.

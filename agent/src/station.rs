@@ -7,10 +7,13 @@
 //! 1. Finds the radio: the serial port whose USB IDs match a known radio's,
 //!    confirmed by the radio's own answer to "who are you?" at the speed it
 //!    answers at.
-//! 2. Checks the radio's settings against what digital modes need, and says
-//!    what is wrong and how to fix it on the radio. It changes nothing on
-//!    the radio: its definition's settings aren't verified on a real radio
-//!    yet, and the Agent never writes an unverified setting.
+//! 2. Reads every setting the radio's definition lists, keeps the first
+//!    reading of each radio (by its serial number) as its as-received record
+//!    in `records` beside the Agent, and says what has changed since. Checks
+//!    the settings against what digital modes need, and says what is wrong
+//!    and how to fix it on the radio. It changes nothing on the radio: its
+//!    definition's settings aren't verified on a real radio yet, and the
+//!    Agent never writes an unverified setting.
 //! 3. Carries the radio's audio both ways (Windows): receive into VB-CABLE,
 //!    and a program's transmit audio from a second virtual cable to the
 //!    radio, only while the Agent has it keyed for that program.
@@ -118,10 +121,62 @@ fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
     None
 }
 
-/// Says what in the radio's settings stops digital modes working.
-fn check_settings(radio: &mut CivRadio<SerialPort>) {
+/// Where settings records are kept: `records` beside the Agent.
+fn records_folder() -> std::path::PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|folder| folder.join("records")))
+        .unwrap_or_else(|| "records".into())
+}
+
+/// Reads the radio's settings, keeps the first reading of this radio as its
+/// as-received record, and says what changed since and what in them stops
+/// digital modes working.
+fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) {
     let definition = radio.definition().clone();
-    let record = settings_record::read(radio, std::time::SystemTime::now(), "this computer");
+    let record = settings_record::read(
+        radio,
+        serial,
+        std::time::SystemTime::now(),
+        &settings_record::computer_name(),
+    );
+    let unread = record
+        .settings
+        .iter()
+        .filter(|entry| matches!(entry.value, settings_record::Value::Unread { .. }))
+        .count();
+    println!(
+        "Radio settings: read {} of {}.",
+        record.settings.len() - unread,
+        record.settings.len()
+    );
+    let path = settings_record::path_for(&records_folder(), &record);
+    match settings_record::load(&path) {
+        Ok(None) => match settings_record::save(&path, &record) {
+            Ok(()) => println!(
+                "Radio settings: kept as this radio's as-received record, {}",
+                path.display()
+            ),
+            Err(error) => println!("Radio settings: {error}"),
+        },
+        Ok(Some(first)) => {
+            let changed = settings_record::changes(&first, &record);
+            if changed.is_empty() {
+                println!("Radio settings: nothing has changed since the radio arrived.");
+            } else {
+                println!(
+                    "Radio settings: {} changed since the radio arrived ({} on {}):",
+                    changed.len(),
+                    first.read_utc,
+                    first.computer
+                );
+                for change in changed {
+                    println!("  {}: {} -> {}", change.label, change.before, change.after);
+                }
+            }
+        }
+        Err(error) => println!("Radio settings: {error}"),
+    }
     let found = settings_record::findings(&record, &definition);
     if found.is_empty() {
         println!("Radio settings: every one digital modes need is right.");
@@ -253,7 +308,7 @@ pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<()
             .unwrap_or_default(),
         found.radio.baud()
     );
-    check_settings(&mut found.radio);
+    check_settings(&mut found.radio, found.serial.as_deref());
     let sound = found.radio.definition().usb_audio.clone();
     let (notes, heard) = mpsc::channel();
     let shared = Arc::new(Shared::with_transmit(Box::new(found.radio), limit).with_notes(notes));

@@ -179,16 +179,22 @@ struct CommandEntry {
     verified: bool,
 }
 
+// One field per key of a `[[settings]]` entry, and four of the keys are
+// yes-or-no.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Setting {
     id: String,
-    item: String,
+    item: Option<String>,
+    command: Option<String>,
     label: String,
     values: Option<BTreeMap<String, u8>>,
     range: Option<[u8; 2]>,
     #[serde(default)]
     percent: bool,
+    #[serde(default)]
+    raw: bool,
     write: bool,
     source: String,
     verified: bool,
@@ -243,23 +249,37 @@ pub struct Definition {
     pub verified_values: usize,
 }
 
-/// One menu setting.
+/// One setting the radio exposes: a menu item or a front-panel control.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingSummary {
     /// The setting's id, such as `data_mod`.
     pub id: String,
     /// Its name on the radio's menu, such as "DATA MOD".
     pub label: String,
-    /// Its menu item number, such as `[0x00, 0x67]`.
-    pub item: [u8; 2],
+    /// The command that reads it, with no value after it: `1A 05 00 67` for
+    /// menu item 0067, `14 02` for the RF gain.
+    pub read: Vec<u8>,
     /// Its named values, if it has them.
     pub values: Option<BTreeMap<String, u8>>,
     /// Its lowest and highest value, if it is a level.
     pub range: Option<[u8; 2]>,
     /// Whether its range is a percentage scale (0 to 255 meaning 0 to 100%).
     pub percent: bool,
+    /// Whether it is kept as the bytes the radio sent, without a meaning.
+    pub raw: bool,
     /// Whether the Agent may ever change it.
     pub write: bool,
+}
+
+impl SettingSummary {
+    /// Its menu item number, such as `[0x00, 0x67]`, if it is a menu item.
+    #[must_use]
+    pub fn item(&self) -> Option<[u8; 2]> {
+        match self.read.as_slice() {
+            [0x1A, 0x05, a, b] => Some([*a, *b]),
+            _ => None,
+        }
+    }
 }
 
 /// A setting a job can't work without.
@@ -465,14 +485,12 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .map(|s| SettingSummary {
                 id: s.id.clone(),
                 label: s.label.clone(),
-                // Already checked to be two bytes.
-                item: bytes(&s.item)
-                    .ok()
-                    .and_then(|b| <[u8; 2]>::try_from(b).ok())
-                    .unwrap_or_default(),
+                // Already checked.
+                read: read_command(s).unwrap_or_default(),
                 values: s.values.clone(),
                 range: s.range,
                 percent: s.percent,
+                raw: s.raw,
                 write: s.write,
             })
             .collect(),
@@ -697,14 +715,20 @@ impl Check {
             ));
         }
         let mut by_id = BTreeMap::new();
-        let mut items = BTreeSet::new();
+        let mut reads = BTreeSet::new();
         for setting in settings {
             self.setting(setting);
             if by_id.insert(setting.id.as_str(), setting).is_some() {
                 self.problem(format!("setting {:?} is listed twice", setting.id));
             }
-            if !items.insert(setting.item.as_str()) {
-                self.problem(format!("setting item {:?} is listed twice", setting.item));
+            if let Ok(read) = read_command(setting)
+                && !reads.insert(read.clone())
+            {
+                self.problem(format!(
+                    "setting {:?}: another setting is read with {} too",
+                    setting.id,
+                    crate::civ::hex(&read)
+                ));
             }
         }
         by_id
@@ -713,14 +737,8 @@ impl Check {
     fn setting(&mut self, setting: &Setting) {
         let field = format!("setting {:?}", setting.id);
         self.id("a setting id", &setting.id);
-        match bytes(&setting.item) {
-            Ok(item) if item.len() == 2 => {}
-            Ok(item) => self.problem(format!(
-                "{field}: item {:?} is {} bytes; a menu item is 2, as in \"00 71\"",
-                setting.item,
-                item.len()
-            )),
-            Err(problem) => self.problem(format!("{field}: item {problem}")),
+        if let Err(problem) = read_command(setting) {
+            self.problem(format!("{field}: {problem}"));
         }
         self.text(&format!("{field} label"), &setting.label);
         if let Some(note) = &setting.note {
@@ -729,6 +747,10 @@ impl Check {
         self.source(&field, &setting.source);
         self.flag(setting.verified);
         match (&setting.values, setting.range) {
+            (Some(_), _) | (_, Some(_)) if setting.raw => {
+                self.problem(format!("{field}: raw means no named values and no range"));
+            }
+            (None, None) if setting.raw => {}
             (Some(values), None) => {
                 if setting.percent {
                     self.problem(format!(
@@ -745,7 +767,9 @@ impl Check {
             (Some(_), Some(_)) => {
                 self.problem(format!("{field}: give named values or a range, not both"));
             }
-            (None, None) => self.problem(format!("{field}: give its named values or its range")),
+            (None, None) => self.problem(format!(
+                "{field}: give its named values or its range, or say raw = true"
+            )),
         }
     }
 
@@ -868,6 +892,63 @@ impl Check {
                 allowed.join(", ")
             ));
         }
+    }
+}
+
+/// The commands a setting may be read with. Each one, sent with no value
+/// after it, only asks the radio ("Send/read" in Icom's command tables).
+/// Commands that act when sent bare, such as 07 00 (select VFO A), and the
+/// 1C family, which keys the transmitter and starts the tuner, are not here,
+/// so a definition can't make the Agent change a radio while reading it.
+const READABLE: [&[u8]; 9] = [
+    &[0x11],
+    &[0x14],
+    &[0x16],
+    &[0x1A, 0x03],
+    &[0x1A, 0x04],
+    &[0x1A, 0x06],
+    &[0x1B],
+    &[0x21],
+    &[0x1A, 0x05],
+];
+
+/// The command that reads a setting: `1A 05` and the item number for a menu
+/// item, or the setting's own command.
+fn read_command(setting: &Setting) -> Result<Vec<u8>, String> {
+    match (&setting.item, &setting.command) {
+        (Some(item), None) => {
+            let item = bytes(item).map_err(|problem| format!("item {problem}"))?;
+            if item.len() != 2 {
+                return Err(format!(
+                    "item is {} bytes; a menu item is 2, as in \"00 71\"",
+                    item.len()
+                ));
+            }
+            Ok([&[0x1A, 0x05][..], &item].concat())
+        }
+        (None, Some(command)) => {
+            let command = bytes(command).map_err(|problem| format!("command {problem}"))?;
+            let readable = READABLE.iter().find(|prefix| command.starts_with(prefix));
+            match readable {
+                Some(&[0x1A, 0x05]) => Err("menu items are given as item, not command".to_owned()),
+                // 11 is read bare; the others need one byte saying which.
+                Some(&[0x11]) if command.len() == 1 => Ok(command),
+                Some(&[0x11]) => Err("command 11 has nothing after it".to_owned()),
+                Some(prefix) if command.len() == prefix.len() + usize::from(prefix.len() == 1) => {
+                    Ok(command)
+                }
+                Some(_) => Err(format!(
+                    "command {} has the wrong number of bytes",
+                    crate::civ::hex(&command)
+                )),
+                None => Err(format!(
+                    "command {} is not one the Agent reads settings with",
+                    crate::civ::hex(&command)
+                )),
+            }
+        }
+        (Some(_), Some(_)) => Err("give item or command, not both".to_owned()),
+        (None, None) => Err("give its menu item or its command".to_owned()),
     }
 }
 
@@ -1030,14 +1111,54 @@ explain = "Data mode audio must come from USB."
         assert_eq!(definition.baud_rates.first(), Some(&115_200));
         assert_eq!(definition.usb_serial, Some((0x10C4, 0xEA60)));
         assert_eq!(definition.usb_audio.as_deref(), Some("USB Audio CODEC"));
-        assert_eq!(definition.settings.len(), 18);
-        let writable: Vec<&str> = definition
+        // Every menu item firmware 1.40 has, 0001 to 0216, then the
+        // front-panel controls.
+        let items: Vec<[u8; 2]> = definition
             .settings
             .iter()
-            .filter(|s| s.write)
+            .filter_map(super::SettingSummary::item)
+            .collect();
+        let numbers: Vec<u16> = items
+            .iter()
+            .filter_map(|item| crate::civ::level_from_bcd(item))
+            .collect();
+        assert_eq!(numbers, (1..=216).collect::<Vec<u16>>());
+        assert_eq!(definition.settings.len(), 216 + 43);
+        let read = |id: &str| {
+            definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.read.clone())
+        };
+        assert_eq!(read("rf_gain"), Some(vec![0x14, 0x02]));
+        assert_eq!(read("noise_reduction"), Some(vec![0x16, 0x40]));
+        assert_eq!(read("attenuator"), Some(vec![0x11]));
+        assert_eq!(read("data_mod"), Some(vec![0x1A, 0x05, 0x00, 0x67]));
+        // Never written: the CI-V and USB link, and the clock.
+        let fixed: Vec<&str> = definition
+            .settings
+            .iter()
+            .filter(|s| !s.write)
             .map(|s| s.id.as_str())
             .collect();
-        assert_eq!(writable, ["usb_mod_level", "data_off_mod", "data_mod"]);
+        assert_eq!(
+            fixed,
+            [
+                "civ_transceive",
+                "civ_usb_to_remote_address",
+                "civ_output_for_ant",
+                "civ_usb_port",
+                "civ_usb_echo_back",
+                "usb_serial_function",
+                "usb_send",
+                "usb_keying_cw",
+                "usb_keying_rtty",
+                "date",
+                "time",
+                "utc_offset",
+            ]
+        );
         let jobs: Vec<&str> = definition
             .requirements
             .iter()
@@ -1047,6 +1168,56 @@ explain = "Data mode audio must come from USB."
         assert_eq!(
             definition.verified_values, 0,
             "nothing is checked on a radio yet"
+        );
+    }
+
+    #[test]
+    fn reads_settings_only_with_commands_that_only_ask() {
+        let control =
+            |command: &str| changed("item = \"00 67\"", &format!("command = \"{command}\""));
+        for good in ["14 02", "16 40", "11", "1A 03", "1B 00", "21 01"] {
+            assert!(parse(&control(good)).is_ok(), "{good}");
+        }
+        // 07 00 selects VFO A and 1C keys the radio or starts the tuner, even
+        // with nothing after them.
+        refused_for(&control("07 00"), "not one the Agent reads settings with");
+        refused_for(&control("1C 01"), "not one the Agent reads settings with");
+        refused_for(&control("05"), "not one the Agent reads settings with");
+        refused_for(&control("1A 05 00 67"), "given as item");
+        refused_for(&control("14"), "wrong number of bytes");
+        refused_for(&control("14 02 01"), "wrong number of bytes");
+        refused_for(&control("11 00"), "nothing after it");
+        refused_for(
+            &changed("item = \"00 67\"", "item = \"00 67\"\ncommand = \"14 02\""),
+            "not both",
+        );
+        refused_for(
+            &changed("item = \"00 67\"\n", ""),
+            "menu item or its command",
+        );
+    }
+
+    #[test]
+    fn keeps_a_setting_raw_only_without_meanings() {
+        let raw = changed("values = { MIC = 0x00, USB = 0x03 }", "raw = true");
+        // A requirement needs named values, so drop it for this one.
+        let raw = raw
+            .split("[[requirements]]")
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let definition = parse(&raw).unwrap_or_else(|problems| unreachable!("{problems:?}"));
+        assert!(definition.settings[0].raw);
+        refused_for(
+            &changed(
+                "values = { MIC = 0x00, USB = 0x03 }",
+                "values = { MIC = 0x00, USB = 0x03 }\nraw = true",
+            ),
+            "raw means no named values",
+        );
+        refused_for(
+            &changed("values = { MIC = 0x00, USB = 0x03 }\n", ""),
+            "or say raw = true",
         );
     }
 

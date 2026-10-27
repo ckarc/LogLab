@@ -45,13 +45,15 @@ struct Vfo {
     data: bool,
 }
 
-/// What a menu setting can hold.
+/// What a setting can hold.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Kind {
     /// One of these codes, sent as one byte.
     Named(BTreeSet<u8>),
-    /// A level from low to high, sent as two BCD bytes.
+    /// A level from low to high, sent as BCD: one byte up to 99, else two.
     Level(u16, u16),
+    /// Bytes with no meaning the definition gives: these ones, now.
+    Raw(Vec<u8>),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -68,7 +70,8 @@ pub struct PretendCiv {
     selected: usize,
     split: bool,
     transmitting: bool,
-    menu: BTreeMap<[u8; 2], Menu>,
+    /// Every setting, by the command that reads it.
+    menu: BTreeMap<Vec<u8>, Menu>,
     /// The echo-back setting and its "ON" code, if the definition has one.
     echo: Option<([u8; 2], u8)>,
     /// The transceive setting and its "ON" code, if the definition has one.
@@ -124,20 +127,26 @@ impl PretendCiv {
                     kind: Kind::Level(u16::from(low), u16::from(high)),
                     value: u16::midpoint(u16::from(low), u16::from(high)),
                 },
-                (None, None) => continue,
+                (None, None) => Menu {
+                    kind: Kind::Raw(vec![0x00]),
+                    value: 0,
+                },
             };
-            radio.menu.insert(setting.item, menu);
+            radio.menu.insert(setting.read.clone(), menu);
+            let Some(item) = setting.item() else {
+                continue;
+            };
             let on = setting.values.as_ref().and_then(|v| v.get("ON")).copied();
             let off = setting.values.as_ref().and_then(|v| v.get("OFF")).copied();
             match (setting.id.as_str(), on) {
                 ("civ_transceive", Some(on)) => {
-                    radio.transceive = Some((setting.item, on));
-                    radio.set_menu(setting.item, u16::from(on));
+                    radio.transceive = Some((item, on));
+                    radio.set_menu(item, u16::from(on));
                 }
                 ("civ_usb_echo_back", Some(on)) => {
-                    radio.echo = Some((setting.item, on));
+                    radio.echo = Some((item, on));
                     if let Some(off) = off {
-                        radio.set_menu(setting.item, u16::from(off));
+                        radio.set_menu(item, u16::from(off));
                     }
                 }
                 _ => {}
@@ -182,12 +191,23 @@ impl PretendCiv {
     /// Sets a menu setting directly, as if from the radio's own menu.
     /// Returns `false` if it has no such setting or the value doesn't fit.
     pub fn set_menu(&mut self, item: [u8; 2], value: u16) -> bool {
-        let Some(menu) = self.menu.get_mut(&item) else {
+        self.set(&menu_read(item), value)
+    }
+
+    /// Sets a setting directly by the command that reads it, as if from the
+    /// radio's own panel. Returns `false` if it has no such setting or the
+    /// value doesn't fit.
+    pub fn set(&mut self, read: &[u8], value: u16) -> bool {
+        let Some(menu) = self.menu.get_mut(read) else {
             return false;
         };
-        let fits = match &menu.kind {
+        let fits = match &mut menu.kind {
             Kind::Named(codes) => u8::try_from(value).is_ok_and(|v| codes.contains(&v)),
             Kind::Level(low, high) => (*low..=*high).contains(&value),
+            Kind::Raw(bytes) => {
+                *bytes = value.to_be_bytes().to_vec();
+                true
+            }
         };
         if fits {
             menu.value = value;
@@ -205,7 +225,7 @@ impl PretendCiv {
     fn is_on(&self, setting: Option<([u8; 2], u8)>) -> bool {
         setting.is_some_and(|(item, on)| {
             self.menu
-                .get(&item)
+                .get(&menu_read(item))
                 .is_some_and(|menu| menu.value == u16::from(on))
         })
     }
@@ -234,7 +254,6 @@ impl PretendCiv {
                 done(true)
             }
             [0x19, 0x00] => vec![0x19, 0x00, self.address],
-            [0x1A, 0x05, a, b, value @ ..] => self.menu_answer([*a, *b], value),
             [0x1A, 0x06] => {
                 let vfo = self.vfos[self.selected];
                 let filter = if vfo.data { vfo.filter } else { 0 };
@@ -268,7 +287,7 @@ impl PretendCiv {
                     _ => done(false),
                 }
             }
-            _ => done(false),
+            other => self.setting_answer(other),
         }
     }
 
@@ -334,29 +353,59 @@ impl PretendCiv {
         }
     }
 
-    fn menu_answer(&mut self, item: [u8; 2], value: &[u8]) -> Vec<u8> {
-        let Some(menu) = self.menu.get(&item) else {
+    /// Reads or sets one of the definition's settings: the command that
+    /// reads it, and a value after it to set it.
+    fn setting_answer(&mut self, payload: &[u8]) -> Vec<u8> {
+        let Some((read, menu)) = self
+            .menu
+            .iter()
+            .filter(|(read, _)| payload.starts_with(read))
+            .max_by_key(|(read, _)| read.len())
+        else {
             return vec![NG];
         };
+        let read = read.clone();
+        let value = &payload[read.len()..];
         if value.is_empty() {
-            let mut answer = vec![0x1A, 0x05, item[0], item[1]];
-            match menu.kind {
+            let mut answer = read;
+            match &menu.kind {
                 Kind::Named(_) => answer.push(u8::try_from(menu.value).unwrap_or(0)),
+                Kind::Level(_, high) if *high <= 99 => {
+                    let level = u8::try_from(menu.value).unwrap_or(0);
+                    answer.push(((level / 10) << 4) | (level % 10));
+                }
                 Kind::Level(..) => match civ::level_to_bcd(menu.value) {
                     Some(bcd) => answer.extend(bcd),
                     None => return vec![NG],
                 },
+                Kind::Raw(bytes) => answer.extend(bytes),
             }
             return answer;
         }
-        let new = match (&menu.kind, value) {
-            (Kind::Named(_), [code]) => Some(u16::from(*code)),
-            (Kind::Level(..), bcd) => civ::level_from_bcd(bcd),
-            _ => None,
+        let ok = match (&mut self.menu.get_mut(&read).map(|m| &mut m.kind), value) {
+            (Some(Kind::Raw(bytes)), new) => {
+                *bytes = new.to_vec();
+                true
+            }
+            (Some(Kind::Named(_)), [code]) => self.set(&read, u16::from(*code)),
+            (Some(Kind::Level(_, high)), [one])
+                if *high <= 99 && one >> 4 <= 9 && one & 0x0F <= 9 =>
+            {
+                let level = u16::from(one >> 4) * 10 + u16::from(one & 0x0F);
+                self.set(&read, level)
+            }
+            (Some(Kind::Level(..)), bcd) => {
+                civ::level_from_bcd(bcd).is_some_and(|level| self.set(&read, level))
+            }
+            _ => false,
         };
-        let ok = new.is_some_and(|v| self.set_menu(item, v));
         vec![if ok { OK } else { NG }]
     }
+}
+
+/// The command that reads menu item `item`.
+fn menu_read(item: [u8; 2]) -> Vec<u8> {
+    vec![0x1A, 0x05, item[0], item[1]]
 }
 
 #[cfg(test)]

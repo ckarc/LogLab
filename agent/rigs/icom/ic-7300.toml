@@ -36,6 +36,40 @@ this file. They are written from the common Icom CI-V command set and must be
 checked against the full manual and a radio before they are marked verified.
 """
 
+[[definition.sources]]
+id = "manual_copy"
+title = "IC-7300 manual, section 19 (control command), pages 19-3 to 19-13, as copied at radio.pk2.se/article/IC-7300-CAT-commands.pdf"
+note = """
+An OCR copy of the manual's command table. Menu items 0001 to 0100 and the
+front-panel commands marked with this source were read row by row from it,
+2026-10-27. Where a row was garbled, the setting is kept raw, as the bytes
+the radio sends, rather than guessed.
+"""
+
+[[definition.sources]]
+id = "manual_copy_summary"
+title = "The same copy, items 0101 to 0195, read as a condensed list"
+note = """
+Only the labels came from this reading, not the values, so every one of these
+settings is kept raw: the Agent stores and compares the bytes the radio sends
+without saying what they mean.
+"""
+
+[[definition.sources]]
+id = "info_v140"
+title = "Icom, INFORMATION IC-7300 Version 1.40 (firmware 1.30 and 1.40 additions), k0pir.us/wp-content/uploads/2021/03/IC-7300_ENG_Info_V140_0.pdf"
+note = "Menu items 0196 and 0198 to 0216, which earlier manuals don't have. Kept raw."
+
+[[definition.sources]]
+id = "hamlib_wfview"
+title = "Front-panel commands not in the copy read: Hamlib rigs/icom/icom_defs.h and ic7300.c, and wfview rigs/IC-7300.rig"
+note = """
+Used only to say which command reads which control and over what range;
+nothing was copied from either (Principle XVI). Check each against Icom's
+CI-V reference guide and a radio before marking it verified. Where neither
+says what the values mean, the setting is kept raw.
+"""
+
 # ---------------------------------------------------------------------------
 # How the radio appears on USB.
 # ---------------------------------------------------------------------------
@@ -114,10 +148,654 @@ split = { command = "0F", off = 0x00, on = 0x01, source = "civ_common", verified
 ptt = { command = "1C 00", off = 0x00, on = 0x01, source = "full_manual", verified = false }
 
 # ---------------------------------------------------------------------------
-# Menu settings the Agent reads (command 1A 05 plus the item number).
-# `write = false` means the Agent never changes it, whatever else is true.
-# These are read into the as-received record on first connect.
+# Every setting the radio exposes over CI-V, read into the settings record:
+# the menu items (command 1A 05 plus the item number, 0001 to 0216 on firmware
+# 1.40), then the front-panel controls (each by its own command). Front-panel
+# controls are as they are for the mode and VFO the radio is on now.
+#
+# `raw = true` keeps a setting as the bytes the radio sends, compared and put
+# back as they are, where no source read says what the values mean.
+# `write = false` means the Agent never changes it, whatever else is true:
+# the CI-V and USB link settings (changing one could cut the Agent off) and
+# the radio's clock.
 # ---------------------------------------------------------------------------
+[[settings]]
+id = "ssb_rx_hpf_lpf"
+item = "00 01"
+label = "SSB RX HPF/LPF"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_rx_tone_bass"
+item = "00 02"
+label = "SSB RX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_rx_tone_treble"
+item = "00 03"
+label = "SSB RX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_rx_hpf_lpf"
+item = "00 04"
+label = "AM RX HPF/LPF"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_rx_tone_bass"
+item = "00 05"
+label = "AM RX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_rx_tone_treble"
+item = "00 06"
+label = "AM RX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_rx_hpf_lpf"
+item = "00 07"
+label = "FM RX HPF/LPF"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_rx_tone_bass"
+item = "00 08"
+label = "FM RX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_rx_tone_treble"
+item = "00 09"
+label = "FM RX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "cw_rx_hpf_lpf"
+item = "00 10"
+label = "CW RX HPF/LPF"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "rtty_rx_hpf_lpf"
+item = "00 11"
+label = "RTTY RX HPF/LPF"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_tx_tone_bass"
+item = "00 12"
+label = "SSB TX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_tx_tone_treble"
+item = "00 13"
+label = "SSB TX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_wide"
+item = "00 14"
+label = "SSB TX bandwidth for wide"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_mid"
+item = "00 15"
+label = "SSB TX bandwidth for mid"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_narrow"
+item = "00 16"
+label = "SSB TX bandwidth for narrow"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_tx_tone_bass"
+item = "00 17"
+label = "AM TX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_tx_tone_treble"
+item = "00 18"
+label = "AM TX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_tx_tone_bass"
+item = "00 19"
+label = "FM TX Tone (Bass)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_tx_tone_treble"
+item = "00 20"
+label = "FM TX Tone (Treble)"
+range = [0, 10]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "beep_gain"
+item = "00 21"
+label = "Beep gain"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "beep_gain_limit"
+item = "00 22"
+label = "Beep gain limit"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "confirmation_beep"
+item = "00 23"
+label = "Confirmation beep"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "band_edge_beep"
+item = "00 24"
+label = "Band edge beep"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "rf_sql_control"
+item = "00 25"
+label = "RF/SQL control"
+values = { Auto = 0x00, SQL = 0x01, "RF+SQL" = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "tx_delay_hf"
+item = "00 26"
+label = "TX delay (HF)"
+values = { OFF = 0x00, "10 ms" = 0x01, "15 ms" = 0x02, "20 ms" = 0x03, "25 ms" = 0x04, "30 ms" = 0x05 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "tx_delay_50_mhz"
+item = "00 27"
+label = "TX delay (50 MHz)"
+values = { OFF = 0x00, "10 ms" = 0x01, "15 ms" = 0x02, "20 ms" = 0x03, "25 ms" = 0x04, "30 ms" = 0x05 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "tx_delay_70_mhz"
+item = "00 28"
+label = "TX delay (70 MHz)"
+values = { OFF = 0x00, "10 ms" = 0x01, "15 ms" = 0x02, "20 ms" = 0x03, "25 ms" = 0x04, "30 ms" = 0x05 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "time_out_timer"
+item = "00 29"
+label = "Time-out timer"
+values = { OFF = 0x00, "3 min" = 0x01, "5 min" = 0x02, "10 min" = 0x03, "20 min" = 0x04, "30 min" = 0x05 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "quick_split"
+item = "00 30"
+label = "Quick split"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_split_offset_hf"
+item = "00 31"
+label = "FM split offset (HF)"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "fm_split_offset_50_mhz"
+item = "00 32"
+label = "FM split offset (50 MHz)"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "split_lock"
+item = "00 33"
+label = "Split lock"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "tuner_switch"
+item = "00 34"
+label = "[TUNER] switch"
+values = { Manual = 0x00, Auto = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ptt_tune"
+item = "00 35"
+label = "PTT tune"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "rtty_mark_frequency"
+item = "00 36"
+label = "RTTY mark frequency"
+values = { "1275 Hz" = 0x00, "1615 Hz" = 0x01, "2125 Hz" = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "rtty_shift_width"
+item = "00 37"
+label = "RTTY shift width"
+values = { "170 Hz" = 0x00, "200 Hz" = 0x01, "425 Hz" = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "rtty_keying_polarity"
+item = "00 38"
+label = "RTTY keying polarity"
+values = { Normal = 0x00, Reverse = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "speech_language"
+item = "00 39"
+label = "Speech language"
+values = { English = 0x00, Japanese = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "speech_speed"
+item = "00 40"
+label = "Speech speed"
+values = { Low = 0x00, High = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "s_level_speech"
+item = "00 41"
+label = "S-level speech"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "speech_with_a_mode_switch"
+item = "00 42"
+label = "Speech with a mode switch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "speech_level"
+item = "00 43"
+label = "Speech level"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "speech_lock_key_function"
+item = "00 44"
+label = "[SPEECH/LOCK] key function"
+values = { "Push SPEECH, hold LOCK" = 0x00, "Push LOCK, hold SPEECH" = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "lock_function"
+item = "00 45"
+label = "Lock function"
+values = { "MAIN DIAL" = 0x00, PANEL = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "memo_pad_numbers"
+item = "00 46"
+label = "Memo pad numbers"
+values = { "5" = 0x00, "10" = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "main_dial_auto_ts"
+item = "00 47"
+label = "Main dial auto TS"
+values = { OFF = 0x00, Low = 0x01, High = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "mic_up_down_speed"
+item = "00 48"
+label = "MIC up/down speed"
+values = { Low = 0x00, High = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "quick_rit_dtx_clear"
+item = "00 49"
+label = "Quick RIT/dTX clear"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "item_0050"
+item = "00 50"
+label = "item 0050 (label not readable in the copy read)"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "am_notch_operation"
+item = "00 51"
+label = "AM notch operation"
+values = { Auto = 0x00, Manual = 0x01, "Auto/Manual" = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "ssb_cw_synchronous_tuning"
+item = "00 52"
+label = "SSB/CW synchronous tuning"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "cw_normal_side"
+item = "00 53"
+label = "CW normal side"
+values = { LSB = 0x00, USB = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "screen_capture_by_the_power_switch"
+item = "00 54"
+label = "Screen capture by the [POWER] switch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "screen_capture_file_format"
+item = "00 55"
+label = "Screen capture file format"
+values = { PNG = 0x00, BMP = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "keyboard_type"
+item = "00 56"
+label = "Keyboard type"
+values = { Ten-key = 0x00, "Full keyboard" = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "item_0057"
+item = "00 57"
+label = "item 0057 (label not readable in the copy read)"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "reference_frequency_adjust"
+item = "00 58"
+label = "Reference frequency adjust"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "usb_af_if_output"
+item = "00 59"
+label = "ACC/USB Output Select"
+values = { AF = 0x00, IF = 0x01 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_output_level"
+item = "00 60"
+label = "ACC/USB AF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_squelch"
+item = "00 61"
+label = "ACC/USB AF SQL"
+values = { "OFF (OPEN)" = 0x00, ON = 0x01 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_af_beep_speech"
+item = "00 62"
+label = "ACC/USB AF Beep/Speech Output"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "usb_if_output_level"
+item = "00 63"
+label = "ACC/USB IF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "acc_mod_level"
+item = "00 64"
+label = "ACC MOD level"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "usb_mod_level"
+item = "00 65"
+label = "USB MOD Level"
+range = [0, 255]
+percent = true
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "data_off_mod"
+item = "00 66"
+label = "DATA OFF MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "data_mod"
+item = "00 67"
+label = "DATA MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+write = true
+source = "full_manual"
+verified = false
+
+[[settings]]
+id = "external_keypad_for_voice"
+item = "00 68"
+label = "External keypad for VOICE"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "external_keypad_for_keyer"
+item = "00 69"
+label = "External keypad for KEYER"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "external_keypad_for_rtty"
+item = "00 70"
+label = "External keypad for RTTY"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
 [[settings]]
 id = "civ_transceive"
 item = "00 71"
@@ -178,6 +856,15 @@ verified = false
 note = "Must be CI-V for the Agent to reach the radio at all; if it isn't, the radio never answers and the Agent says so."
 
 [[settings]]
+id = "rtty_decode_output_speed"
+item = "00 77"
+label = "RTTY decode output speed"
+values = { "4800" = 0x00, "9600" = 0x01, "19200" = 0x02, "38400" = 0x03 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
 id = "usb_send"
 item = "00 78"
 label = "USB SEND (transmit control line)"
@@ -206,78 +893,1051 @@ source = "full_manual"
 verified = false
 
 [[settings]]
-id = "usb_af_if_output"
-item = "00 59"
-label = "ACC/USB Output Select"
-values = { AF = 0x00, IF = 0x01 }
-write = false
-source = "full_manual"
-verified = false
-
-[[settings]]
-id = "usb_af_output_level"
-item = "00 60"
-label = "ACC/USB AF Output Level"
+id = "lcd_backlight_brightness"
+item = "00 81"
+label = "LCD backlight brightness"
 range = [0, 255]
 percent = true
-write = false
-source = "full_manual"
+write = true
+source = "manual_copy"
 verified = false
 
 [[settings]]
-id = "usb_af_squelch"
-item = "00 61"
-label = "ACC/USB AF SQL"
-values = { "OFF (OPEN)" = 0x00, ON = 0x01 }
-write = false
-source = "full_manual"
+id = "screen_image_type"
+item = "00 82"
+label = "Screen image type"
+values = { A = 0x00, B = 0x01 }
+write = true
+source = "manual_copy"
 verified = false
 
 [[settings]]
-id = "usb_af_beep_speech"
-item = "00 62"
-label = "ACC/USB AF Beep/Speech Output"
+id = "frequency_readout_font"
+item = "00 83"
+label = "Frequency readout font"
+values = { Basic = 0x00, Round = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "meter_peak_hold"
+item = "00 84"
+label = "Meter peak hold"
 values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "memory_name"
+item = "00 85"
+label = "Memory name"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "manual_notch_width_pop_up"
+item = "00 86"
+label = "Manual notch width pop-up"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "pbt_shift_value_display"
+item = "00 87"
+label = "PBT shift value display"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "if_filter_width_and_shift_display"
+item = "00 88"
+label = "IF filter width and shift display"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "screen_saver"
+item = "00 89"
+label = "Screen saver"
+values = { OFF = 0x00, "15 min" = 0x01, "30 min" = 0x02, "60 min" = 0x03 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "opening_message"
+item = "00 90"
+label = "Opening message"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "opening_message_text"
+item = "00 91"
+label = "Opening message text"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "power_on_check"
+item = "00 92"
+label = "Power ON check"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "display_language"
+item = "00 93"
+label = "Display language"
+values = { English = 0x00, Japanese = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "date"
+item = "00 94"
+label = "Date"
+raw = true
 write = false
-source = "full_manual"
+source = "manual_copy"
 verified = false
+note = "The radio's clock. Never put back: an old time is a wrong time."
 
 [[settings]]
-id = "usb_if_output_level"
-item = "00 63"
-label = "ACC/USB IF Output Level"
-range = [0, 255]
-percent = true
+id = "time"
+item = "00 95"
+label = "Time"
+raw = true
 write = false
-source = "full_manual"
+source = "manual_copy"
+verified = false
+note = "The radio's clock. Never put back: an old time is a wrong time."
+
+[[settings]]
+id = "utc_offset"
+item = "00 96"
+label = "UTC offset"
+raw = true
+write = false
+source = "manual_copy"
+verified = false
+note = "The radio's clock. Never put back: an old time is a wrong time."
+
+[[settings]]
+id = "scope_during_tx"
+item = "00 97"
+label = "Scope during TX"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
 verified = false
 
 [[settings]]
-id = "usb_mod_level"
-item = "00 65"
-label = "USB MOD Level"
-range = [0, 255]
-percent = true
+id = "scope_max_hold"
+item = "00 98"
+label = "Scope max. hold"
+raw = true
 write = true
-source = "full_manual"
+source = "manual_copy"
 verified = false
 
 [[settings]]
-id = "data_off_mod"
-item = "00 66"
-label = "DATA OFF MOD"
-values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+id = "scope_center_frequency"
+item = "00 99"
+label = "Scope center frequency"
+values = { "Filter center" = 0x00, "Carrier point center" = 0x01, "Carrier point center (Abs. Freq.)" = 0x02 }
 write = true
-source = "full_manual"
+source = "manual_copy"
 verified = false
 
 [[settings]]
-id = "data_mod"
-item = "00 67"
-label = "DATA MOD"
-values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04 }
+id = "scope_marker_position_fixed"
+item = "01 00"
+label = "Scope marker position (fixed)"
+values = { "Filter center" = 0x00, "Carrier point" = 0x01 }
 write = true
-source = "full_manual"
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "external_monitor_signal_width"
+item = "01 01"
+label = "External monitor signal width"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_averaging"
+item = "01 02"
+label = "Scope averaging"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_waveform_type"
+item = "01 03"
+label = "Scope waveform type"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_color_1_of_3"
+item = "01 04"
+label = "Scope color, 1 of 3"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_color_2_of_3"
+item = "01 05"
+label = "Scope color, 2 of 3"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_color_3_of_3"
+item = "01 06"
+label = "Scope color, 3 of 3"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "waterfall_on_off"
+item = "01 07"
+label = "Waterfall on/off"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "waterfall_speed"
+item = "01 08"
+label = "Waterfall speed"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "waterfall_height_in_expanded_view"
+item = "01 09"
+label = "Waterfall height in expanded view"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "waterfall_peak_color_level"
+item = "01 10"
+label = "Waterfall peak color level"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "waterfall_marker_auto_hide"
+item = "01 11"
+label = "Waterfall marker auto-hide"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_0_03_1_60_mhz"
+item = "01 12"
+label = "Scope edge 1 (0.03-1.60 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_0_03_1_60_mhz"
+item = "01 13"
+label = "Scope edge 2 (0.03-1.60 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_0_03_1_60_mhz"
+item = "01 14"
+label = "Scope edge 3 (0.03-1.60 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_1_60_2_00_mhz"
+item = "01 15"
+label = "Scope edge 1 (1.60-2.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_1_60_2_00_mhz"
+item = "01 16"
+label = "Scope edge 2 (1.60-2.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_1_60_2_00_mhz"
+item = "01 17"
+label = "Scope edge 3 (1.60-2.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_2_00_6_00_mhz"
+item = "01 18"
+label = "Scope edge 1 (2.00-6.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_2_00_6_00_mhz"
+item = "01 19"
+label = "Scope edge 2 (2.00-6.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_2_00_6_00_mhz"
+item = "01 20"
+label = "Scope edge 3 (2.00-6.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_6_00_8_00_mhz"
+item = "01 21"
+label = "Scope edge 1 (6.00-8.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_6_00_8_00_mhz"
+item = "01 22"
+label = "Scope edge 2 (6.00-8.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_6_00_8_00_mhz"
+item = "01 23"
+label = "Scope edge 3 (6.00-8.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_8_00_11_00_mhz"
+item = "01 24"
+label = "Scope edge 1 (8.00-11.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_8_00_11_00_mhz"
+item = "01 25"
+label = "Scope edge 2 (8.00-11.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_8_00_11_00_mhz"
+item = "01 26"
+label = "Scope edge 3 (8.00-11.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_11_00_15_00_mhz"
+item = "01 27"
+label = "Scope edge 1 (11.00-15.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_11_00_15_00_mhz"
+item = "01 28"
+label = "Scope edge 2 (11.00-15.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_11_00_15_00_mhz"
+item = "01 29"
+label = "Scope edge 3 (11.00-15.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_15_00_20_00_mhz"
+item = "01 30"
+label = "Scope edge 1 (15.00-20.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_15_00_20_00_mhz"
+item = "01 31"
+label = "Scope edge 2 (15.00-20.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_15_00_20_00_mhz"
+item = "01 32"
+label = "Scope edge 3 (15.00-20.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_20_00_22_00_mhz"
+item = "01 33"
+label = "Scope edge 1 (20.00-22.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_20_00_22_00_mhz"
+item = "01 34"
+label = "Scope edge 2 (20.00-22.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_20_00_22_00_mhz"
+item = "01 35"
+label = "Scope edge 3 (20.00-22.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_22_00_26_00_mhz"
+item = "01 36"
+label = "Scope edge 1 (22.00-26.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_22_00_26_00_mhz"
+item = "01 37"
+label = "Scope edge 2 (22.00-26.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_22_00_26_00_mhz"
+item = "01 38"
+label = "Scope edge 3 (22.00-26.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_26_00_30_00_mhz"
+item = "01 39"
+label = "Scope edge 1 (26.00-30.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_26_00_30_00_mhz"
+item = "01 40"
+label = "Scope edge 2 (26.00-30.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_26_00_30_00_mhz"
+item = "01 41"
+label = "Scope edge 3 (26.00-30.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_30_00_45_00_mhz"
+item = "01 42"
+label = "Scope edge 1 (30.00-45.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_30_00_45_00_mhz"
+item = "01 43"
+label = "Scope edge 2 (30.00-45.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_30_00_45_00_mhz"
+item = "01 44"
+label = "Scope edge 3 (30.00-45.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_45_00_60_00_mhz"
+item = "01 45"
+label = "Scope edge 1 (45.00-60.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_45_00_60_00_mhz"
+item = "01 46"
+label = "Scope edge 2 (45.00-60.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_45_00_60_00_mhz"
+item = "01 47"
+label = "Scope edge 3 (45.00-60.00 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_1_60_00_74_80_mhz"
+item = "01 48"
+label = "Scope edge 1 (60.00-74.80 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_2_60_00_74_80_mhz"
+item = "01 49"
+label = "Scope edge 2 (60.00-74.80 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scope_edge_3_60_00_74_80_mhz"
+item = "01 50"
+label = "Scope edge 3 (60.00-74.80 MHz)"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "audio_fft_display_type"
+item = "01 51"
+label = "Audio FFT display type"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "audio_fft_waveform_color"
+item = "01 52"
+label = "Audio FFT waveform color"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "audio_fft_waterfall"
+item = "01 53"
+label = "Audio FFT waterfall"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "audio_oscilloscope_waveform_color"
+item = "01 54"
+label = "Audio oscilloscope waveform color"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "contest_number_style"
+item = "01 55"
+label = "Contest number style"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "contest_count_up_trigger_channel"
+item = "01 56"
+label = "Contest count-up trigger channel"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "contest_present_number"
+item = "01 57"
+label = "Contest present number"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "cw_sidetone_gain"
+item = "01 58"
+label = "CW sidetone gain"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "cw_sidetone_gain_limit"
+item = "01 59"
+label = "CW sidetone gain limit"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "cw_keyer_repeat_time"
+item = "01 60"
+label = "CW keyer repeat time"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "cw_keyer_dot_dash_ratio"
+item = "01 61"
+label = "CW keyer dot/dash ratio"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "cw_rise_time"
+item = "01 62"
+label = "CW rise time"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "paddle_polarity"
+item = "01 63"
+label = "Paddle polarity"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "keyer_type"
+item = "01 64"
+label = "Keyer type"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "mic_up_down_keyer"
+item = "01 65"
+label = "MIC up/down keyer"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_fft_scope_averaging"
+item = "01 66"
+label = "RTTY FFT scope averaging"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_fft_scope_waveform_color"
+item = "01 67"
+label = "RTTY FFT scope waveform color"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_decode_usos"
+item = "01 68"
+label = "RTTY decode USOS"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_decode_new_line_code"
+item = "01 69"
+label = "RTTY decode new-line code"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_tx_usos"
+item = "01 70"
+label = "RTTY TX USOS"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_received_text_color"
+item = "01 71"
+label = "RTTY received text color"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_transmitted_text_color"
+item = "01 72"
+label = "RTTY transmitted text color"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_log"
+item = "01 73"
+label = "RTTY log"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_log_file_format"
+item = "01 74"
+label = "RTTY log file format"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_time_stamp"
+item = "01 75"
+label = "RTTY time stamp"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_log_time_stamp_source"
+item = "01 76"
+label = "RTTY log time stamp source"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rtty_frequency_stamp"
+item = "01 77"
+label = "RTTY frequency stamp"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scan_speed"
+item = "01 78"
+label = "Scan speed"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "scan_resume"
+item = "01 79"
+label = "Scan resume"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "auto_monitor_for_recorded_voice_tx"
+item = "01 80"
+label = "Auto monitor for recorded voice TX"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "recorded_voice_repeat_interval"
+item = "01 81"
+label = "Recorded voice repeat interval"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "qso_recorder_mode"
+item = "01 82"
+label = "QSO recorder mode"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "qso_recorder_tx_audio_source"
+item = "01 83"
+label = "QSO recorder TX audio source"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "qso_recorder_squelch_relation"
+item = "01 84"
+label = "QSO recorder squelch relation"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "qso_recorder_file_split"
+item = "01 85"
+label = "QSO recorder file split"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "ptt_automatic_recording"
+item = "01 86"
+label = "PTT automatic recording"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "rx_audio_pre_recording_before_ptt"
+item = "01 87"
+label = "RX audio pre-recording before PTT"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "qso_playback_skip_time"
+item = "01 88"
+label = "QSO playback skip time"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "nb_depth"
+item = "01 89"
+label = "NB depth"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "nb_width"
+item = "01 90"
+label = "NB width"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "vox_delay"
+item = "01 91"
+label = "VOX delay"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "vox_voice_delay"
+item = "01 92"
+label = "VOX voice delay"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "mf_band_attenuator"
+item = "01 93"
+label = "MF band attenuator"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "on_screen_keyboard_layout"
+item = "01 94"
+label = "On-screen keyboard layout"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "voice_tx_level"
+item = "01 95"
+label = "Voice TX level"
+raw = true
+write = true
+source = "manual_copy_summary"
+verified = false
+
+[[settings]]
+id = "ssb_d_tx_bandwidth"
+item = "01 96"
+label = "SSB-D TX bandwidth"
+raw = true
+write = true
+source = "info_v140"
 verified = false
 
 [[settings]]
@@ -285,8 +1945,582 @@ id = "usb_inhibit_timer"
 item = "01 97"
 label = "Inhibit timer at USB connection"
 values = { OFF = 0x00, ON = 0x01 }
-write = false
+write = true
 source = "full_manual"
+verified = false
+
+[[settings]]
+id = "front_key_vox_bk_in_function"
+item = "01 98"
+label = "Front key [VOX/BK-IN] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "front_key_autotune_function"
+item = "01 99"
+label = "Front key [AUTOTUNE] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "front_key_up_function"
+item = "02 00"
+label = "Front key [UP] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "front_key_down_function"
+item = "02 01"
+label = "Front key [DOWN] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "mic_key_up_function"
+item = "02 02"
+label = "MIC key [UP] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "mic_key_down_function"
+item = "02 03"
+label = "MIC key [DOWN] function"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_0_03_1_60_mhz"
+item = "02 04"
+label = "Scope edge 4 (0.03-1.60 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_1_60_2_00_mhz"
+item = "02 05"
+label = "Scope edge 4 (1.60-2.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_2_00_6_00_mhz"
+item = "02 06"
+label = "Scope edge 4 (2.00-6.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_6_00_8_00_mhz"
+item = "02 07"
+label = "Scope edge 4 (6.00-8.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_8_00_11_00_mhz"
+item = "02 08"
+label = "Scope edge 4 (8.00-11.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_11_00_15_00_mhz"
+item = "02 09"
+label = "Scope edge 4 (11.00-15.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_15_00_20_00_mhz"
+item = "02 10"
+label = "Scope edge 4 (15.00-20.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_20_00_22_00_mhz"
+item = "02 11"
+label = "Scope edge 4 (20.00-22.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_22_00_26_00_mhz"
+item = "02 12"
+label = "Scope edge 4 (22.00-26.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_26_00_30_00_mhz"
+item = "02 13"
+label = "Scope edge 4 (26.00-30.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_30_00_45_00_mhz"
+item = "02 14"
+label = "Scope edge 4 (30.00-45.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_45_00_60_00_mhz"
+item = "02 15"
+label = "Scope edge 4 (45.00-60.00 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+[[settings]]
+id = "scope_edge_4_60_00_74_80_mhz"
+item = "02 16"
+label = "Scope edge 4 (60.00-74.80 MHz)"
+raw = true
+write = true
+source = "info_v140"
+verified = false
+
+# Front-panel controls.
+
+[[settings]]
+id = "attenuator"
+command = "11"
+label = "Attenuator (ATT)"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "af_gain"
+command = "14 01"
+label = "AF gain"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "rf_gain"
+command = "14 02"
+label = "RF gain"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "squelch"
+command = "14 03"
+label = "Squelch"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "nr_level"
+command = "14 06"
+label = "NR level"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "pbt_inner"
+command = "14 07"
+label = "Twin PBT inside"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "pbt_outer"
+command = "14 08"
+label = "Twin PBT outside"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "cw_pitch"
+command = "14 09"
+label = "CW pitch"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "rf_power"
+command = "14 0A"
+label = "RF power"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "mic_gain"
+command = "14 0B"
+label = "MIC gain"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "key_speed"
+command = "14 0C"
+label = "Key speed"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "notch_position"
+command = "14 0D"
+label = "Manual notch position"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "comp_level"
+command = "14 0E"
+label = "Speech compressor level"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "break_in_delay"
+command = "14 0F"
+label = "Break-in delay"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "nb_level"
+command = "14 12"
+label = "NB level"
+range = [0, 255]
+percent = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "monitor_gain"
+command = "14 15"
+label = "Monitor gain"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "vox_gain"
+command = "14 16"
+label = "VOX gain"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "anti_vox_gain"
+command = "14 17"
+label = "Anti-VOX gain"
+range = [0, 255]
+percent = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "preamp"
+command = "16 02"
+label = "Preamp"
+values = { OFF = 0x00, "P.AMP1" = 0x01, "P.AMP2" = 0x02 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "agc"
+command = "16 12"
+label = "AGC"
+values = { OFF = 0x00, FAST = 0x01, MID = 0x02, SLOW = 0x03 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "noise_blanker"
+command = "16 22"
+label = "Noise blanker (NB)"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "noise_reduction"
+command = "16 40"
+label = "Noise reduction (NR)"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "auto_notch"
+command = "16 41"
+label = "Auto notch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "repeater_tone"
+command = "16 42"
+label = "Repeater tone"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "compressor"
+command = "16 44"
+label = "Speech compressor"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "monitor"
+command = "16 45"
+label = "Monitor"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "vox"
+command = "16 46"
+label = "VOX"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "break_in"
+command = "16 47"
+label = "Break-in"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "manual_notch"
+command = "16 48"
+label = "Manual notch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "twin_peak_filter"
+command = "16 4F"
+label = "Twin peak filter"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "dial_lock"
+command = "16 50"
+label = "Dial lock"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "filter_shape"
+command = "16 56"
+label = "IF filter shape"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "manual_notch_width"
+command = "16 57"
+label = "Manual notch width"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth"
+command = "16 58"
+label = "SSB TX bandwidth (selected)"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "ip_plus"
+command = "16 65"
+label = "IP+"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "filter_width"
+command = "1A 03"
+label = "IF filter width (selected filter)"
+range = [0, 49]
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "agc_time_constant"
+command = "1A 04"
+label = "AGC time constant (selected)"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "data_mode_and_filter"
+command = "1A 06"
+label = "Data mode and filter"
+raw = true
+write = true
+source = "manual_copy"
+verified = false
+
+[[settings]]
+id = "repeater_tone_frequency"
+command = "1B 00"
+label = "Repeater tone frequency"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "tsql_frequency"
+command = "1B 01"
+label = "Tone squelch frequency"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "rit_frequency"
+command = "21 00"
+label = "RIT/dTX frequency"
+raw = true
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "rit"
+command = "21 01"
+label = "RIT"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
+verified = false
+
+[[settings]]
+id = "delta_tx"
+command = "21 02"
+label = "dTX"
+range = [0, 1]
+write = true
+source = "hamlib_wfview"
 verified = false
 
 # ---------------------------------------------------------------------------
