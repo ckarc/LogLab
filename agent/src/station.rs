@@ -42,11 +42,12 @@ use std::time::Duration;
 
 use crate::civ_radio::CivRadio;
 use crate::civ_serial::{self, SerialPort};
-use crate::engine::{KeptRadio, KeptReading, SendError, Uplink};
+use crate::engine::{KeptRadio, KeptReading, Uplink};
 use crate::rig::{Radio, RadioError};
 use crate::rigctld_server::{self, Shared, Source};
 use crate::rigdef::Definition;
 use crate::settings_record::Record;
+use crate::setups::Setups;
 use crate::{rigdef, settings_record};
 
 /// The radio, found and checked.
@@ -361,12 +362,12 @@ fn typed(line: &str) -> Result<Typed, String> {
 }
 
 /// What can be typed at the Agent's console.
-const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings on the Engine as a setup \
-                         (keep FT8, say), compare to see what differs from each setup, or \
-                         restore NAME to put one back.";
+const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
+                         say), compare to see what differs from each setup, or restore NAME to \
+                         put one back.";
 
 /// What putting setup `name` back would change, from the radio's settings
-/// now and the setup as the Engine keeps it.
+/// now and the setup as it is kept.
 fn restore_plan(
     now: &Record,
     kept: &KeptRadio,
@@ -436,8 +437,27 @@ fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String
     lines.join("\n")
 }
 
+/// Starts reading the operator's commands. Setups are kept on the Engine
+/// when there is one, otherwise on this computer, so keep and restore work
+/// with no network (Principle V).
+fn start_console(
+    shared: &Arc<Shared>,
+    uplink: Option<Uplink>,
+    serial: String,
+    definition: Definition,
+) {
+    let setups: Box<dyn Setups> = match uplink {
+        Some(uplink) => Box::new(uplink),
+        None => Box::new(crate::setups::Local::new(records_folder())),
+    };
+    println!("Setups: kept {}.", setups.place());
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition));
+    println!("{TYPE_HELP}");
+}
+
 /// Reads the operator's commands from the console until it closes.
-fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definition) {
+fn console(shared: &Shared, setups: &dyn Setups, serial: &str, definition: &Definition) {
     let read = || {
         shared.settings(|radio| {
             settings_record::read(
@@ -465,9 +485,9 @@ fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definiti
             Ok(Typed::Nothing) => continue,
             Ok(Typed::Yes) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
-                match read().map_err(SendError::Unreachable).and_then(|now| {
-                    uplink
-                        .radio_settings(&now.maker, &now.model, serial)
+                match read().and_then(|now| {
+                    setups
+                        .kept(&now.maker, &now.model, serial)
                         .map(|kept| restore_plan(&now, &kept, &name, definition))
                 }) {
                     Ok(Ok(plan)) => {
@@ -488,18 +508,19 @@ fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definiti
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
             Ok(Typed::Keep(name)) => match read() {
-                Ok(record) => match uplink.keep_reading(&record, Some(&name)) {
-                    Ok(_) => format!(
-                        "kept the radio's settings on the Engine as setup {name} ({} settings)",
+                Ok(record) => match setups.keep(&record, &name) {
+                    Ok(()) => format!(
+                        "kept the radio's settings {} as setup {name} ({} settings)",
+                        setups.place(),
                         record.settings.len()
                     ),
                     Err(error) => format!("setup {name} not kept: {error}"),
                 },
                 Err(why) => format!("setup {name} not kept: {why}"),
             },
-            Ok(Typed::Compare) => match read().map_err(SendError::Unreachable).and_then(|now| {
-                uplink
-                    .radio_settings(&now.maker, &now.model, serial)
+            Ok(Typed::Compare) => match read().and_then(|now| {
+                setups
+                    .kept(&now.maker, &now.model, serial)
                     .map(|kept| compared_all(&kept, &now, definition))
             }) {
                 Ok(lines) => lines.join("\n"),
@@ -674,10 +695,8 @@ pub fn run(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
-    if let (Some(uplink), Some(serial)) = (uplink, found.serial.clone()) {
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || console(&shared, &uplink, &serial, &definition));
-        println!("{TYPE_HELP}");
+    if let Some(serial) = found.serial.clone() {
+        start_console(&shared, uplink, serial, definition);
     }
     println!("Ctrl-C stops.");
     #[cfg(windows)]

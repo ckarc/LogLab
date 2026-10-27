@@ -392,6 +392,14 @@ so it doesn't matter which FieldLab computer the radio is plugged into:
   too. `compare` reads the radio again and lists what differs from each
   setup. `help` says this.
 
+**With no Engine.** Without `--engine`, `keep`, `compare` and `restore` work
+the same way with setups kept on this computer, in the `records` folder
+beside the Agent, one file per version (`setup-…json`), written whole and
+never overwritten; the newest of each name is used (Principle V). The Agent
+says at start-up where setups are kept. Setups kept this way stay on this
+computer: for a radio's setups to follow it to another computer, run with
+`--engine`.
+
 **Putting a setup back.** Type `restore FT8`. The Agent reads the radio
 again and lists what putting setup FT8 back would change, from what to what,
 and which settings that differ it would leave alone, and why. Nothing changes
