@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: 2026 LabLog contributors
+// SPDX-License-Identifier: AGPL-3.0-only
+
 //! Where the radio's setups are kept: on the Engine, for every computer, or
 //! when the Agent runs with no Engine, in files on this computer
 //! (Principle V). Either way a setup is kept whole and never overwritten; a
