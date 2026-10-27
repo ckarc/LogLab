@@ -75,6 +75,18 @@ The radio's firmware version was not recorded.
 """
 
 [[definition.sources]]
+id = "fieldlab_write_check_2"
+title = "loglab-agent check-writes on a real IC-7300, FieldLab, 2026-10-27 (second run)"
+note = """
+Run by Brian Krenzin, K9KSU, on the IC-7300 with USB serial IC-7300_02065962
+over USB at 115200 baud, 2026-10-27T23:14:46Z, after the operating mode and
+filter (04, set with 06) were added: the radio took its own value written back
+for 247 of 248, the operating mode and filter among them. Menu item 0028 (TX
+delay, 70 MHz) was refused (FA) again. The radio's firmware version was not
+recorded.
+"""
+
+[[definition.sources]]
 id = "silabs_driver"
 title = "Silicon Labs, CP210x Universal Windows Driver release notes (11.6.0, 2026-09-15), silabs.com/documents/public/release-notes/CP210x_Universal_Windows_Driver_ReleaseNotes.txt"
 note = """
@@ -2791,6 +2803,7 @@ raw = true
 write = true
 source = "icom_7300mk2_civ"
 verified = false
+write_checked = "fieldlab_write_check_2"
 selects = true
 note = "Read with 04 and set with 06: the mode code, then 01, 02 or 03 for FIL1 to FIL3."
 

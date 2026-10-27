@@ -424,9 +424,10 @@ Agent says so.
 
 It only ever writes a setting its rig definition says may be changed and
 that a **real radio took** when `check-writes` wrote its own value back
-(`write_checked` in the definition). On the IC-7300 that is 246 of the 247
-changeable settings, from the FieldLab run on 2026-10-27; the one left, TX
-delay for 70 MHz, the radio won't read. Settings the Agent never changes
+(`write_checked` in the definition). On the IC-7300 that is 247 of the 248
+changeable settings, the operating mode and filter among them, from the
+FieldLab runs on 2026-10-27; the one left, TX delay for 70 MHz, the radio
+won't read. Settings the Agent never changes
 (the CI-V and USB link settings, the clock) stay as they are.
 
 **Finding out which settings can be set.** `loglab-agent check-writes`
