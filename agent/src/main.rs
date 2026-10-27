@@ -48,6 +48,7 @@ mod rigdef;
 #[cfg(any(windows, test))]
 mod settings_file;
 mod settings_record;
+mod setups;
 mod station;
 #[cfg(any(windows, test))]
 mod vara;
