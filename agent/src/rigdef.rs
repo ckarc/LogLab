@@ -280,6 +280,8 @@ pub struct DriverSummary {
 }
 
 /// One setting the radio exposes: a menu item or a front-panel control.
+// Each yes-or-no is one key of the setting's entry in the rig definition.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SettingSummary {
     /// The setting's id, such as `data_mod`.
@@ -299,6 +301,9 @@ pub struct SettingSummary {
     pub raw: bool,
     /// Whether the Agent may ever change it.
     pub write: bool,
+    /// Whether its command and values were checked on a real radio. The
+    /// Agent never writes a setting that wasn't.
+    pub verified: bool,
 }
 
 impl SettingSummary {
@@ -534,6 +539,7 @@ fn summarize(file: &File, check: &Check) -> Definition {
                 percent: s.percent,
                 raw: s.raw,
                 write: s.write,
+                verified: s.verified,
             })
             .collect(),
         requirements: file
