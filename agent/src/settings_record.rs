@@ -284,11 +284,13 @@ pub fn findings(record: &Record, definition: &Definition) -> Vec<Finding> {
     out
 }
 
-/// The settings that differ between the as-received record and a later one.
+/// The settings that differ between the as-received record and a later one,
+/// leaving out any the definition says change by themselves (a clock).
 #[must_use]
-pub fn changes(as_received: &Record, now: &Record) -> Vec<Change> {
+pub fn changes(as_received: &Record, now: &Record, definition: &Definition) -> Vec<Change> {
     now.settings
         .iter()
+        .filter(|entry| !moves(definition, &entry.id))
         .filter_map(|entry| {
             let before = as_received.settings.iter().find(|e| e.id == entry.id)?;
             let differs = before.value != entry.value
@@ -302,6 +304,14 @@ pub fn changes(as_received: &Record, now: &Record) -> Vec<Change> {
         .collect()
 }
 
+/// Whether the definition says a setting changes by itself.
+fn moves(definition: &Definition, id: &str) -> bool {
+    definition
+        .settings
+        .iter()
+        .any(|setting| setting.id == id && setting.moves)
+}
+
 /// The settings where `now` differs from `kept`, a reading kept elsewhere
 /// (on the Engine, say) as each setting's id, label and bytes. Each value is
 /// shown in plain words where the definition says what its bytes mean.
@@ -312,6 +322,7 @@ pub fn differences<'a>(
     definition: &Definition,
 ) -> Vec<Change> {
     kept.into_iter()
+        .filter(|(id, _, _)| !moves(definition, id))
         .filter_map(|(id, label, bytes)| {
             let entry = now.settings.iter().find(|e| e.id == id)?;
             (entry.bytes.as_deref() != bytes).then(|| Change {
@@ -427,7 +438,12 @@ pub fn load(path: &Path) -> Result<Option<Record>, String> {
 
 /// The record in plain words, with what it found.
 #[must_use]
-pub fn report(record: &Record, found: &[Finding], as_received: Option<&Record>) -> Vec<String> {
+pub fn report(
+    record: &Record,
+    found: &[Finding],
+    as_received: Option<&Record>,
+    definition: &Definition,
+) -> Vec<String> {
     let mut lines = Vec::new();
     match as_received {
         None => lines.push(format!(
@@ -464,7 +480,7 @@ pub fn report(record: &Record, found: &[Finding], as_received: Option<&Record>) 
         record.settings.len() - unread
     ));
     if let Some(first) = as_received {
-        let changed = changes(first, record);
+        let changed = changes(first, record, definition);
         if changed.is_empty() {
             lines.push("Nothing has changed since the radio arrived.".to_owned());
         } else {
@@ -666,7 +682,7 @@ mod tests {
             "ATT on, as bytes"
         );
         let later = read(&mut radio, Some("IC-7300_02065962"), at(60), "FL2");
-        let changed = changes(&first, &later);
+        let changed = changes(&first, &later, &ic_7300());
         assert_eq!(changed.len(), 1, "{changed:?}");
         assert_eq!(changed[0].label, "Attenuator (ATT)");
         assert_eq!(
@@ -722,6 +738,32 @@ mod tests {
         assert!(differences(unknown, &now, &definition).is_empty());
         let unread = [(named.id.as_str(), named.label.as_str(), None)];
         assert_eq!(differences(unread, &now, &definition)[0].before, "not read");
+    }
+
+    #[test]
+    fn the_clock_is_never_a_change() {
+        let definition = ic_7300();
+        let time = definition
+            .settings
+            .iter()
+            .find(|s| s.moves)
+            .unwrap_or_else(|| unreachable!("the IC-7300's clock moves"))
+            .clone();
+        let mut radio = radio();
+        let first = read(&mut radio, Some("IC-7300_02065962"), at(0), "FL1");
+        let mut later = first.clone();
+        for entry in &mut later.settings {
+            if entry.id == time.id {
+                entry.bytes = Some("07 25".to_owned());
+                entry.value = Value::Raw;
+            }
+        }
+        assert!(changes(&first, &later, &definition).is_empty());
+        let as_kept = first
+            .settings
+            .iter()
+            .map(|e| (e.id.as_str(), e.label.as_str(), e.bytes.as_deref()));
+        assert!(differences(as_kept, &later, &definition).is_empty());
     }
 
     #[test]
@@ -815,7 +857,7 @@ mod tests {
             Ok(Some(first.clone())),
             "the first record is untouched"
         );
-        let changed = changes(&first, &later);
+        let changed = changes(&first, &later, &ic_7300());
         assert_eq!(changed.len(), 1);
         assert_eq!(
             (changed[0].before.as_str(), changed[0].after.as_str()),
@@ -841,7 +883,7 @@ mod tests {
         let mut radio = radio();
         let record = read(&mut radio, None, at(0), "FL1");
         let found = findings(&record, radio.definition());
-        let text = report(&record, &found, None).join("\n");
+        let text = report(&record, &found, None, &ic_7300()).join("\n");
         assert!(
             text.starts_with("As received: Icom IC-7300 at 94h, read 1970-01-01T00:00:00Z on FL1"),
             "{text}"
@@ -858,7 +900,7 @@ mod tests {
             "{text}"
         );
         assert!(text.contains("offer to set it to USB"), "{text}");
-        let again = report(&record, &found, Some(&record)).join("\n");
+        let again = report(&record, &found, Some(&record), &ic_7300()).join("\n");
         assert!(
             again.contains("Nothing has changed since the radio arrived."),
             "{again}"

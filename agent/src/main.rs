@@ -1146,7 +1146,7 @@ fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Resul
     let path = settings_record::path_for(dir, &now);
     let first = settings_record::load(&path)?;
     let found = settings_record::findings(&now, radio.definition());
-    for line in settings_record::report(&now, &found, first.as_ref()) {
+    for line in settings_record::report(&now, &found, first.as_ref(), radio.definition()) {
         println!("{line}");
     }
     if first.is_none() {

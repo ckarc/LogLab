@@ -478,9 +478,9 @@ impl<P: Port> Exposes for CivRadio<P> {
                 setting.label
             )));
         }
-        if !setting.verified {
+        if !setting.write_checked {
             return Err(RadioError(format!(
-                "{} isn't verified on a real radio yet, so the Agent doesn't write it",
+                "{} isn't checked on a real radio yet, so the Agent doesn't write it",
                 setting.label
             )));
         }

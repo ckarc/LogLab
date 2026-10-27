@@ -166,8 +166,8 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    record in `records` beside the Agent. On later starts it lists what has
    changed since. It checks the settings digital modes need, such as DATA
    MOD, and says what to set on the radio if one is wrong. It changes nothing
-   on the radio: no setting in its definition is verified on a real radio
-   yet.
+   on the radio by itself: settings are only put back with `restore`
+   (below). The clock is never listed as a change.
 3. **Carries the radio's audio both ways** (Windows). Receive audio plays into
    VB-CABLE ("CABLE Input"), so programs record it from "CABLE Output".
    Transmit audio goes from a second VB-Audio virtual cable to the radio's
@@ -403,10 +403,11 @@ from what, to what, and what the radio then had, in a `restore-...json` file
 in `records`, one per restore, never overwritten.
 
 It only ever writes a setting its rig definition says may be changed and
-that is **verified on a real radio**. None of the IC-7300's settings are
-verified yet, so for now `restore` lists every difference as one to set by
-hand. Each setting becomes restorable as it is checked on a radio and marked
-verified in the definition.
+that a **real radio took** when `check-writes` wrote its own value back
+(`write_checked` in the definition). On the IC-7300 that is 246 of the 247
+changeable settings, from the FieldLab run on 2026-10-27; the one left, TX
+delay for 70 MHz, the radio won't read. Settings the Agent never changes
+(the CI-V and USB link settings, the clock) stay as they are.
 
 **Finding out which settings can be set.** `loglab-agent check-writes`
 (with `station` stopped, since only one program may own the radio) finds the

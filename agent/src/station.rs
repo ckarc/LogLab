@@ -181,7 +181,7 @@ fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) -> Rec
             Err(error) => println!("Radio settings: {error}"),
         },
         Ok(Some(first)) => {
-            let changed = settings_record::changes(&first, &record);
+            let changed = settings_record::changes(&first, &record, &definition);
             if changed.is_empty() {
                 println!("Radio settings: nothing has changed since the radio arrived.");
             } else {
@@ -967,8 +967,13 @@ mod tests {
         let plan =
             restore_plan(&now, &two, "ssb", ic_7300).unwrap_or_else(|why| unreachable!("{why}"));
         assert_eq!(plan.setup, "SSB", "found whatever its case");
-        assert_eq!(plan.kept_back.len(), 1, "the attenuator isn't verified");
-        assert!(plan.put.is_empty());
+        assert!(plan.kept_back.is_empty(), "{plan:?}");
+        assert_eq!(
+            plan.put.len(),
+            1,
+            "the attenuator was checked on a real radio"
+        );
+        assert_eq!(plan.put[0].to, [0x00, 0x20]);
         assert_eq!(
             restore_plan(&now, &two, "RTTY", ic_7300).err().as_deref(),
             Some("no setup RTTY for this radio; it has FT8, SSB")
