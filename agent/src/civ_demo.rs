@@ -134,7 +134,7 @@ fn mode_name(definition: &Definition, code: u8) -> String {
 }
 
 fn setting_meaning(definition: &Definition, item: [u8; 2], value: &[u8]) -> String {
-    let Some(setting) = definition.settings.iter().find(|s| s.item == item) else {
+    let Some(setting) = definition.settings.iter().find(|s| s.item() == Some(item)) else {
         return "a setting the definition doesn't list".to_owned();
     };
     if let (Some(values), [code]) = (&setting.values, value) {

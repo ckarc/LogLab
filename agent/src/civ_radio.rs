@@ -35,7 +35,7 @@ use crate::rig::{
     ControlPath, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading,
     Tunable, Tuning, Vfo,
 };
-use crate::rigdef::Definition;
+use crate::rigdef::{Definition, SettingSummary};
 
 /// How long the driver waits for one answer.
 const ANSWER_WAIT: Duration = Duration::from_millis(300);
@@ -83,6 +83,12 @@ pub enum Ask {
     Transmitting,
     /// A menu setting's value, by its item number.
     Setting([u8; 2]),
+    /// The attenuator (`11`).
+    Attenuator,
+    /// A front-panel control's value, by its command, such as `14 02` for
+    /// the RF gain. Only commands a rig definition may read settings with
+    /// get here (`rigdef::READABLE`): each only asks when sent bare.
+    Control([u8; 2]),
 }
 
 impl Ask {
@@ -107,6 +113,8 @@ impl Ask {
             Self::Transmitting => vec![0x1C, 0x00],
             // With no value after the item number, 1A 05 only asks.
             Self::Setting([a, b]) => vec![0x1A, 0x05, a, b],
+            Self::Attenuator => vec![0x11],
+            Self::Control([a, b]) => vec![a, b],
         }
     }
 }
@@ -234,6 +242,12 @@ impl<P: Port> CivRadio<P> {
         &self.definition
     }
 
+    /// The port, to reach a pretend radio behind it in tests.
+    #[cfg(test)]
+    pub fn port_mut(&mut self) -> &mut P {
+        &mut self.port
+    }
+
     /// The speed the radio answered at.
     pub fn baud(&self) -> u32 {
         self.baud
@@ -254,6 +268,37 @@ impl<P: Port> CivRadio<P> {
                 "odd answer to 1A 05 {}: {}",
                 civ::hex(&item),
                 civ::hex(other)
+            ))),
+        }
+    }
+
+    /// Reads one setting the definition lists, menu item or control.
+    /// Returns the value's bytes as the radio sent them.
+    ///
+    /// # Errors
+    ///
+    /// The radio refused, didn't answer, or answered about something else.
+    pub fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        let ask = match (setting.item(), setting.read.as_slice()) {
+            (Some(item), _) => return self.read_setting(item),
+            (None, [0x11]) => Ask::Attenuator,
+            (None, [a, b]) => Ask::Control([*a, *b]),
+            (None, other) => {
+                return Err(RadioError(format!(
+                    "{} is not a command settings are read with",
+                    civ::hex(other)
+                )));
+            }
+        };
+        let asked = ask.payload();
+        match self.ask(ask)? {
+            answer if answer.len() > asked.len() && answer.starts_with(&asked) => {
+                Ok(answer[asked.len()..].to_vec())
+            }
+            other => Err(RadioError(format!(
+                "odd answer to {}: {}",
+                civ::hex(&asked),
+                civ::hex(&other)
             ))),
         }
     }

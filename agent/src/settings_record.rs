@@ -35,8 +35,11 @@ use crate::rigdef::{Definition, SettingSummary};
 
 /// The largest record file the Agent will read back.
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
-/// The version of the record format.
-const FORMAT: u32 = 1;
+/// The version of the record format this Agent writes. Format 1 had no
+/// serial number and no bytes; it is still read.
+const FORMAT: u32 = 2;
+/// The record formats this Agent reads.
+const READS: [u32; 2] = [1, 2];
 
 /// One setting's value, as read.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +61,8 @@ pub enum Value {
         /// Whether the range is a percentage scale.
         percent: bool,
     },
+    /// Bytes the definition keeps as they are, without a meaning.
+    Raw,
     /// The radio wouldn't say, or said something the definition doesn't
     /// know.
     Unread {
@@ -82,6 +87,7 @@ impl Value {
                 format!("{level} of {high} ({percent}%)")
             }
             Self::Level { level, high, .. } => format!("{level} (of 0 to {high})"),
+            Self::Raw => "as read".to_owned(),
             Self::Unread { why } => format!("not read: {why}"),
         }
     }
@@ -97,6 +103,22 @@ pub struct Entry {
     pub label: String,
     /// Its value.
     pub value: Value,
+    /// The bytes the radio sent, in hex, exactly: enough to put the setting
+    /// back whatever it means. None if it couldn't be read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bytes: Option<String>,
+}
+
+impl Entry {
+    /// The setting's value in plain words, with the bytes when the value
+    /// alone doesn't say.
+    #[must_use]
+    pub fn text(&self) -> String {
+        match (&self.value, &self.bytes) {
+            (Value::Raw, Some(bytes)) => bytes.clone(),
+            (value, _) => value.text(),
+        }
+    }
 }
 
 /// What a radio's menu said, and when.
@@ -111,6 +133,11 @@ pub struct Record {
     pub model: String,
     /// The radio's CI-V address.
     pub address: u8,
+    /// The radio's own serial number, as its USB serial port reports it,
+    /// when the Agent knows it: the one thing that tells two radios of the
+    /// same model apart.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub serial: Option<String>,
     /// When it was read, in UTC, as `2026-10-24T20:15:03Z`.
     pub read_utc: String,
     /// The computer it was read on.
@@ -147,21 +174,34 @@ pub struct Change {
     pub after: String,
 }
 
-/// Reads every setting the radio's definition lists.
-pub fn read<P: Port>(radio: &mut CivRadio<P>, now: SystemTime, computer: &str) -> Record {
+/// Reads every setting the radio's definition lists. `serial` is the
+/// radio's serial number, if the Agent knows it.
+pub fn read<P: Port>(
+    radio: &mut CivRadio<P>,
+    serial: Option<&str>,
+    now: SystemTime,
+    computer: &str,
+) -> Record {
     let definition = radio.definition().clone();
     let settings = definition
         .settings
         .iter()
-        .map(|setting| Entry {
-            id: setting.id.clone(),
-            label: setting.label.clone(),
-            value: match radio.read_setting(setting.item) {
-                Ok(bytes) => decode(setting, &bytes),
-                Err(error) => Value::Unread {
-                    why: error.to_string(),
-                },
-            },
+        .map(|setting| {
+            let (value, bytes) = match radio.read_exposed(setting) {
+                Ok(bytes) => (decode(setting, &bytes), Some(civ::hex(&bytes))),
+                Err(error) => (
+                    Value::Unread {
+                        why: error.to_string(),
+                    },
+                    None,
+                ),
+            };
+            Entry {
+                id: setting.id.clone(),
+                label: setting.label.clone(),
+                value,
+                bytes,
+            }
         })
         .collect();
     Record {
@@ -169,6 +209,7 @@ pub fn read<P: Port>(radio: &mut CivRadio<P>, now: SystemTime, computer: &str) -
         maker: definition.maker.clone(),
         model: definition.model.clone(),
         address: definition.default_address,
+        serial: serial.map(str::to_owned),
         read_utc: utc_text(now),
         computer: computer.to_owned(),
         settings,
@@ -177,6 +218,9 @@ pub fn read<P: Port>(radio: &mut CivRadio<P>, now: SystemTime, computer: &str) -
 
 /// What a setting's bytes mean, by its definition.
 fn decode(setting: &SettingSummary, bytes: &[u8]) -> Value {
+    if setting.raw {
+        return Value::Raw;
+    }
     match (&setting.values, setting.range, bytes) {
         (Some(values), _, [code]) => values.iter().find(|(_, c)| **c == *code).map_or_else(
             || Value::Unread {
@@ -187,7 +231,7 @@ fn decode(setting: &SettingSummary, bytes: &[u8]) -> Value {
                 code: *code,
             },
         ),
-        (None, Some([low, high]), bcd) => match civ::level_from_bcd(bcd) {
+        (None, Some([low, high]), bcd) => match level(bcd) {
             Some(level) if (u16::from(low)..=u16::from(high)).contains(&level) => Value::Level {
                 level,
                 high: u16::from(high),
@@ -200,6 +244,18 @@ fn decode(setting: &SettingSummary, bytes: &[u8]) -> Value {
         _ => Value::Unread {
             why: format!("{} is not what the definition expects", civ::hex(bytes)),
         },
+    }
+}
+
+/// A level as the radio sends it: two BCD bytes ("0000 to 0255"), or one
+/// when the range is short ("00 to 10").
+fn level(bcd: &[u8]) -> Option<u16> {
+    match bcd {
+        [one] if one >> 4 <= 9 && one & 0x0F <= 9 => {
+            Some(u16::from(one >> 4) * 10 + u16::from(one & 0x0F))
+        }
+        [_] => None,
+        two => civ::level_from_bcd(two),
     }
 }
 
@@ -235,19 +291,27 @@ pub fn changes(as_received: &Record, now: &Record) -> Vec<Change> {
         .iter()
         .filter_map(|entry| {
             let before = as_received.settings.iter().find(|e| e.id == entry.id)?;
-            (before.value != entry.value).then(|| Change {
+            let differs = before.value != entry.value
+                || (entry.value == Value::Raw && before.bytes != entry.bytes);
+            differs.then(|| Change {
                 label: entry.label.clone(),
-                before: before.value.text(),
-                after: entry.value.text(),
+                before: before.text(),
+                after: entry.text(),
             })
         })
         .collect()
 }
 
-/// The file a radio's record lives in, under `dir`.
+/// The file a radio's record lives in, under `dir`: by its serial number
+/// when the Agent knows it, so each radio has its own, or else by its
+/// address.
 #[must_use]
 pub fn path_for(dir: &Path, record: &Record) -> PathBuf {
-    let name: String = format!("{}-{}-{:02x}", record.maker, record.model, record.address)
+    let which = record
+        .serial
+        .clone()
+        .unwrap_or_else(|| format!("{:02x}", record.address));
+    let name: String = format!("{}-{}-{which}", record.maker, record.model)
         .chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() {
@@ -312,9 +376,9 @@ pub fn load(path: &Path) -> Result<Option<Record>, String> {
     }
     let record: Record = serde_json::from_str(&text)
         .map_err(|error| format!("{} is not a settings record: {error}", path.display()))?;
-    if record.format != FORMAT {
+    if !READS.contains(&record.format) {
         return Err(format!(
-            "{} is record format {}; this Agent reads format {FORMAT}",
+            "{} is record format {}; this Agent reads formats 1 and 2",
             path.display(),
             record.format
         ));
@@ -349,7 +413,7 @@ pub fn report(record: &Record, found: &[Finding], as_received: Option<&Record>) 
         .max()
         .unwrap_or(0);
     for entry in &record.settings {
-        lines.push(format!("  {:width$}  {}", entry.label, entry.value.text()));
+        lines.push(format!("  {:width$}  {}", entry.label, entry.text()));
     }
     let unread = record
         .settings
@@ -482,12 +546,12 @@ mod tests {
     #[test]
     fn reads_every_setting_the_definition_lists() {
         let mut radio = radio();
-        let record = read(&mut radio, at(0), "FL1");
+        let record = read(&mut radio, None, at(0), "FL1");
         assert_eq!(
             (record.maker.as_str(), record.model.as_str()),
             ("Icom", "IC-7300")
         );
-        assert_eq!(record.settings.len(), 18);
+        assert_eq!(record.settings.len(), 216 + 43);
         let value = |id: &str| {
             record
                 .settings
@@ -517,18 +581,91 @@ mod tests {
                 code: 1
             })
         );
+        // Front-panel controls, each by its own command.
+        assert_eq!(
+            value("agc"),
+            Some(Value::Named {
+                name: "OFF".to_owned(),
+                code: 0
+            })
+        );
+        assert_eq!(
+            value("filter_width"),
+            Some(Value::Level {
+                level: 24,
+                high: 49,
+                percent: false,
+            }),
+            "a short level is one BCD byte"
+        );
+        // A raw setting keeps exactly the bytes the radio sent.
+        let entry = |id: &str| record.settings.iter().find(|e| e.id == id).cloned();
+        let attenuator = entry("attenuator").unwrap_or_else(|| unreachable!());
+        assert_eq!(attenuator.value, Value::Raw);
+        assert_eq!(attenuator.bytes.as_deref(), Some("00"));
+        assert_eq!(attenuator.text(), "00");
+        assert_eq!(
+            entry("rf_gain").and_then(|e| e.bytes),
+            Some("01 27".to_owned())
+        );
         assert!(
             record
                 .settings
                 .iter()
-                .all(|e| !matches!(e.value, Value::Unread { .. }))
+                .all(|e| !matches!(e.value, Value::Unread { .. }) && e.bytes.is_some())
         );
+    }
+
+    #[test]
+    fn a_change_to_raw_bytes_is_a_change() {
+        let mut radio = radio();
+        let first = read(&mut radio, Some("IC-7300_02065962"), at(0), "FL1");
+        assert!(
+            radio.port_mut().radio().set(&[0x11], 0x0020),
+            "ATT on, as bytes"
+        );
+        let later = read(&mut radio, Some("IC-7300_02065962"), at(60), "FL2");
+        let changed = changes(&first, &later);
+        assert_eq!(changed.len(), 1, "{changed:?}");
+        assert_eq!(changed[0].label, "Attenuator (ATT)");
+        assert_eq!(
+            (changed[0].before.as_str(), changed[0].after.as_str()),
+            ("00", "00 20")
+        );
+    }
+
+    #[test]
+    fn each_radio_has_its_own_record_by_serial_number() {
+        let mut radio = radio();
+        let dir = std::path::Path::new("records");
+        let one = read(&mut radio, Some("IC-7300_02065962"), at(0), "FL1");
+        let other = read(&mut radio, Some("IC-7300_03000001"), at(0), "FL1");
+        assert!(path_for(dir, &one).ends_with("icom-ic-7300-ic-7300-02065962.json"));
+        assert_ne!(path_for(dir, &one), path_for(dir, &other));
+        // Without one, by address, as before.
+        let unknown = read(&mut radio, None, at(0), "FL1");
+        assert!(path_for(dir, &unknown).ends_with("icom-ic-7300-94.json"));
+    }
+
+    #[test]
+    fn still_reads_a_format_1_record() {
+        let dir = temp_dir("format1");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|error| unreachable!("{error}"));
+        let path = dir.join("old.json");
+        let old = r#"{"format":1,"maker":"Icom","model":"IC-7300","address":148,
+            "read_utc":"2026-10-24T20:15:03Z","computer":"FL1","settings":[
+            {"id":"data_mod","label":"DATA MOD","value":{"kind":"named","name":"ACC","code":1}}]}"#;
+        std::fs::write(&path, old).unwrap_or_else(|error| unreachable!("{error}"));
+        let record = load(&path).ok().flatten().unwrap_or_else(|| unreachable!());
+        assert_eq!(record.serial, None);
+        assert_eq!(record.settings[0].bytes, None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
     fn finds_what_stops_a_job_from_working() {
         let mut radio = radio();
-        let record = read(&mut radio, at(0), "FL1");
+        let record = read(&mut radio, None, at(0), "FL1");
         let found = findings(&record, radio.definition());
         let jobs: Vec<&str> = found.iter().map(|f| f.job.as_str()).collect();
         // DATA MOD and DATA OFF MOD start on MIC in the pretend radio.
@@ -547,7 +684,7 @@ mod tests {
                 .iter()
                 .any(|s| s.id == "data_mod")
         );
-        let mut record = read(&mut radio, at(0), "FL1");
+        let mut record = read(&mut radio, None, at(0), "FL1");
         for entry in &mut record.settings {
             if entry.id == "data_mod" || entry.id == "data_off_mod" {
                 entry.value = Value::Named {
@@ -563,7 +700,7 @@ mod tests {
     fn keeps_the_first_record_and_compares_later_ones() {
         let dir = temp_dir("keep");
         let mut radio = radio();
-        let first = read(&mut radio, at(0), "FL1");
+        let first = read(&mut radio, None, at(0), "FL1");
         let path = path_for(&dir, &first);
         assert!(path.ends_with("icom-ic-7300-94.json"));
         assert_eq!(load(&path), Ok(None));
@@ -574,7 +711,7 @@ mod tests {
             "it reads back exactly"
         );
         // Someone changes DATA MOD to USB on the radio, later.
-        let mut later = read(&mut radio, at(3_600), "FL2");
+        let mut later = read(&mut radio, None, at(3_600), "FL2");
         if let Some(entry) = later.settings.iter_mut().find(|e| e.id == "data_mod") {
             entry.value = Value::Named {
                 name: "USB".to_owned(),
@@ -612,7 +749,7 @@ mod tests {
     #[test]
     fn reports_in_plain_words() {
         let mut radio = radio();
-        let record = read(&mut radio, at(0), "FL1");
+        let record = read(&mut radio, None, at(0), "FL1");
         let found = findings(&record, radio.definition());
         let text = report(&record, &found, None).join("\n");
         assert!(
@@ -625,7 +762,7 @@ mod tests {
             text.contains("111 (of 0 to 223)"),
             "an address range is not a percentage: {text}"
         );
-        assert!(text.contains("18 settings read, 0 not read."), "{text}");
+        assert!(text.contains("259 settings read, 0 not read."), "{text}");
         assert!(
             text.contains("digital_modes won't work: DATA MOD is MIC (00h)."),
             "{text}"

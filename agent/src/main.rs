@@ -1079,6 +1079,7 @@ fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
 fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Result<(), String> {
     let now = settings_record::read(
         radio,
+        None,
         std::time::SystemTime::now(),
         &settings_record::computer_name(),
     );
