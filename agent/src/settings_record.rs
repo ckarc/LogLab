@@ -151,6 +151,8 @@ pub struct Record {
 pub struct Finding {
     /// The job that won't work, such as `digital_modes`.
     pub job: String,
+    /// The setting's id.
+    pub setting: String,
     /// The setting's name on the radio's menu.
     pub label: String,
     /// What it is now.
@@ -273,6 +275,7 @@ pub fn findings(record: &Record, definition: &Definition) -> Vec<Finding> {
         if !met {
             out.push(Finding {
                 job: requirement.job.clone(),
+                setting: requirement.setting.clone(),
                 label: entry.label.clone(),
                 now: entry.value.text(),
                 accept: requirement.accept.clone(),

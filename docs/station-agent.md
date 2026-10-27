@@ -374,6 +374,18 @@ silence. It never changes a setting: nothing in the definition is verified on
 a radio yet. Records are JSON files, one per radio, written whole and renamed
 into place.
 
+**Fixing what stops a job working.** When a setting stops a job working,
+such as DATA MOD on MIC so that VARA would transmit silence, `station` says
+so. If the definition offers a value for it, and the Agent may change that
+setting and a real radio took it written back, the Agent lists the fixes and
+waits: type `yes` on the next line to set them, and anything else leaves the
+radio as it is (Principle X). Each fix is read again after it is written and
+recorded like a restore (`restore-...json`). Value codes not yet checked on a
+real radio are said to be so, so you can look at the radio's menu afterwards.
+
+**Reading one setting.** Type `show DATA MOD` (any setting's menu name, or
+part of one: `show PBT`) to read it from the radio now.
+
 ### Setups kept on the Engine
 
 With `--engine URL --key-file FILE`, `station` also keeps the radio's

@@ -45,7 +45,7 @@ use crate::civ_serial::{self, SerialPort};
 use crate::engine::{KeptRadio, KeptReading, Uplink};
 use crate::rig::{Radio, RadioError};
 use crate::rigctld_server::{self, Shared, Source};
-use crate::rigdef::Definition;
+use crate::rigdef::{Definition, SettingSummary};
 use crate::settings_record::Record;
 use crate::setups::Setups;
 use crate::{rigdef, settings_record};
@@ -203,14 +203,21 @@ fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) -> Rec
     if found.is_empty() {
         println!("Radio settings: every one digital modes need is right.");
     }
+    let fixable = crate::restore::fixes(&record, &definition);
     for finding in found {
+        let wanted = finding.offer.unwrap_or_else(|| finding.accept.join(" or "));
+        let then = if fixable
+            .put
+            .iter()
+            .any(|put| put.setting.id == finding.setting)
+        {
+            format!("The Agent can set it to {wanted}: it asks below.")
+        } else {
+            format!("On the radio, set {} to {wanted}.", finding.label)
+        };
         println!(
-            "Radio settings: {} is {}. {}\n  -> On the radio, set {} to {}.",
-            finding.label,
-            finding.now,
-            finding.explain,
-            finding.label,
-            finding.offer.unwrap_or_else(|| finding.accept.join(" or "))
+            "Radio settings: {} is {}. {}\n  -> {then}",
+            finding.label, finding.now, finding.explain
         );
     }
     record
@@ -326,6 +333,8 @@ enum Typed {
     Keep(String),
     /// Compare the radio with every setup kept for it.
     Compare,
+    /// Read the settings whose name is or holds this, and say what they are.
+    Show(String),
     /// Show what putting this setup back would change, and wait for a yes.
     Restore(String),
     /// Yes: go ahead with the restore just shown.
@@ -350,6 +359,8 @@ fn typed(line: &str) -> Result<Typed, String> {
             Ok(Typed::Keep(name.to_owned()))
         }
         ("compare", "") => Ok(Typed::Compare),
+        ("show", "") => Err("show needs a setting's name, like show DATA MOD".to_owned()),
+        ("show", name) => Ok(Typed::Show(name.to_owned())),
         ("restore", "") => Err("restore needs a setup name, like restore FT8".to_owned()),
         ("restore", name) => {
             crate::engine::check_setup_name(name)?;
@@ -363,8 +374,8 @@ fn typed(line: &str) -> Result<Typed, String> {
 
 /// What can be typed at the Agent's console.
 const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
-                         say), compare to see what differs from each setup, or restore NAME to \
-                         put one back.";
+                         say), compare to see what differs from each setup, restore NAME to put \
+                         one back, or show NAME to read a setting (show DATA MOD, say).";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -445,19 +456,110 @@ fn start_console(
     uplink: Option<Uplink>,
     serial: String,
     definition: Definition,
+    record: &Record,
 ) {
     let setups: Box<dyn Setups> = match uplink {
         Some(uplink) => Box::new(uplink),
         None => Box::new(crate::setups::Local::new(records_folder())),
     };
     println!("Setups: kept {}.", setups.place());
-    let shared = Arc::clone(shared);
-    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition));
     println!("{TYPE_HELP}");
+    let fixes = offer_fixes(record, &definition);
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition, fixes));
+}
+
+/// Shows what the Agent can set to fix what stops a job working, and
+/// returns it to wait for the operator's yes (Principle X).
+fn offer_fixes(record: &Record, definition: &Definition) -> Option<crate::restore::Plan> {
+    let plan = crate::restore::fixes(record, definition);
+    if plan.put.is_empty() {
+        return None;
+    }
+    let mut lines = vec!["Radio settings: the Agent can fix what stops a job working.".to_owned()];
+    lines.extend(plan.lines().into_iter().map(|line| format!("  {line}")));
+    if plan.put.iter().any(|put| !put.setting.verified) {
+        lines.push(
+            "  The values' codes come from the radio's manual and haven't been checked on a \
+             real radio yet: look at the radio's menu afterwards to see it says the same."
+                .to_owned(),
+        );
+    }
+    lines.push(format!(
+        "-> Type yes to set {}; anything else leaves the radio as it is.",
+        if plan.put.len() == 1 { "it" } else { "them" }
+    ));
+    println!("{}", lines.join("\n"));
+    Some(plan)
+}
+
+/// The most settings `show` reads at once.
+const SHOW_AT_MOST: usize = 12;
+
+/// The settings `name` means: the one whose menu name or id it is, or else
+/// every one whose menu name holds it.
+fn named<'a>(definition: &'a Definition, name: &str) -> Vec<&'a SettingSummary> {
+    let wanted = name.to_lowercase();
+    let exact: Vec<&SettingSummary> = definition
+        .settings
+        .iter()
+        .filter(|s| s.label.to_lowercase() == wanted || s.id == wanted)
+        .collect();
+    if !exact.is_empty() {
+        return exact;
+    }
+    definition
+        .settings
+        .iter()
+        .filter(|s| s.label.to_lowercase().contains(&wanted))
+        .collect()
+}
+
+/// Reads the settings `name` means from the radio now, and says what they
+/// are.
+fn show(shared: &Shared, definition: &Definition, name: &str) -> String {
+    let settings = named(definition, name);
+    match settings.len() {
+        0 => return format!("no setting is called {name:?}; its name on the radio's menu works"),
+        n if n > SHOW_AT_MOST => {
+            let names: Vec<&str> = settings.iter().map(|s| s.label.as_str()).collect();
+            return format!(
+                "{n} settings have {name:?} in their name; say which: {}",
+                names.join(", ")
+            );
+        }
+        _ => {}
+    }
+    let read = shared.settings(|radio| {
+        settings
+            .iter()
+            .map(|setting| {
+                let shown = match radio.read_exposed(setting) {
+                    Ok(bytes) => settings_record::shown(
+                        definition,
+                        &setting.id,
+                        Some(&crate::civ::hex(&bytes)),
+                    ),
+                    Err(error) => format!("not read: {error}"),
+                };
+                format!("{}: {shown}", setting.label)
+            })
+            .collect::<Vec<String>>()
+    });
+    match read {
+        Ok(lines) => lines.join("\n"),
+        Err(why) => format!("not read: {why}"),
+    }
 }
 
 /// Reads the operator's commands from the console until it closes.
-fn console(shared: &Shared, setups: &dyn Setups, serial: &str, definition: &Definition) {
+fn console(
+    shared: &Shared,
+    setups: &dyn Setups,
+    serial: &str,
+    definition: &Definition,
+    mut waiting: Option<crate::restore::Plan>,
+) {
     let read = || {
         shared.settings(|radio| {
             settings_record::read(
@@ -468,18 +570,22 @@ fn console(shared: &Shared, setups: &dyn Setups, serial: &str, definition: &Defi
             )
         })
     };
-    let mut waiting: Option<crate::restore::Plan> = None;
     for line in std::io::stdin().lines() {
         let Ok(line) = line else { return };
         let typed = typed(&line);
         // A restore goes ahead only on a yes typed right after it was shown.
+        // Anything else leaves the radio as it is, and is then done as
+        // typed.
         if let Some(plan) = waiting.take() {
-            crate::print_event(&if matches!(typed, Ok(Typed::Yes)) {
-                restore(shared, &plan, serial)
+            if matches!(typed, Ok(Typed::Yes)) {
+                crate::print_event(&restore(shared, &plan, serial));
+                continue;
+            }
+            crate::print_event(&if plan.fixes {
+                "nothing fixed; the radio is as it was.".to_owned()
             } else {
                 format!("setup {} not put back; nothing changed.", plan.setup)
             });
-            continue;
         }
         let said = match typed {
             Ok(Typed::Nothing) => continue,
@@ -506,6 +612,7 @@ fn console(shared: &Shared, setups: &dyn Setups, serial: &str, definition: &Defi
                 }
             }
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
+            Ok(Typed::Show(name)) => show(shared, definition, &name),
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
             Ok(Typed::Keep(name)) => match read() {
                 Ok(record) => match setups.keep(&record, &name) {
@@ -696,7 +803,7 @@ pub fn run(
         crate::programs::set_up(station, server.address());
     }
     if let Some(serial) = found.serial.clone() {
-        start_console(&shared, uplink, serial, definition);
+        start_console(&shared, uplink, serial, definition, &record);
     }
     println!("Ctrl-C stops.");
     #[cfg(windows)]
@@ -906,6 +1013,34 @@ mod tests {
     use crate::engine::{KeptRadio, KeptReading, KeptSetting};
     use crate::rigdef;
     use crate::settings_record;
+
+    #[test]
+    fn show_finds_a_setting_by_its_menu_name() {
+        assert_eq!(
+            typed("show data mod"),
+            Ok(Typed::Show("data mod".to_owned()))
+        );
+        assert!(typed("show").is_err());
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let exact: Vec<&str> = super::named(&definition, "data mod")
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(
+            exact,
+            ["data_mod"],
+            "the exact name wins over others holding it"
+        );
+        let held: Vec<&str> = super::named(&definition, "PBT")
+            .iter()
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(held, ["pbt_shift_value_display", "pbt_inner", "pbt_outer"]);
+        assert!(super::named(&definition, "no such thing").is_empty());
+    }
 
     #[test]
     fn reads_what_the_operator_types() {
