@@ -392,8 +392,22 @@ so it doesn't matter which FieldLab computer the radio is plugged into:
   too. `compare` reads the radio again and lists what differs from each
   setup. `help` says this.
 
-It only reads. Nothing is put back on the radio: that comes with verified
-settings, and then only when the operator asks and confirms (Principle X).
+**Putting a setup back.** Type `restore FT8`. The Agent reads the radio
+again and lists what putting setup FT8 back would change, from what to what,
+and which settings that differ it would leave alone, and why. Nothing changes
+until you type `yes` on the next line; anything else cancels (Principle X:
+the Agent restores only when asked, and only after the operator confirms).
+It then reads each setting just before writing it and again after: what the
+radio says afterward is what counts. It records the restore, each setting
+from what, to what, and what the radio then had, in a `restore-...json` file
+in `records`, one per restore, never overwritten.
+
+It only ever writes a setting its rig definition says may be changed and
+that is **verified on a real radio**. None of the IC-7300's settings are
+verified yet, so for now `restore` lists every difference as one to set by
+hand. Each setting becomes restorable as it is checked on a radio and marked
+verified in the definition.
+
 Reading every setting takes a moment, and is refused while a program has the
 radio keyed. The radio's serial number comes with its USB serial port, so
 this needs the Agent to find the port itself (no `--civ`).

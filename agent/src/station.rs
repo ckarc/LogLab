@@ -26,8 +26,9 @@
 //!    Engine, so every computer it is plugged into knows them: sends its
 //!    as-received record, lists what differs from each setup an operator
 //!    kept (FT8, say), and keeps the radio's settings as a setup when the
-//!    operator types `keep NAME`. It only reads: nothing is put back on the
-//!    radio (Principle X).
+//!    operator types `keep NAME`. `restore NAME` puts a setup back, only
+//!    after the operator types yes, only settings verified on a real radio,
+//!    and records it (Principle X).
 //!
 //! Starting `station` is the operator's choice that programs on this
 //! computer may key the radio, as `--allow-transmit` is for `serve`
@@ -280,8 +281,8 @@ fn compared_all(kept: &KeptRadio, now: &Record, definition: &Definition) -> Vec<
         lines.extend(compared(setup, now, definition));
     }
     lines.push(
-        "-> For now, change those on the radio by hand: the Agent doesn't put settings \
-         back until they are verified on a real radio."
+        "-> Type restore NAME to put a setup back. Settings not yet verified on a real radio \
+         are left for you to set by hand."
             .to_owned(),
     );
     lines
@@ -324,6 +325,10 @@ enum Typed {
     Keep(String),
     /// Compare the radio with every setup kept for it.
     Compare,
+    /// Show what putting this setup back would change, and wait for a yes.
+    Restore(String),
+    /// Yes: go ahead with the restore just shown.
+    Yes,
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -344,6 +349,12 @@ fn typed(line: &str) -> Result<Typed, String> {
             Ok(Typed::Keep(name.to_owned()))
         }
         ("compare", "") => Ok(Typed::Compare),
+        ("restore", "") => Err("restore needs a setup name, like restore FT8".to_owned()),
+        ("restore", name) => {
+            crate::engine::check_setup_name(name)?;
+            Ok(Typed::Restore(name.to_owned()))
+        }
+        ("yes", "") => Ok(Typed::Yes),
         ("help" | "?", "") => Ok(Typed::Help),
         _ => Err(format!("unknown command {line:?}")),
     }
@@ -351,7 +362,79 @@ fn typed(line: &str) -> Result<Typed, String> {
 
 /// What can be typed at the Agent's console.
 const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings on the Engine as a setup \
-                         (keep FT8, say), or compare to see what differs from each setup.";
+                         (keep FT8, say), compare to see what differs from each setup, or \
+                         restore NAME to put one back.";
+
+/// What putting setup `name` back would change, from the radio's settings
+/// now and the setup as the Engine keeps it.
+fn restore_plan(
+    now: &Record,
+    kept: &KeptRadio,
+    name: &str,
+    definition: &Definition,
+) -> Result<crate::restore::Plan, String> {
+    let setup = kept
+        .setups
+        .iter()
+        .find(|setup| setup.name.as_deref() == Some(name))
+        .or_else(|| {
+            kept.setups.iter().find(|setup| {
+                setup
+                    .name
+                    .as_deref()
+                    .is_some_and(|kept| kept.eq_ignore_ascii_case(name))
+            })
+        })
+        .ok_or_else(|| {
+            let names: Vec<&str> = kept
+                .setups
+                .iter()
+                .filter_map(|s| s.name.as_deref())
+                .collect();
+            if names.is_empty() {
+                "no setups are kept for this radio yet".to_owned()
+            } else {
+                format!(
+                    "no setup {name} for this radio; it has {}",
+                    names.join(", ")
+                )
+            }
+        })?;
+    Ok(crate::restore::plan(
+        setup.name.as_deref().unwrap_or(name),
+        setup
+            .settings
+            .iter()
+            .map(|s| (s.id.as_str(), s.label.as_str(), s.bytes.as_deref())),
+        now,
+        definition,
+    ))
+}
+
+/// Puts a confirmed plan back on the radio and records it beside the
+/// settings records (Principle X).
+fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String {
+    let done = shared.settings(|radio| {
+        crate::restore::apply(
+            radio,
+            plan,
+            serial,
+            std::time::SystemTime::now(),
+            &settings_record::computer_name(),
+        )
+    });
+    let done = match done {
+        Ok(done) => done,
+        Err(why) => return format!("setup {} not put back: {why}", plan.setup),
+    };
+    let mut lines = done.lines();
+    let path = crate::restore::path_for(&records_folder(), &done);
+    lines.push(match settings_record::save(&path, &done) {
+        Ok(()) => format!("Recorded in {}.", path.display()),
+        Err(error) => format!("The restore wasn't recorded: {error}"),
+    });
+    lines.join("\n")
+}
 
 /// Reads the operator's commands from the console until it closes.
 fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definition) {
@@ -365,10 +448,43 @@ fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definiti
             )
         })
     };
+    let mut waiting: Option<crate::restore::Plan> = None;
     for line in std::io::stdin().lines() {
         let Ok(line) = line else { return };
-        let said = match typed(&line) {
+        let typed = typed(&line);
+        // A restore goes ahead only on a yes typed right after it was shown.
+        if let Some(plan) = waiting.take() {
+            crate::print_event(&if matches!(typed, Ok(Typed::Yes)) {
+                restore(shared, &plan, serial)
+            } else {
+                format!("setup {} not put back; nothing changed.", plan.setup)
+            });
+            continue;
+        }
+        let said = match typed {
             Ok(Typed::Nothing) => continue,
+            Ok(Typed::Yes) => "nothing is waiting for a yes.".to_owned(),
+            Ok(Typed::Restore(name)) => {
+                match read().map_err(SendError::Unreachable).and_then(|now| {
+                    uplink
+                        .radio_settings(&now.maker, &now.model, serial)
+                        .map(|kept| restore_plan(&now, &kept, &name, definition))
+                }) {
+                    Ok(Ok(plan)) => {
+                        let mut lines = plan.lines();
+                        if !plan.put.is_empty() {
+                            lines.push(format!(
+                            "-> Type yes to put {} back on the radio; anything else leaves it as it is.",
+                            if plan.put.len() == 1 { "it" } else { "them" }
+                        ));
+                            waiting = Some(plan);
+                        }
+                        lines.join("\n")
+                    }
+                    Ok(Err(why)) => format!("not put back: {why}"),
+                    Err(error) => format!("not put back: {error}"),
+                }
+            }
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
             Ok(Typed::Keep(name)) => match read() {
@@ -707,7 +823,7 @@ pub fn startup(what: &str) -> Result<(), String> {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::{Typed, compared, compared_all, startup_command, typed};
+    use super::{Typed, compared, compared_all, restore_plan, startup_command, typed};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::engine::{KeptRadio, KeptReading, KeptSetting};
@@ -727,10 +843,10 @@ mod tests {
         assert_eq!(typed("?"), Ok(Typed::Help));
         assert!(typed("keep").is_err());
         assert!(typed(&format!("keep {}", "x".repeat(41))).is_err());
-        assert!(
-            typed("restore FT8").is_err(),
-            "nothing puts settings back yet"
-        );
+        assert_eq!(typed("restore FT8"), Ok(Typed::Restore("FT8".to_owned())));
+        assert!(typed("restore").is_err());
+        assert_eq!(typed(" YES "), Ok(Typed::Yes));
+        assert!(typed("yes please").is_err());
         assert!(typed("compare FT8").is_err());
     }
 
@@ -790,6 +906,16 @@ mod tests {
             setups: vec![setup("FT8", "00"), setup("SSB", "00 20")],
         };
         assert_eq!(compared_all(&two, &now, ic_7300).len(), 4);
+        let plan =
+            restore_plan(&now, &two, "ssb", ic_7300).unwrap_or_else(|why| unreachable!("{why}"));
+        assert_eq!(plan.setup, "SSB", "found whatever its case");
+        assert_eq!(plan.kept_back.len(), 1, "the attenuator isn't verified");
+        assert!(plan.put.is_empty());
+        assert_eq!(
+            restore_plan(&now, &two, "RTTY", ic_7300).err().as_deref(),
+            Some("no setup RTTY for this radio; it has FT8, SSB")
+        );
+        assert!(restore_plan(&now, &none, "FT8", ic_7300).is_err());
     }
 
     #[test]

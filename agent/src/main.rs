@@ -41,6 +41,7 @@ mod pretend;
 mod programs;
 #[cfg(any(windows, test))]
 mod qt_settings;
+mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;

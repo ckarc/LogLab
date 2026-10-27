@@ -153,6 +153,21 @@ pub trait Exposes {
         &mut self,
         setting: &crate::rigdef::SettingSummary,
     ) -> Result<Vec<u8>, RadioError>;
+
+    /// Puts `bytes` in one setting, exactly as the radio sent them when it
+    /// was read. Only for a restore the operator asked for and confirmed
+    /// (Principle X), and only for a setting the definition says may be
+    /// changed and is verified on a real radio.
+    ///
+    /// # Errors
+    ///
+    /// The setting may not be written, or the radio refused or didn't
+    /// answer.
+    fn write_exposed(
+        &mut self,
+        setting: &crate::rigdef::SettingSummary,
+        bytes: &[u8],
+    ) -> Result<(), RadioError>;
 }
 
 /// A VFO, by the name Hamlib and most radios use for it.
