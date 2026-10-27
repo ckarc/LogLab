@@ -153,6 +153,9 @@ from loglab_engine.store.operation import (
 from loglab_engine.store.overlay import OverlayStore
 from loglab_engine.store.parks import ParkStore
 from loglab_engine.store.qrz_logbook import LogbookStore, LogbookTakenError
+from loglab_engine.store.radio_setup import MAX_SETTINGS, RadioSetupStore, Reading
+from loglab_engine.store.radio_setup import Radio as KeptRadio
+from loglab_engine.store.radio_setup import Setting as KeptSetting
 
 if TYPE_CHECKING:
     from psycopg.rows import TupleRow
@@ -265,6 +268,58 @@ class AgentReportIn(_Strict):
 
 
 StationName = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")]
+
+_RadioText = Annotated[str, StringConstraints(min_length=1, max_length=40, pattern=_PLAIN)]
+_Serial = Annotated[str, StringConstraints(pattern=r"^[A-Za-z0-9._-]{1,64}$")]
+
+
+class RadioSettingIn(_Strict):
+    """One setting as the radio sent it: the rig definition's id and label, and its bytes."""
+
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
+    label: Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)]
+    bytes: Annotated[str, StringConstraints(pattern=r"^[0-9A-F]{2}( [0-9A-F]{2}){0,63}$")] | None
+
+
+class RadioReadingIn(_Strict):
+    """A reading of every setting a radio exposes, sent by the Agent it is plugged into.
+
+    ``name`` is the setup it is kept as, like FT8; leave it out for the
+    radio's as-received record (Principle X).
+    """
+
+    maker: _RadioText
+    model: _RadioText
+    serial: _Serial
+    name: _RadioText | None = None
+    settings: Annotated[list[RadioSettingIn], Field(min_length=1, max_length=MAX_SETTINGS)]
+
+
+class RadioReadingOut(BaseModel):
+    """A kept reading of a radio's settings."""
+
+    maker: str
+    model: str
+    serial: str
+    name: str | None
+    settings: list[RadioSettingIn]
+    station: str
+    operator: str | None
+    saved_at: datetime
+
+
+class RadioSettingsOut(BaseModel):
+    """Everything kept for one radio: its as-received record and its setups."""
+
+    as_received: RadioReadingOut | None
+    setups: tuple[RadioReadingOut, ...]
+
+
+class KeptReadingOut(BaseModel):
+    """What became of a reading an Agent sent."""
+
+    created: bool
+    reading: RadioReadingOut
 
 
 class PairingAskIn(_Strict):
@@ -2403,6 +2458,60 @@ def report_rig(body: AgentReportIn, station: AgentStation, rigs: Rigs) -> None:
             problem=body.problem if radio is None else None,
             heard_at=datetime.now(UTC),
         )
+    )
+
+
+def _reading_out(reading: Reading) -> RadioReadingOut:
+    return RadioReadingOut(
+        maker=reading.radio.maker,
+        model=reading.radio.model,
+        serial=reading.radio.serial,
+        name=reading.name,
+        settings=[RadioSettingIn(id=s.id, label=s.label, bytes=s.bytes) for s in reading.settings],
+        station=reading.station,
+        operator=reading.operator,
+        saved_at=reading.saved_at,
+    )
+
+
+@api.post("/agent/radio-settings", status_code=status.HTTP_201_CREATED)
+def keep_radio_reading(
+    body: RadioReadingIn, station: AgentStation, conn: Conn, response: Response
+) -> KeptReadingOut:
+    """Keep a reading of a radio's settings, sent by the Agent it is plugged into.
+
+    Without a name it is the radio's as-received record: kept the first time
+    and never replaced, so a later one is answered 200 with the one already
+    kept. With a name it becomes the newest version of that setup. The
+    Engine only keeps settings; it never sends one to a radio (Principle X).
+    """
+    reading, created = RadioSetupStore(conn).keep(
+        station,
+        KeptRadio(body.maker, body.model, body.serial),
+        body.name,
+        tuple(KeptSetting(s.id, s.label, s.bytes) for s in body.settings),
+    )
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return KeptReadingOut(created=created, reading=_reading_out(reading))
+
+
+@api.get("/agent/radio-settings")
+def radio_settings(
+    maker: _RadioText, model: _RadioText, serial: _Serial, station: AgentStation, conn: Conn
+) -> RadioSettingsOut:
+    """A radio's as-received record and the newest version of each of its setups.
+
+    Any station's Agent may ask, so a radio carried to another station is
+    recognized there.
+    """
+    del station
+    store = RadioSetupStore(conn)
+    radio = KeptRadio(maker, model, serial)
+    found = store.as_received(radio)
+    return RadioSettingsOut(
+        as_received=None if found is None else _reading_out(found),
+        setups=tuple(_reading_out(r) for r in store.setups(radio)),
     )
 
 
