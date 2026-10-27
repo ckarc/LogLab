@@ -48,9 +48,11 @@ mod rigdef;
 #[cfg(any(windows, test))]
 mod settings_file;
 mod settings_record;
+mod setups;
 mod station;
 #[cfg(any(windows, test))]
 mod vara;
+mod write_check;
 mod wsjtx;
 
 use std::fs;
@@ -123,6 +125,12 @@ Usage:
                                        with --engine, keeps the radio's
                                        settings there for every computer:
                                        type keep NAME to keep a setup
+  loglab-agent check-writes [--civ PORT]
+                                       find out which of the radio's
+                                       settings the Agent can set: writes
+                                       each one's own value back and reads
+                                       it again, so nothing changes; asks
+                                       first
   loglab-agent startup on|off|status   whether Windows runs `station` each
                                        time you sign in
   loglab-agent audio-devices           list this computer's sound devices
@@ -220,6 +228,9 @@ enum Command {
         engine: Option<(String, String, Option<String>)>,
     },
     Startup(String),
+    /// Write each changeable setting's own value back, on this port or
+    /// whichever the radio is on.
+    CheckWrites(Option<String>),
     Run {
         engine: String,
         key_file: String,
@@ -303,13 +314,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
     if verb == "station" {
         return station_command(rest);
     }
-    if verb == "startup" {
-        return match rest {
-            [what] if matches!(what.as_str(), "on" | "off" | "status") => {
-                Ok(Command::Startup(what.clone()))
-            }
-            _ => Err("startup takes one of: on, off, status".to_owned()),
-        };
+    if matches!(verb.as_str(), "check-writes" | "startup") {
+        return station_tool_command(verb, rest);
     }
     if verb == "civ-demo" {
         return if rest.is_empty() {
@@ -428,6 +434,21 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
         limit,
         engine,
     })
+}
+
+/// `check-writes [--civ PORT]` and `startup on|off|status`.
+fn station_tool_command(verb: &str, rest: &[String]) -> Result<Command, String> {
+    match (verb, rest) {
+        ("check-writes", []) => Ok(Command::CheckWrites(None)),
+        ("check-writes", [flag, port]) if flag == "--civ" => {
+            Ok(Command::CheckWrites(Some(port.clone())))
+        }
+        ("check-writes", _) => Err("check-writes takes only --civ PORT".to_owned()),
+        ("startup", [what]) if matches!(what.as_str(), "on" | "off" | "status") => {
+            Ok(Command::Startup(what.clone()))
+        }
+        _ => Err("startup takes one of: on, off, status".to_owned()),
+    }
 }
 
 /// A `--tx-limit` in seconds, checked.
@@ -1126,7 +1147,7 @@ fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Resul
     let path = settings_record::path_for(dir, &now);
     let first = settings_record::load(&path)?;
     let found = settings_record::findings(&now, radio.definition());
-    for line in settings_record::report(&now, &found, first.as_ref()) {
+    for line in settings_record::report(&now, &found, first.as_ref(), radio.definition()) {
         println!("{line}");
     }
     if first.is_none() {
@@ -1240,6 +1261,7 @@ fn main() -> ExitCode {
             }),
         ),
         Ok(Command::Startup(what)) => station::startup(&what),
+        Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1502,6 +1524,12 @@ mod tests {
             Ok(Command::Startup("on".to_owned()))
         );
         assert!(parse(&args("startup")).is_err());
+        assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
+        assert_eq!(
+            parse(&args("check-writes --civ COM5")),
+            Ok(Command::CheckWrites(Some("COM5".to_owned())))
+        );
+        assert!(parse(&args("check-writes --pretend")).is_err());
         assert!(parse(&args("startup maybe")).is_err());
         for refused in [
             "station --tx-limit 0",

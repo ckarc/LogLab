@@ -166,8 +166,8 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    record in `records` beside the Agent. On later starts it lists what has
    changed since. It checks the settings digital modes need, such as DATA
    MOD, and says what to set on the radio if one is wrong. It changes nothing
-   on the radio: no setting in its definition is verified on a real radio
-   yet.
+   on the radio by itself: settings are only put back with `restore`
+   (below). The clock is never listed as a change.
 3. **Carries the radio's audio both ways** (Windows). Receive audio plays into
    VB-CABLE ("CABLE Input"), so programs record it from "CABLE Output".
    Transmit audio goes from a second VB-Audio virtual cable to the radio's
@@ -392,6 +392,14 @@ so it doesn't matter which FieldLab computer the radio is plugged into:
   too. `compare` reads the radio again and lists what differs from each
   setup. `help` says this.
 
+**With no Engine.** Without `--engine`, `keep`, `compare` and `restore` work
+the same way with setups kept on this computer, in the `records` folder
+beside the Agent, one file per version (`setup-…json`), written whole and
+never overwritten; the newest of each name is used (Principle V). The Agent
+says at start-up where setups are kept. Setups kept this way stay on this
+computer: for a radio's setups to follow it to another computer, run with
+`--engine`.
+
 **Putting a setup back.** Type `restore FT8`. The Agent reads the radio
 again and lists what putting setup FT8 back would change, from what to what,
 and which settings that differ it would leave alone, and why. Nothing changes
@@ -402,11 +410,35 @@ radio says afterward is what counts. It records the restore, each setting
 from what, to what, and what the radio then had, in a `restore-...json` file
 in `records`, one per restore, never overwritten.
 
+**Mode and filter first.** Some settings belong to whichever mode and filter
+the radio is on: on the IC-7300 the selected filter's width, its AGC time
+constant, the SSB TX bandwidth and Twin PBT (`per_selection` in the
+definition). A setup keeps the mode and filter (FIL1, FIL2 or FIL3, read with
+CI-V command 04), and a restore puts them back first (command 06), then reads
+those settings again and puts them back. If the mode and filter can't be put
+back, or the setup doesn't say which they were (a setup kept before this),
+those settings are left alone: written now, they would land on another filter.
+Any setting that comes out different from the setup is written once more at
+the end, since one setting can depend on another; if it still differs, the
+Agent says so.
+
 It only ever writes a setting its rig definition says may be changed and
-that is **verified on a real radio**. None of the IC-7300's settings are
-verified yet, so for now `restore` lists every difference as one to set by
-hand. Each setting becomes restorable as it is checked on a radio and marked
-verified in the definition.
+that a **real radio took** when `check-writes` wrote its own value back
+(`write_checked` in the definition). On the IC-7300 that is 247 of the 248
+changeable settings, the operating mode and filter among them, from the
+FieldLab runs on 2026-10-27; the one left, TX delay for 70 MHz, the radio
+won't read. Settings the Agent never changes
+(the CI-V and USB link settings, the clock) stay as they are.
+
+**Finding out which settings can be set.** `loglab-agent check-writes`
+(with `station` stopped, since only one program may own the radio) finds the
+radio, asks for a `yes`, then for each setting the Agent may change it reads
+the value, writes exactly that value back, and reads it again. The radio ends
+as it began: nothing remembered is written (Principle X). It reports how many
+the radio took and lists the ones it refused or changed, and keeps the
+report as a `write-check-...json` file in `records`. A setting whose own
+value the radio took is one whose command works, which is the evidence for
+marking it verified in the rig definition.
 
 Reading every setting takes a moment, and is refused while a program has the
 radio keyed. The radio's serial number comes with its USB serial port, so

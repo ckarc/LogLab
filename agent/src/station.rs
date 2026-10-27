@@ -42,11 +42,12 @@ use std::time::Duration;
 
 use crate::civ_radio::CivRadio;
 use crate::civ_serial::{self, SerialPort};
-use crate::engine::{KeptRadio, KeptReading, SendError, Uplink};
+use crate::engine::{KeptRadio, KeptReading, Uplink};
 use crate::rig::{Radio, RadioError};
 use crate::rigctld_server::{self, Shared, Source};
 use crate::rigdef::Definition;
 use crate::settings_record::Record;
+use crate::setups::Setups;
 use crate::{rigdef, settings_record};
 
 /// The radio, found and checked.
@@ -181,7 +182,7 @@ fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) -> Rec
             Err(error) => println!("Radio settings: {error}"),
         },
         Ok(Some(first)) => {
-            let changed = settings_record::changes(&first, &record);
+            let changed = settings_record::changes(&first, &record, &definition);
             if changed.is_empty() {
                 println!("Radio settings: nothing has changed since the radio arrived.");
             } else {
@@ -281,8 +282,8 @@ fn compared_all(kept: &KeptRadio, now: &Record, definition: &Definition) -> Vec<
         lines.extend(compared(setup, now, definition));
     }
     lines.push(
-        "-> Type restore NAME to put a setup back. Settings not yet verified on a real radio \
-         are left for you to set by hand."
+        "-> Type restore NAME to put a setup back. Settings the Agent can't write on this \
+         radio are left for you to set by hand, and it says which."
             .to_owned(),
     );
     lines
@@ -361,12 +362,12 @@ fn typed(line: &str) -> Result<Typed, String> {
 }
 
 /// What can be typed at the Agent's console.
-const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings on the Engine as a setup \
-                         (keep FT8, say), compare to see what differs from each setup, or \
-                         restore NAME to put one back.";
+const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
+                         say), compare to see what differs from each setup, or restore NAME to \
+                         put one back.";
 
 /// What putting setup `name` back would change, from the radio's settings
-/// now and the setup as the Engine keeps it.
+/// now and the setup as it is kept.
 fn restore_plan(
     now: &Record,
     kept: &KeptRadio,
@@ -436,8 +437,27 @@ fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String
     lines.join("\n")
 }
 
+/// Starts reading the operator's commands. Setups are kept on the Engine
+/// when there is one, otherwise on this computer, so keep and restore work
+/// with no network (Principle V).
+fn start_console(
+    shared: &Arc<Shared>,
+    uplink: Option<Uplink>,
+    serial: String,
+    definition: Definition,
+) {
+    let setups: Box<dyn Setups> = match uplink {
+        Some(uplink) => Box::new(uplink),
+        None => Box::new(crate::setups::Local::new(records_folder())),
+    };
+    println!("Setups: kept {}.", setups.place());
+    let shared = Arc::clone(shared);
+    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition));
+    println!("{TYPE_HELP}");
+}
+
 /// Reads the operator's commands from the console until it closes.
-fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definition) {
+fn console(shared: &Shared, setups: &dyn Setups, serial: &str, definition: &Definition) {
     let read = || {
         shared.settings(|radio| {
             settings_record::read(
@@ -465,9 +485,9 @@ fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definiti
             Ok(Typed::Nothing) => continue,
             Ok(Typed::Yes) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
-                match read().map_err(SendError::Unreachable).and_then(|now| {
-                    uplink
-                        .radio_settings(&now.maker, &now.model, serial)
+                match read().and_then(|now| {
+                    setups
+                        .kept(&now.maker, &now.model, serial)
                         .map(|kept| restore_plan(&now, &kept, &name, definition))
                 }) {
                     Ok(Ok(plan)) => {
@@ -488,18 +508,19 @@ fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definiti
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
             Ok(Typed::Keep(name)) => match read() {
-                Ok(record) => match uplink.keep_reading(&record, Some(&name)) {
-                    Ok(_) => format!(
-                        "kept the radio's settings on the Engine as setup {name} ({} settings)",
+                Ok(record) => match setups.keep(&record, &name) {
+                    Ok(()) => format!(
+                        "kept the radio's settings {} as setup {name} ({} settings)",
+                        setups.place(),
                         record.settings.len()
                     ),
                     Err(error) => format!("setup {name} not kept: {error}"),
                 },
                 Err(why) => format!("setup {name} not kept: {why}"),
             },
-            Ok(Typed::Compare) => match read().map_err(SendError::Unreachable).and_then(|now| {
-                uplink
-                    .radio_settings(&now.maker, &now.model, serial)
+            Ok(Typed::Compare) => match read().and_then(|now| {
+                setups
+                    .kept(&now.maker, &now.model, serial)
                     .map(|kept| compared_all(&kept, &now, definition))
             }) {
                 Ok(lines) => lines.join("\n"),
@@ -674,10 +695,8 @@ pub fn run(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
-    if let (Some(uplink), Some(serial)) = (uplink, found.serial.clone()) {
-        let shared = Arc::clone(&shared);
-        std::thread::spawn(move || console(&shared, &uplink, &serial, &definition));
-        println!("{TYPE_HELP}");
+    if let Some(serial) = found.serial.clone() {
+        start_console(&shared, uplink, serial, definition);
     }
     println!("Ctrl-C stops.");
     #[cfg(windows)]
@@ -728,6 +747,64 @@ pub fn run(
     #[cfg(windows)]
     drop(station);
     println!("stopped");
+    Ok(())
+}
+
+/// `check-writes`: finds the radio, and once the operator says yes, writes
+/// each setting the Agent may change back to its own value and says which
+/// the radio took. Nothing on the radio changes (Principle X).
+///
+/// # Errors
+///
+/// The radio isn't found, or the console can't be read.
+pub fn check_writes(port: Option<&str>) -> Result<(), String> {
+    let running = AtomicBool::new(true);
+    let mut found = find(port, &running)?;
+    let definition = found.radio.definition().clone();
+    let changeable = definition.settings.iter().filter(|s| s.write).count();
+    println!(
+        "Found: {} {} on {}{}.",
+        definition.maker,
+        definition.model,
+        found.port,
+        found
+            .serial
+            .as_deref()
+            .map(|serial| format!(" (USB serial {serial})"))
+            .unwrap_or_default()
+    );
+    println!(
+        "This writes each of {changeable} settings back to the value the radio has for it, \
+         and reads it again, to find out which the Agent can set. The radio should end as it \
+         began. Don't transmit while it runs.\n-> Type yes to start; anything else stops."
+    );
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("can't read the console: {error}"))?;
+    if !answer.trim().eq_ignore_ascii_case("yes") {
+        println!("Stopped; nothing was written.");
+        return Ok(());
+    }
+    let report = crate::write_check::check(
+        &mut found.radio,
+        found.serial.as_deref(),
+        std::time::SystemTime::now(),
+        &settings_record::computer_name(),
+        |done, of| {
+            if done % 25 == 0 || done == of {
+                println!("  {done} of {of}");
+            }
+        },
+    );
+    for line in report.lines() {
+        println!("{line}");
+    }
+    let path = crate::write_check::path_for(&records_folder(), &report);
+    match settings_record::save(&path, &report) {
+        Ok(()) => println!("Report kept in {}", path.display()),
+        Err(error) => println!("The report wasn't kept: {error}"),
+    }
     Ok(())
 }
 
@@ -909,8 +986,13 @@ mod tests {
         let plan =
             restore_plan(&now, &two, "ssb", ic_7300).unwrap_or_else(|why| unreachable!("{why}"));
         assert_eq!(plan.setup, "SSB", "found whatever its case");
-        assert_eq!(plan.kept_back.len(), 1, "the attenuator isn't verified");
-        assert!(plan.put.is_empty());
+        assert!(plan.kept_back.is_empty(), "{plan:?}");
+        assert_eq!(
+            plan.put.len(),
+            1,
+            "the attenuator was checked on a real radio"
+        );
+        assert_eq!(plan.put[0].to, [0x00, 0x20]);
         assert_eq!(
             restore_plan(&now, &two, "RTTY", ic_7300).err().as_deref(),
             Some("no setup RTTY for this radio; it has FT8, SSB")

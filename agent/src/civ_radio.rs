@@ -283,6 +283,7 @@ impl<P: Port> CivRadio<P> {
     fn read_one(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
         let ask = match (setting.item(), setting.read.as_slice()) {
             (Some(item), _) => return self.read_setting(item),
+            (None, [0x04]) => Ask::Mode,
             (None, [0x11]) => Ask::Attenuator,
             (None, [a, b]) => Ask::Control([*a, *b]),
             (None, other) => {
@@ -303,6 +304,33 @@ impl<P: Port> CivRadio<P> {
                 civ::hex(&other)
             ))),
         }
+    }
+
+    /// Reads one setting, writes exactly the bytes it just read back to it,
+    /// and reads it again: a test of the command that sets it which changes
+    /// nothing on the radio, since nothing remembered is written
+    /// (Principle X). Only for a setting the Agent may ever change.
+    ///
+    /// # Errors
+    ///
+    /// The setting is one the Agent never changes, or couldn't be read
+    /// before the write.
+    pub fn write_back(&mut self, setting: &SettingSummary) -> Result<WriteBack, RadioError> {
+        if !setting.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                setting.label
+            )));
+        }
+        let before = self.read_one(setting)?;
+        let command = set_command(setting, &before)?;
+        let written = self.command(&command);
+        let after = self.read_one(setting);
+        Ok(WriteBack {
+            before,
+            written: written.map_err(|error| error.to_string()),
+            after: after.map_err(|error| error.to_string()),
+        })
     }
 
     /// Asks one question and returns the radio's answer.
@@ -451,34 +479,62 @@ impl<P: Port> Exposes for CivRadio<P> {
                 setting.label
             )));
         }
-        if !setting.verified {
+        if !setting.write_checked {
             return Err(RadioError(format!(
-                "{} isn't verified on a real radio yet, so the Agent doesn't write it",
+                "{} isn't checked on a real radio yet, so the Agent doesn't write it",
                 setting.label
             )));
         }
-        if bytes.is_empty() || bytes.len() > MAX_SETTING_BYTES {
-            return Err(RadioError(format!(
-                "{} is not a value for {}",
-                civ::hex(bytes),
-                setting.label
-            )));
-        }
-        // A setting is set by the command that reads it, with the value
-        // after it.
-        let command = match (setting.item(), setting.read.as_slice()) {
-            (Some(item), _) => Ask::Setting(item).payload(),
-            (None, [0x11]) => Ask::Attenuator.payload(),
-            (None, [a, b]) => Ask::Control([*a, *b]).payload(),
-            (None, other) => {
-                return Err(RadioError(format!(
-                    "{} is not a command settings are set with",
-                    civ::hex(other)
-                )));
-            }
-        };
-        self.command(&[command.as_slice(), bytes].concat())
+        let command = set_command(setting, bytes)?;
+        self.command(&command)
     }
+}
+
+/// What became of writing a setting's own value back to it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WriteBack {
+    /// The bytes the radio had, and was sent back.
+    pub before: Vec<u8>,
+    /// Whether the radio took the write (FB), or why not.
+    pub written: Result<(), String>,
+    /// What the radio had after, or why it couldn't be read.
+    pub after: Result<Vec<u8>, String>,
+}
+
+impl WriteBack {
+    /// Whether the radio took its own value and still has it: the command
+    /// that sets the setting works.
+    #[must_use]
+    pub fn works(&self) -> bool {
+        self.written.is_ok() && self.after.as_ref().is_ok_and(|after| *after == self.before)
+    }
+}
+
+/// The command that sets `setting` to `bytes`: the command that reads it,
+/// with the value after it.
+fn set_command(setting: &SettingSummary, bytes: &[u8]) -> Result<Vec<u8>, RadioError> {
+    if bytes.is_empty() || bytes.len() > MAX_SETTING_BYTES {
+        return Err(RadioError(format!(
+            "{} is not a value for {}",
+            civ::hex(bytes),
+            setting.label
+        )));
+    }
+    let command = match (setting.item(), setting.read.as_slice()) {
+        (Some(item), _) => Ask::Setting(item).payload(),
+        // The mode and filter are read with 04 and set with 06, the same
+        // two bytes after it (Icom CI-V reference, commands 04 and 06).
+        (None, [0x04]) => vec![0x06],
+        (None, [0x11]) => Ask::Attenuator.payload(),
+        (None, [a, b]) => Ask::Control([*a, *b]).payload(),
+        (None, other) => {
+            return Err(RadioError(format!(
+                "{} is not a command settings are set with",
+                civ::hex(other)
+            )));
+        }
+    };
+    Ok([command.as_slice(), bytes].concat())
 }
 
 impl<P: Port> Radio for CivRadio<P> {
