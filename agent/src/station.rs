@@ -335,6 +335,8 @@ enum Typed {
     Compare,
     /// Read the settings whose name is or holds this, and say what they are.
     Show(String),
+    /// Offer again to fix what stops a job working.
+    Fix,
     /// Show what putting this setup back would change, and wait for a yes.
     Restore(String),
     /// Yes: go ahead with the restore just shown.
@@ -359,6 +361,7 @@ fn typed(line: &str) -> Result<Typed, String> {
             Ok(Typed::Keep(name.to_owned()))
         }
         ("compare", "") => Ok(Typed::Compare),
+        ("fix", "") => Ok(Typed::Fix),
         ("show", "") => Err("show needs a setting's name, like show DATA MOD".to_owned()),
         ("show", name) => Ok(Typed::Show(name.to_owned())),
         ("restore", "") => Err("restore needs a setup name, like restore FT8".to_owned()),
@@ -375,7 +378,8 @@ fn typed(line: &str) -> Result<Typed, String> {
 /// What can be typed at the Agent's console.
 const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
                          say), compare to see what differs from each setup, restore NAME to put \
-                         one back, or show NAME to read a setting (show DATA MOD, say).";
+                         one back, show NAME to read a setting (show DATA MOD, say), or fix to \
+                         fix what stops a job working.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -476,6 +480,12 @@ fn offer_fixes(record: &Record, definition: &Definition) -> Option<crate::restor
     if plan.put.is_empty() {
         return None;
     }
+    println!("{}", fix_offer(&plan));
+    Some(plan)
+}
+
+/// What the Agent can fix, and how to say yes.
+fn fix_offer(plan: &crate::restore::Plan) -> String {
     let mut lines = vec!["Radio settings: the Agent can fix what stops a job working.".to_owned()];
     lines.extend(plan.lines().into_iter().map(|line| format!("  {line}")));
     if plan.put.iter().any(|put| !put.setting.verified) {
@@ -489,8 +499,7 @@ fn offer_fixes(record: &Record, definition: &Definition) -> Option<crate::restor
         "-> Type yes to set {}; anything else leaves the radio as it is.",
         if plan.put.len() == 1 { "it" } else { "them" }
     ));
-    println!("{}", lines.join("\n"));
-    Some(plan)
+    lines.join("\n")
 }
 
 /// The most settings `show` reads at once.
@@ -613,6 +622,26 @@ fn console(
             }
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
             Ok(Typed::Show(name)) => show(shared, definition, &name),
+            Ok(Typed::Fix) => match read() {
+                Ok(now) => {
+                    let plan = crate::restore::fixes(&now, definition);
+                    if plan.put.is_empty() {
+                        let mut lines =
+                            vec!["nothing the Agent can set stops a job working.".to_owned()];
+                        lines.extend(
+                            plan.kept_back
+                                .iter()
+                                .map(|kept| format!("  {}: {}", kept.label, kept.why)),
+                        );
+                        lines.join("\n")
+                    } else {
+                        let offer = fix_offer(&plan);
+                        waiting = Some(plan);
+                        offer
+                    }
+                }
+                Err(why) => format!("not checked: {why}"),
+            },
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
             Ok(Typed::Keep(name)) => match read() {
                 Ok(record) => match setups.keep(&record, &name) {
@@ -1021,6 +1050,8 @@ mod tests {
             Ok(Typed::Show("data mod".to_owned()))
         );
         assert!(typed("show").is_err());
+        assert_eq!(typed("FIX"), Ok(Typed::Fix));
+        assert!(typed("fix now").is_err());
         let definition = rigdef::built_in()
             .ok()
             .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
