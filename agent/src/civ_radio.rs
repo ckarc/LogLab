@@ -32,8 +32,8 @@ use std::time::{Duration, Instant};
 use crate::civ::{self, Decoder, Frame, NG, OK};
 use crate::civ_pretend::PretendCiv;
 use crate::rig::{
-    ControlPath, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading,
-    Tunable, Tuning, Vfo,
+    ControlPath, Exposes, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity,
+    Reading, Tunable, Tuning, Vfo,
 };
 use crate::rigdef::{Definition, SettingSummary};
 
@@ -278,7 +278,7 @@ impl<P: Port> CivRadio<P> {
     /// # Errors
     ///
     /// The radio refused, didn't answer, or answered about something else.
-    pub fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+    fn read_one(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
         let ask = match (setting.item(), setting.read.as_slice()) {
             (Some(item), _) => return self.read_setting(item),
             (None, [0x11]) => Ask::Attenuator,
@@ -433,9 +433,23 @@ impl<P: Port> Keyable for CivRadio<P> {
     }
 }
 
+impl<P: Port> Exposes for CivRadio<P> {
+    fn definition(&self) -> &Definition {
+        &self.definition
+    }
+
+    fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        self.read_one(setting)
+    }
+}
+
 impl<P: Port> Radio for CivRadio<P> {
     fn identity(&self) -> &RadioIdentity {
         &self.identity
+    }
+
+    fn exposes(&mut self) -> Option<&mut dyn Exposes> {
+        Some(self)
     }
 
     fn read(&mut self) -> Result<Reading, RadioError> {

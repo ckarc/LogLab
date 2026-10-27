@@ -30,7 +30,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 use crate::civ;
-use crate::civ_radio::{CivRadio, Port};
+use crate::rig::Exposes;
 use crate::rigdef::{Definition, SettingSummary};
 
 /// The largest record file the Agent will read back.
@@ -176,8 +176,8 @@ pub struct Change {
 
 /// Reads every setting the radio's definition lists. `serial` is the
 /// radio's serial number, if the Agent knows it.
-pub fn read<P: Port>(
-    radio: &mut CivRadio<P>,
+pub fn read(
+    radio: &mut dyn Exposes,
     serial: Option<&str>,
     now: SystemTime,
     computer: &str,
@@ -300,6 +300,45 @@ pub fn changes(as_received: &Record, now: &Record) -> Vec<Change> {
             })
         })
         .collect()
+}
+
+/// The settings where `now` differs from `kept`, a reading kept elsewhere
+/// (on the Engine, say) as each setting's id, label and bytes. Each value is
+/// shown in plain words where the definition says what its bytes mean.
+#[must_use]
+pub fn differences<'a>(
+    kept: impl IntoIterator<Item = (&'a str, &'a str, Option<&'a str>)>,
+    now: &Record,
+    definition: &Definition,
+) -> Vec<Change> {
+    kept.into_iter()
+        .filter_map(|(id, label, bytes)| {
+            let entry = now.settings.iter().find(|e| e.id == id)?;
+            (entry.bytes.as_deref() != bytes).then(|| Change {
+                label: label.to_owned(),
+                before: shown(definition, id, bytes),
+                after: entry.text(),
+            })
+        })
+        .collect()
+}
+
+/// A setting's bytes, as hex pairs, in plain words.
+fn shown(definition: &Definition, id: &str, bytes: Option<&str>) -> String {
+    let Some(text) = bytes else {
+        return "not read".to_owned();
+    };
+    let parsed: Option<Vec<u8>> = text
+        .split_whitespace()
+        .map(|pair| u8::from_str_radix(pair, 16).ok())
+        .collect();
+    match (definition.settings.iter().find(|s| s.id == id), parsed) {
+        (Some(setting), Some(parsed)) if !setting.raw => match decode(setting, &parsed) {
+            Value::Unread { .. } => text.to_owned(),
+            value => value.text(),
+        },
+        _ => text.to_owned(),
+    }
 }
 
 /// The file a radio's record lives in, under `dir`: by its serial number
@@ -503,7 +542,9 @@ pub fn computer_name() -> String {
 mod tests {
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use super::{Value, changes, findings, load, path_for, read, report, save, utc_text};
+    use super::{
+        Value, changes, differences, findings, load, path_for, read, report, save, utc_text,
+    };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::rigdef::{self, Definition};
@@ -632,6 +673,55 @@ mod tests {
             (changed[0].before.as_str(), changed[0].after.as_str()),
             ("00", "00 20")
         );
+    }
+
+    #[test]
+    fn differences_from_a_kept_reading_are_by_bytes_in_plain_words() {
+        let definition = ic_7300();
+        let mut radio = radio();
+        let kept = read(&mut radio, Some("IC-7300_02065962"), at(0), "FL1");
+        let named = definition
+            .settings
+            .iter()
+            .find(|s| s.item().is_some() && s.values.as_ref().is_some_and(|v| v.len() > 1))
+            .unwrap_or_else(|| unreachable!("the IC-7300 has a menu item with named values"));
+        let before = kept
+            .settings
+            .iter()
+            .find(|e| e.id == named.id)
+            .unwrap_or_else(|| unreachable!("every setting is read"))
+            .clone();
+        let other = named
+            .values
+            .iter()
+            .flatten()
+            .map(|(_, code)| *code)
+            .find(|code| before.bytes != Some(format!("{code:02X}")))
+            .unwrap_or_else(|| unreachable!("it has another value"));
+        assert!(radio.port_mut().radio().set(&named.read, u16::from(other)));
+        assert!(radio.port_mut().radio().set(&[0x11], 0x0020), "ATT on");
+        let now = read(&mut radio, Some("IC-7300_02065962"), at(60), "FL2");
+        let as_kept = kept
+            .settings
+            .iter()
+            .map(|e| (e.id.as_str(), e.label.as_str(), e.bytes.as_deref()));
+        let differ = differences(as_kept, &now, &definition);
+        assert_eq!(differ.len(), 2, "{differ:?}");
+        let item = differ
+            .iter()
+            .find(|c| c.label == named.label)
+            .unwrap_or_else(|| unreachable!("{differ:?}"));
+        assert_eq!(item.before, before.value.text(), "shown in words");
+        assert_ne!(item.before, item.after);
+        let att = differ
+            .iter()
+            .find(|c| c.label == "Attenuator (ATT)")
+            .unwrap_or_else(|| unreachable!("{differ:?}"));
+        assert_eq!((att.before.as_str(), att.after.as_str()), ("00", "00 20"));
+        let unknown = [("no_such", "No such", Some("01"))];
+        assert!(differences(unknown, &now, &definition).is_empty());
+        let unread = [(named.id.as_str(), named.label.as_str(), None)];
+        assert_eq!(differences(unread, &now, &definition)[0].before, "not read");
     }
 
     #[test]

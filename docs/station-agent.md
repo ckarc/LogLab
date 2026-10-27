@@ -141,6 +141,8 @@ check every file in `agent/rigs/`, so a broken definition cannot be merged
 ```sh
 loglab-agent station                 # finds the radio by itself
 loglab-agent station --civ COM5      # or names its port
+loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
+                                     # and keeps its settings on the Engine
 ```
 
 `station` does everything programs on this computer need to use the radio:
@@ -149,6 +151,16 @@ loglab-agent station --civ COM5      # or names its port
    radio it knows (an IC-7300's Silicon Labs CP210x bridge, 10C4:EA60, with a
    USB serial number like `IC-7300_02065962` tried first), and takes the one
    whose radio answers "who are you?", at whatever speed it answers at.
+   If the radio is plugged in but Windows has no driver for its USB serial
+   bridge (the IC-7300's Silicon Labs CP210x has none built in), the Agent
+   gets it: from the copy in `drivers` beside the Agent or in Downloads,
+   else from Silicon Labs with Windows' own `curl.exe`, else by opening
+   Silicon Labs' download page in your browser and waiting for the file to
+   arrive in Downloads. It unpacks it and installs it; Windows asks once
+   whether to allow that. It keeps the file in `drivers`, so copying that
+   folder to the next computer lets it install with no internet. (The
+   driver's license allows that copy, not shipping the driver with the
+   Agent.)
 2. **Reads all the radio's settings** (259 on the IC-7300) and keeps the
    first reading of each radio, by its serial number, as its as-received
    record in `records` beside the Agent. On later starts it lists what has
@@ -174,6 +186,9 @@ loglab-agent station --civ COM5      # or names its port
    rules (below). After each transmission it shows how loud the program's
    transmit audio was, or that it was silent and which device the program
    should play into.
+6. **Keeps the radio's settings on the Engine** (with `--engine` and
+   `--key-file`), so every computer the radio is plugged into knows them.
+   See "Setups kept on the Engine" below.
 
 Starting `station` is the operator's choice that programs on this computer
 may key the radio (Principle IX).
@@ -358,6 +373,35 @@ words. For example, with DATA MOD on MIC, WSJT-X and VARA would transmit
 silence. It never changes a setting: nothing in the definition is verified on
 a radio yet. Records are JSON files, one per radio, written whole and renamed
 into place.
+
+### Setups kept on the Engine
+
+With `--engine URL --key-file FILE`, `station` also keeps the radio's
+settings on the Engine, by the radio's maker, model and USB serial number,
+so it doesn't matter which FieldLab computer the radio is plugged into:
+
+- It sends the radio's as-received record. The Engine keeps the first one
+  any computer sends for that radio and never replaces it.
+- It lists, for each **setup** kept for the radio, every setting where the
+  radio differs, in plain words where the definition says what the bytes
+  mean.
+- Once the radio is set up for a job, type `keep FT8` (any name up to 40
+  characters) in the Agent's window. It reads every setting again and keeps
+  them on the Engine as setup FT8, with who was signed in at the station.
+  Keeping a name again keeps a newer version; the Engine keeps the old one
+  too. `compare` reads the radio again and lists what differs from each
+  setup. `help` says this.
+
+It only reads. Nothing is put back on the radio: that comes with verified
+settings, and then only when the operator asks and confirms (Principle X).
+Reading every setting takes a moment, and is refused while a program has the
+radio keyed. The radio's serial number comes with its USB serial port, so
+this needs the Agent to find the port itself (no `--civ`).
+
+The station needs a key, as for `run`: an administrator makes one with
+`lablog-operator agent-key STATION --write FILE`, or add `--station NAME`
+and the Agent asks to join, as `run` does. `startup on` doesn't pass
+`--engine` yet.
 
 ## Watching CI-V
 

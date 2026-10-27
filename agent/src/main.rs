@@ -23,6 +23,8 @@ mod civ_demo;
 mod civ_pretend;
 mod civ_radio;
 mod civ_serial;
+#[cfg(any(windows, test))]
+mod driver;
 mod engine;
 mod flex;
 mod hamlib;
@@ -96,6 +98,7 @@ Usage:
                                        once (--tx-limit, up to 600); both
                                        --civ or --civ-pretend only
   loglab-agent station [--civ PORT] [--listen 127.0.0.1:4532] [--tx-limit SECONDS]
+                    [--engine URL --key-file FILE [--station NAME]]
                                        everything programs on this computer
                                        need to use the radio: finds it and
                                        its port, checks its settings, carries
@@ -103,7 +106,10 @@ Usage:
                                        VARA's sound devices, and lets
                                        programs like VarAC and WSJT-X tune
                                        and key it (as serve --allow-transmit)
-                                       (it waits for the radio if it is off)
+                                       (it waits for the radio if it is off);
+                                       with --engine, keeps the radio's
+                                       settings there for every computer:
+                                       type keep NAME to keep a setup
   loglab-agent startup on|off|status   whether Windows runs `station` each
                                        time you sign in
   loglab-agent audio-devices           list this computer's sound devices
@@ -195,6 +201,10 @@ enum Command {
         port: Option<String>,
         listen: SocketAddr,
         limit: Duration,
+        /// The Engine's address, the station key's file, and the station to
+        /// ask to join as if it has no key, to keep the radio's settings
+        /// there.
+        engine: Option<(String, String, Option<String>)>,
     },
     Startup(String),
     Run {
@@ -366,6 +376,9 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
     let mut listen = SocketAddr::from(([127, 0, 0, 1], 4532));
     let mut limit = TX_LIMIT;
+    let mut engine = None;
+    let mut key_file = None;
+    let mut station = None;
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
         let value = words
@@ -380,13 +393,27 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
                 })?;
             }
             "--tx-limit" => limit = tx_limit(number(flag, &value)?)?,
+            "--engine" => engine = Some(value),
+            "--key-file" => key_file = Some(value),
+            "--station" => station = Some(value),
             _ => return Err(format!("unknown option {flag:?} for station")),
         }
     }
+    let engine = match (engine, key_file, station) {
+        (Some(engine), Some(key_file), station) => Some((engine, key_file, station)),
+        (None, None, None) => None,
+        _ => {
+            return Err(
+                "station takes --engine and --key-file together, and --station only with them"
+                    .to_owned(),
+            );
+        }
+    };
     Ok(Command::Station {
         port,
         listen,
         limit,
+        engine,
     })
 }
 
@@ -1190,7 +1217,15 @@ fn main() -> ExitCode {
             port,
             listen,
             limit,
-        }) => station::run(port.as_deref(), listen, limit),
+            engine,
+        }) => station::run(
+            port.as_deref(),
+            listen,
+            limit,
+            engine.as_ref().map(|(engine, key_file, station)| {
+                (engine.as_str(), key_file.as_str(), station.as_deref())
+            }),
+        ),
         Ok(Command::Startup(what)) => station::startup(&what),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
@@ -1420,6 +1455,7 @@ mod tests {
                 port: None,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
+                engine: None,
             })
         );
         assert_eq!(
@@ -1430,6 +1466,22 @@ mod tests {
                 port: Some("COM5".to_owned()),
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
+                engine: None,
+            })
+        );
+        assert_eq!(
+            parse(&args(
+                "station --engine http://192.168.1.10:8073 --key-file station.key"
+            )),
+            Ok(Command::Station {
+                port: None,
+                listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+                limit: Duration::from_mins(1),
+                engine: Some((
+                    "http://192.168.1.10:8073".to_owned(),
+                    "station.key".to_owned(),
+                    None
+                )),
             })
         );
         assert_eq!(
@@ -1441,6 +1493,9 @@ mod tests {
         for refused in [
             "station --tx-limit 0",
             "station --tx-limit 601",
+            "station --engine http://x",
+            "station --key-file k",
+            "station --station fieldlab-1",
             "station --listen nowhere",
             "station --civ",
             "station --pretend",
