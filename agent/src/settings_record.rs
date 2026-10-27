@@ -608,7 +608,7 @@ mod tests {
             (record.maker.as_str(), record.model.as_str()),
             ("Icom", "IC-7300")
         );
-        assert_eq!(record.settings.len(), 216 + 43);
+        assert_eq!(record.settings.len(), 216 + 44);
         let value = |id: &str| {
             record
                 .settings
@@ -894,7 +894,7 @@ mod tests {
             text.contains("111 (of 0 to 223)"),
             "an address range is not a percentage: {text}"
         );
-        assert!(text.contains("259 settings read, 0 not read."), "{text}");
+        assert!(text.contains("260 settings read, 0 not read."), "{text}");
         assert!(
             text.contains("digital_modes won't work: DATA MOD is MIC (00h)."),
             "{text}"

@@ -110,13 +110,22 @@ pub fn plan<'a>(
     now: &Record,
     definition: &Definition,
 ) -> Plan {
+    let kept: Vec<(&str, &str, Option<&str>)> = kept.into_iter().collect();
+    let selection = selection(&kept, now, definition);
     let mut put = Vec::new();
     let mut kept_back = Vec::new();
-    for (id, label, bytes) in kept {
+    for &(id, label, bytes) in &kept {
         let Some(entry) = now.settings.iter().find(|e| e.id == id) else {
             continue;
         };
-        if entry.bytes.as_deref() == bytes {
+        let setting = definition.settings.iter().find(|s| s.id == id);
+        let per_selection = setting.is_some_and(|s| s.per_selection);
+        // A setting of the selected mode or filter is read again once the
+        // mode and filter are back, so it is put back even if it matches
+        // now: what matches now belongs to another filter.
+        let moved = per_selection && selection == Selection::PutBack;
+        // A clock always differs and is never put back: not worth a line.
+        if (entry.bytes.as_deref() == bytes && !moved) || setting.is_some_and(|s| s.moves) {
             continue;
         }
         let back = |why: &str| KeptBack {
@@ -143,6 +152,23 @@ pub fn plan<'a>(
             )));
             continue;
         }
+        if per_selection {
+            let why = match selection {
+                Selection::Unknown => Some(
+                    "the setup doesn't say which mode and filter it was kept on, so it would \
+                     land on whichever one the radio is on now; keep the setup again",
+                ),
+                Selection::Stuck => Some(
+                    "the radio is on a different mode or filter than the setup, and the Agent \
+                     can't put that back, so it would land on the wrong one",
+                ),
+                Selection::Same | Selection::PutBack => None,
+            };
+            if let Some(why) = why {
+                kept_back.push(back(why));
+                continue;
+            }
+        }
         if entry.bytes.is_none() {
             kept_back.push(back("the radio wouldn't say what it has now"));
             continue;
@@ -154,15 +180,66 @@ pub fn plan<'a>(
         put.push(Put {
             setting: setting.clone(),
             to,
-            now: entry.text(),
+            now: if moved {
+                "read again once the mode and filter are back".to_owned()
+            } else {
+                entry.text()
+            },
             setup: settings_record::shown(definition, id, Some(bytes)),
         });
     }
+    // What chooses the mode and filter goes first, in the definition's
+    // order; everything else after.
+    put.sort_by_key(|put| !put.setting.selects);
     Plan {
         setup: setup.to_owned(),
         put,
         kept_back,
     }
+}
+
+/// Whether the radio is on the setup's mode and filter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Selection {
+    /// It is, or the definition has nothing that chooses them.
+    Same,
+    /// It isn't, and the Agent can put them back first.
+    PutBack,
+    /// It isn't, and the Agent can't put them back.
+    Stuck,
+    /// The setup doesn't say.
+    Unknown,
+}
+
+fn selection(
+    kept: &[(&str, &str, Option<&str>)],
+    now: &Record,
+    definition: &Definition,
+) -> Selection {
+    let mut result = Selection::Same;
+    for setting in definition.settings.iter().filter(|s| s.selects) {
+        let Some(bytes) = kept
+            .iter()
+            .find(|(id, _, _)| *id == setting.id)
+            .and_then(|(_, _, bytes)| *bytes)
+        else {
+            return Selection::Unknown;
+        };
+        let now = now
+            .settings
+            .iter()
+            .find(|e| e.id == setting.id)
+            .and_then(|e| e.bytes.as_deref());
+        if now == Some(bytes) {
+            continue;
+        }
+        if setting.write && setting.write_checked && now.is_some() && parse_hex(bytes).is_some() {
+            result = Selection::PutBack;
+        } else {
+            return Selection::Stuck;
+        }
+    }
+    result
 }
 
 /// Bytes written as hex pairs, `00 20`.
@@ -191,8 +268,9 @@ pub struct Done {
     pub to: String,
     /// The bytes the radio has after, if it said: the truth (Principle X).
     pub after: Option<String>,
-    /// `put back`, `refused` (the radio said no), or `differs` (the radio
-    /// took it but has something else now).
+    /// `put back`, `refused` (the radio said no), `differs` (the radio
+    /// took it but has something else now), or `not written` (the mode and
+    /// filter it belongs to didn't go back).
     pub outcome: &'static str,
     /// What went wrong, if anything.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -263,36 +341,47 @@ pub fn apply(
     computer: &str,
 ) -> Restore {
     let definition = radio.definition().clone();
-    let changes = plan
-        .put
-        .iter()
-        .map(|put| {
-            let from = radio.read_exposed(&put.setting).ok();
-            let written = radio.write_exposed(&put.setting, &put.to);
-            let after = radio.read_exposed(&put.setting).ok();
-            let (outcome, why) = match (&written, &after) {
-                (Err(error), _) => ("refused", Some(error.to_string())),
-                (Ok(()), Some(after)) if *after == put.to => ("put back", None),
-                (Ok(()), Some(after)) => (
-                    "differs",
-                    Some(format!("the radio has {} now", civ::hex(after))),
-                ),
-                (Ok(()), None) => (
-                    "differs",
-                    Some("the radio took it but wouldn't say what it has now".to_owned()),
-                ),
-            };
-            Done {
+    let mut changes: Vec<Done> = Vec::new();
+    for put in &plan.put {
+        let selector_failed = changes
+            .iter()
+            .zip(&plan.put)
+            .any(|(done, put)| put.setting.selects && done.outcome != "put back");
+        if put.setting.per_selection && selector_failed {
+            changes.push(Done {
                 id: put.setting.id.clone(),
                 label: put.setting.label.clone(),
-                from: from.as_deref().map(civ::hex),
+                from: None,
                 to: civ::hex(&put.to),
-                after: after.as_deref().map(civ::hex),
-                outcome,
-                why,
-            }
-        })
-        .collect();
+                after: None,
+                outcome: "not written",
+                why: Some(
+                    "the mode and filter didn't go back, so it would land on the wrong one"
+                        .to_owned(),
+                ),
+            });
+        } else if put.setting.selects {
+            // The mode and filter must be right before anything that
+            // belongs to them, so a second try is made at once.
+            let first = put_one(radio, put);
+            changes.push(if first.outcome == "differs" {
+                second_try(radio, put, first)
+            } else {
+                first
+            });
+        } else {
+            changes.push(put_one(radio, put));
+        }
+    }
+    // One setting can depend on another, as the IC-7300's Twin PBT did on
+    // the filter width at FieldLab: written first, it lands on a different
+    // step. So each one the radio took but that came out different is
+    // written once more, after all the others.
+    for (put, done) in plan.put.iter().zip(changes.iter_mut()) {
+        if done.outcome == "differs" && !put.setting.selects {
+            *done = second_try(radio, put, done.clone());
+        }
+    }
     Restore {
         format: 1,
         maker: definition.maker.clone(),
@@ -302,6 +391,49 @@ pub fn apply(
         started_utc: settings_record::utc_text(now),
         computer: computer.to_owned(),
         changes,
+    }
+}
+
+/// Writes a setting that came out different once more. Keeps the first
+/// try's record if the second doesn't work either.
+fn second_try(radio: &mut dyn Exposes, put: &Put, first: Done) -> Done {
+    let again = put_one(radio, put);
+    if again.outcome == "put back" {
+        Done {
+            from: first.from,
+            why: Some("on a second try".to_owned()),
+            ..again
+        }
+    } else {
+        first
+    }
+}
+
+/// Writes one setting and reads it back.
+fn put_one(radio: &mut dyn Exposes, put: &Put) -> Done {
+    let from = radio.read_exposed(&put.setting).ok();
+    let written = radio.write_exposed(&put.setting, &put.to);
+    let after = radio.read_exposed(&put.setting).ok();
+    let (outcome, why) = match (&written, &after) {
+        (Err(error), _) => ("refused", Some(error.to_string())),
+        (Ok(()), Some(after)) if *after == put.to => ("put back", None),
+        (Ok(()), Some(after)) => (
+            "differs",
+            Some(format!("the radio has {} now", civ::hex(after))),
+        ),
+        (Ok(()), None) => (
+            "differs",
+            Some("the radio took it but wouldn't say what it has now".to_owned()),
+        ),
+    };
+    Done {
+        id: put.setting.id.clone(),
+        label: put.setting.label.clone(),
+        from: from.as_deref().map(civ::hex),
+        to: civ::hex(&put.to),
+        after: after.as_deref().map(civ::hex),
+        outcome,
+        why,
     }
 }
 
@@ -516,5 +648,275 @@ mod tests {
                 "records/restore-icom-ic-7300-ic-7300-02065962-1970-01-01t00-00-00z.json"
             )
         );
+    }
+
+    /// A radio whose filter width and PBT belong to the selected mode and
+    /// filter, as the IC-7300's did in the field lab.
+    struct Slots {
+        definition: Definition,
+        mode: Vec<u8>,
+        widths: std::collections::HashMap<Vec<u8>, Vec<u8>>,
+        pbt: Vec<u8>,
+        refuse_mode: bool,
+        /// PBT lands one step off this many more times.
+        pbt_misses: u8,
+    }
+
+    impl Exposes for Slots {
+        fn definition(&self) -> &Definition {
+            &self.definition
+        }
+
+        fn read_exposed(
+            &mut self,
+            setting: &SettingSummary,
+        ) -> Result<Vec<u8>, crate::rig::RadioError> {
+            Ok(match setting.id.as_str() {
+                "mode_and_filter" => self.mode.clone(),
+                "filter_width" => self.widths.get(&self.mode).cloned().unwrap_or_default(),
+                "pbt_inner" => self.pbt.clone(),
+                _ => vec![0x00],
+            })
+        }
+
+        fn write_exposed(
+            &mut self,
+            setting: &SettingSummary,
+            bytes: &[u8],
+        ) -> Result<(), crate::rig::RadioError> {
+            match setting.id.as_str() {
+                "mode_and_filter" if self.refuse_mode => {
+                    return Err(crate::rig::RadioError("FA".to_owned()));
+                }
+                "mode_and_filter" => self.mode = bytes.to_vec(),
+                "filter_width" => {
+                    self.widths.insert(self.mode.clone(), bytes.to_vec());
+                }
+                "pbt_inner" if self.pbt_misses > 0 => {
+                    self.pbt_misses -= 1;
+                    self.pbt = vec![bytes[0], bytes[1].wrapping_sub(1)];
+                }
+                "pbt_inner" => self.pbt = bytes.to_vec(),
+                _ => {}
+            }
+            Ok(())
+        }
+    }
+
+    const FIL2: [u8; 2] = [0x01, 0x02];
+    const FIL3: [u8; 2] = [0x01, 0x03];
+
+    fn slots(definition: &Definition) -> Slots {
+        Slots {
+            definition: definition.clone(),
+            mode: FIL3.to_vec(),
+            widths: [(FIL2.to_vec(), vec![0x28]), (FIL3.to_vec(), vec![0x22])]
+                .into_iter()
+                .collect(),
+            pbt: vec![0x01, 0x28],
+            refuse_mode: false,
+            pbt_misses: 0,
+        }
+    }
+
+    /// A record of the radio's mode, filter width and PBT now.
+    fn slots_record(radio: &mut Slots) -> Record {
+        let definition = radio.definition.clone();
+        let entries = [
+            "mode_and_filter",
+            "data_mode_and_filter",
+            "filter_width",
+            "pbt_inner",
+        ]
+        .iter()
+        .map(|id| {
+            let setting = definition
+                .settings
+                .iter()
+                .find(|s| s.id == *id)
+                .unwrap_or_else(|| unreachable!("the IC-7300 has {id}"));
+            let bytes = radio
+                .read_exposed(setting)
+                .ok()
+                .map(|b| crate::civ::hex(&b));
+            settings_record::Entry {
+                id: (*id).to_owned(),
+                label: setting.label.clone(),
+                value: settings_record::Value::Raw,
+                bytes,
+            }
+        })
+        .collect();
+        Record {
+            format: 1,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            address: 0x94,
+            serial: Some(SERIAL.to_owned()),
+            read_utc: "1970-01-01T00:00:00Z".to_owned(),
+            computer: "FL1".to_owned(),
+            settings: entries,
+        }
+    }
+
+    const PER_FILTER: [&str; 4] = [
+        "mode_and_filter",
+        "data_mode_and_filter",
+        "filter_width",
+        "pbt_inner",
+    ];
+
+    #[test]
+    fn puts_the_filter_back_before_what_belongs_to_it() {
+        let definition = ic_7300(&PER_FILTER);
+        let mut radio = slots(&definition);
+        // The setup was kept on FIL2, PBT 122; the radio is on FIL3 now,
+        // whose own width is 22. FIL2's width still matches the setup.
+        radio.mode = FIL2.to_vec();
+        radio.pbt = vec![0x01, 0x22];
+        let setup = slots_record(&mut radio);
+        radio.mode = FIL3.to_vec();
+        radio.pbt = vec![0x01, 0x28];
+        let now = slots_record(&mut radio);
+
+        let plan = super::plan("TEST", kept(&setup), &now, &definition);
+        let order: Vec<&str> = plan.put.iter().map(|p| p.setting.id.as_str()).collect();
+        assert_eq!(
+            order,
+            ["mode_and_filter", "filter_width", "pbt_inner"],
+            "{plan:?}"
+        );
+        assert!(plan.kept_back.is_empty(), "{plan:?}");
+
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        assert!(
+            done.changes.iter().all(|d| d.outcome == "put back"),
+            "{done:?}"
+        );
+        assert_eq!(radio.mode, FIL2);
+        assert_eq!(radio.widths[&FIL2.to_vec()], [0x28]);
+        assert_eq!(
+            radio.widths[&FIL3.to_vec()],
+            [0x22],
+            "FIL3 is left as it was"
+        );
+        assert_eq!(radio.pbt, [0x01, 0x22]);
+    }
+
+    #[test]
+    fn writes_nothing_per_filter_when_the_filter_wont_go_back() {
+        let definition = ic_7300(&PER_FILTER);
+        let mut radio = slots(&definition);
+        radio.mode = FIL2.to_vec();
+        let setup = slots_record(&mut radio);
+        radio.mode = FIL3.to_vec();
+        let now = slots_record(&mut radio);
+        radio.refuse_mode = true;
+
+        let plan = super::plan("TEST", kept(&setup), &now, &definition);
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        let outcomes: Vec<(&str, &str)> = done
+            .changes
+            .iter()
+            .map(|d| (d.id.as_str(), d.outcome))
+            .collect();
+        assert_eq!(
+            outcomes,
+            [
+                ("mode_and_filter", "refused"),
+                ("filter_width", "not written"),
+                ("pbt_inner", "not written"),
+            ]
+        );
+        assert_eq!(radio.widths[&FIL3.to_vec()], [0x22], "FIL3 untouched");
+    }
+
+    #[test]
+    fn keeps_per_filter_settings_back_when_the_filter_is_unknown_or_unwritable() {
+        // A setup kept before the mode and filter were kept says nothing
+        // about them.
+        let definition = ic_7300(&PER_FILTER);
+        let mut radio = slots(&definition);
+        radio.mode = FIL2.to_vec();
+        let setup = slots_record(&mut radio);
+        radio.mode = FIL3.to_vec();
+        let now = slots_record(&mut radio);
+        let without_mode = kept(&setup)
+            .into_iter()
+            .filter(|(id, _, _)| *id != "mode_and_filter");
+        let plan = super::plan("TEST", without_mode, &now, &definition);
+        assert!(plan.put.is_empty(), "{plan:?}");
+        assert!(
+            plan.kept_back
+                .iter()
+                .any(|b| b.label.starts_with("IF filter width")
+                    && b.why.contains("keep the setup again")),
+            "{plan:?}"
+        );
+
+        // And when the mode and filter weren't checked on a real radio.
+        let unchecked = ic_7300(&["filter_width", "pbt_inner", "data_mode_and_filter"]);
+        let plan = super::plan("TEST", kept(&setup), &now, &unchecked);
+        assert!(plan.put.is_empty(), "{plan:?}");
+        assert!(
+            plan.kept_back
+                .iter()
+                .any(|b| b.label.starts_with("IF filter width") && b.why.contains("wrong one")),
+            "{plan:?}"
+        );
+    }
+
+    #[test]
+    fn tries_once_more_a_setting_that_lands_off() {
+        let definition = ic_7300(&PER_FILTER);
+        let mut radio = slots(&definition);
+        radio.pbt = vec![0x01, 0x22];
+        let setup = slots_record(&mut radio);
+        radio.pbt = vec![0x01, 0x28];
+        let now = slots_record(&mut radio);
+        radio.pbt_misses = 1;
+        let plan = super::plan("TEST", kept(&setup), &now, &definition);
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        assert_eq!(done.changes.len(), 1, "{done:?}");
+        assert_eq!(done.changes[0].outcome, "put back");
+        assert_eq!(done.changes[0].why.as_deref(), Some("on a second try"));
+        assert_eq!(done.changes[0].from.as_deref(), Some("01 28"));
+        assert_eq!(radio.pbt, [0x01, 0x22]);
+
+        // Twice off is said, not hidden.
+        radio.pbt = vec![0x01, 0x28];
+        radio.pbt_misses = 2;
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        assert_eq!(done.changes[0].outcome, "differs");
+    }
+
+    #[test]
+    fn sets_the_mode_and_filter_with_06() {
+        let definition = ic_7300(&PER_FILTER);
+        let mut radio = radio(&definition);
+        let setup = read(&mut radio);
+        let filter = |r: &Record| {
+            r.settings
+                .iter()
+                .find(|e| e.id == "mode_and_filter")
+                .and_then(|e| e.bytes.clone())
+        };
+        let kept_mode = filter(&setup);
+        assert!(kept_mode.is_some(), "the mode and filter are read with 04");
+        let setting = definition
+            .settings
+            .iter()
+            .find(|s| s.id == "mode_and_filter")
+            .cloned()
+            .unwrap_or_else(|| unreachable!("listed"));
+        assert!(radio.write_exposed(&setting, &[0x03, 0x02]).is_ok());
+        assert_eq!(filter(&read(&mut radio)).as_deref(), Some("03 02"));
+        let plan = super::plan("TEST", kept(&setup), &read(&mut radio), &definition);
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        assert!(
+            done.changes.iter().all(|d| d.outcome == "put back"),
+            "{done:?}"
+        );
+        assert_eq!(filter(&read(&mut radio)), kept_mode);
     }
 }

@@ -410,6 +410,18 @@ radio says afterward is what counts. It records the restore, each setting
 from what, to what, and what the radio then had, in a `restore-...json` file
 in `records`, one per restore, never overwritten.
 
+**Mode and filter first.** Some settings belong to whichever mode and filter
+the radio is on: on the IC-7300 the selected filter's width, its AGC time
+constant, the SSB TX bandwidth and Twin PBT (`per_selection` in the
+definition). A setup keeps the mode and filter (FIL1, FIL2 or FIL3, read with
+CI-V command 04), and a restore puts them back first (command 06), then reads
+those settings again and puts them back. If the mode and filter can't be put
+back, or the setup doesn't say which they were (a setup kept before this),
+those settings are left alone: written now, they would land on another filter.
+Any setting that comes out different from the setup is written once more at
+the end, since one setting can depend on another; if it still differs, the
+Agent says so.
+
 It only ever writes a setting its rig definition says may be changed and
 that a **real radio took** when `check-writes` wrote its own value back
 (`write_checked` in the definition). On the IC-7300 that is 246 of the 247

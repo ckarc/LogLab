@@ -283,6 +283,7 @@ impl<P: Port> CivRadio<P> {
     fn read_one(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
         let ask = match (setting.item(), setting.read.as_slice()) {
             (Some(item), _) => return self.read_setting(item),
+            (None, [0x04]) => Ask::Mode,
             (None, [0x11]) => Ask::Attenuator,
             (None, [a, b]) => Ask::Control([*a, *b]),
             (None, other) => {
@@ -521,6 +522,9 @@ fn set_command(setting: &SettingSummary, bytes: &[u8]) -> Result<Vec<u8>, RadioE
     }
     let command = match (setting.item(), setting.read.as_slice()) {
         (Some(item), _) => Ask::Setting(item).payload(),
+        // The mode and filter are read with 04 and set with 06, the same
+        // two bytes after it (Icom CI-V reference, commands 04 and 06).
+        (None, [0x04]) => vec![0x06],
         (None, [0x11]) => Ask::Attenuator.payload(),
         (None, [a, b]) => Ask::Control([*a, *b]).payload(),
         (None, other) => {

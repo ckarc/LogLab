@@ -18,6 +18,15 @@
 # for and confirmed, only if it has `write_checked`. `moves = true` marks a
 # setting that changes by itself (the clock): never compared, never put back.
 #
+# `selects = true` marks what chooses the mode and filter the radio is on;
+# `per_selection = true` marks a setting that belongs to the selected mode or
+# filter, such as the selected filter's width. A restore puts the mode and
+# filter back first, and writes a per_selection setting only once the radio is
+# on the setup's mode and filter: otherwise it would land on another filter, as
+# it did on FieldLab's IC-7300 on 2026-10-27 (FIL2's width written into FIL3).
+# Twin PBT is marked per_selection to be safe: it is not verified that the
+# radio keeps it per filter.
+#
 # All bytes are written in hexadecimal, as the CI-V documents write them.
 
 [definition]
@@ -39,6 +48,17 @@ note = """
 Commands 03, 04, 05, 06, 07 and 0F were not in the part of the manual read for
 this file. They are written from the common Icom CI-V command set and must be
 checked against the full manual and a radio before they are marked verified.
+"""
+
+[[definition.sources]]
+id = "icom_7300mk2_civ"
+title = "Icom IC-7300MK2 CI-V reference guide, as hosted by Northcom (northcom.se/downloadable/download/sample/sample_id/724)"
+note = """
+Commands 04 (read) and 06 (set) carry the operating mode code and then the
+filter: 01 FIL1, 02 FIL2, 03 FIL3. 1A 03 sets or reads the IF filter width of
+the selected filter (SSB/CW 10 to 40 is 600 Hz to 3.6 kHz in 100 Hz steps).
+This is the MK2's guide, not the original IC-7300's; FieldLab's IC-7300 agreed
+on step 22 being 1.8 kHz on FIL3, 2026-10-27.
 """
 
 [[definition.sources]]
@@ -2438,6 +2458,7 @@ write = true
 source = "hamlib_wfview"
 verified = false
 write_checked = "fieldlab_write_check"
+per_selection = true
 
 [[settings]]
 id = "pbt_outer"
@@ -2449,6 +2470,7 @@ write = true
 source = "hamlib_wfview"
 verified = false
 write_checked = "fieldlab_write_check"
+per_selection = true
 
 [[settings]]
 id = "cw_pitch"
@@ -2727,6 +2749,7 @@ write = true
 source = "hamlib_wfview"
 verified = false
 write_checked = "fieldlab_write_check"
+per_selection = true
 
 [[settings]]
 id = "ip_plus"
@@ -2747,6 +2770,7 @@ write = true
 source = "manual_copy"
 verified = false
 write_checked = "fieldlab_write_check"
+per_selection = true
 
 [[settings]]
 id = "agc_time_constant"
@@ -2757,6 +2781,18 @@ write = true
 source = "hamlib_wfview"
 verified = false
 write_checked = "fieldlab_write_check"
+per_selection = true
+
+[[settings]]
+id = "mode_and_filter"
+command = "04"
+label = "Operating mode and filter"
+raw = true
+write = true
+source = "icom_7300mk2_civ"
+verified = false
+selects = true
+note = "Read with 04 and set with 06: the mode code, then 01, 02 or 03 for FIL1 to FIL3."
 
 [[settings]]
 id = "data_mode_and_filter"
@@ -2767,6 +2803,7 @@ write = true
 source = "manual_copy"
 verified = false
 write_checked = "fieldlab_write_check"
+selects = true
 
 [[settings]]
 id = "repeater_tone_frequency"
