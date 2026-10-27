@@ -408,6 +408,16 @@ verified yet, so for now `restore` lists every difference as one to set by
 hand. Each setting becomes restorable as it is checked on a radio and marked
 verified in the definition.
 
+**Finding out which settings can be set.** `loglab-agent check-writes`
+(with `station` stopped, since only one program may own the radio) finds the
+radio, asks for a `yes`, then for each setting the Agent may change it reads
+the value, writes exactly that value back, and reads it again. The radio ends
+as it began: nothing remembered is written (Principle X). It reports how many
+the radio took and lists the ones it refused or changed, and keeps the
+report as a `write-check-...json` file in `records`. A setting whose own
+value the radio took is one whose command works, which is the evidence for
+marking it verified in the rig definition.
+
 Reading every setting takes a moment, and is refused while a program has the
 radio keyed. The radio's serial number comes with its USB serial port, so
 this needs the Agent to find the port itself (no `--civ`).

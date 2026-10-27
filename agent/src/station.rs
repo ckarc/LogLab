@@ -731,6 +731,64 @@ pub fn run(
     Ok(())
 }
 
+/// `check-writes`: finds the radio, and once the operator says yes, writes
+/// each setting the Agent may change back to its own value and says which
+/// the radio took. Nothing on the radio changes (Principle X).
+///
+/// # Errors
+///
+/// The radio isn't found, or the console can't be read.
+pub fn check_writes(port: Option<&str>) -> Result<(), String> {
+    let running = AtomicBool::new(true);
+    let mut found = find(port, &running)?;
+    let definition = found.radio.definition().clone();
+    let changeable = definition.settings.iter().filter(|s| s.write).count();
+    println!(
+        "Found: {} {} on {}{}.",
+        definition.maker,
+        definition.model,
+        found.port,
+        found
+            .serial
+            .as_deref()
+            .map(|serial| format!(" (USB serial {serial})"))
+            .unwrap_or_default()
+    );
+    println!(
+        "This writes each of {changeable} settings back to the value the radio has for it, \
+         and reads it again, to find out which the Agent can set. The radio should end as it \
+         began. Don't transmit while it runs.\n-> Type yes to start; anything else stops."
+    );
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|error| format!("can't read the console: {error}"))?;
+    if !answer.trim().eq_ignore_ascii_case("yes") {
+        println!("Stopped; nothing was written.");
+        return Ok(());
+    }
+    let report = crate::write_check::check(
+        &mut found.radio,
+        found.serial.as_deref(),
+        std::time::SystemTime::now(),
+        &settings_record::computer_name(),
+        |done, of| {
+            if done % 25 == 0 || done == of {
+                println!("  {done} of {of}");
+            }
+        },
+    );
+    for line in report.lines() {
+        println!("{line}");
+    }
+    let path = crate::write_check::path_for(&records_folder(), &report);
+    match settings_record::save(&path, &report) {
+        Ok(()) => println!("Report kept in {}", path.display()),
+        Err(error) => println!("The report wasn't kept: {error}"),
+    }
+    Ok(())
+}
+
 /// Where Windows keeps the programs it runs at each sign-in, for this user
 /// (Microsoft Learn, "Run and `RunOnce` Registry Keys").
 #[cfg(windows)]
