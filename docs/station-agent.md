@@ -179,8 +179,9 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    cables A+B are donationware.
 4. **Sets VARA's sound devices** to those cables in `VARA.ini`, if VARA is
    installed in `C:\VARA` or Program Files and isn't running (see the plan,
-   "The exception: VARA's sound devices"). If VARA is running, it says so and
-   leaves the file alone.
+   "The exception: VARA's sound devices"). With no transmit cable, VARA's
+   output is set to the radio's own USB sound device, so VARA plays straight
+   into the radio. If VARA is running, it says so and leaves the file alone.
 5. **Serves the radio** at `127.0.0.1:4532`, as `serve --allow-transmit`:
    programs may tune and key it, one at a time, with the same failing-safe
    rules (below). After each transmission it shows how loud the program's

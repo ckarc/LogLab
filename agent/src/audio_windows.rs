@@ -217,6 +217,9 @@ pub struct Station {
     pub transmit_cable: Option<String>,
     /// Why there is no transmit audio, if there isn't.
     pub no_transmit: Option<String>,
+    /// The name of the radio's own USB sound device's playing side: where a
+    /// program's transmit audio goes when there is no transmit cable.
+    pub radio_playing: String,
     /// Errors the sound devices report.
     pub errors: Receiver<String>,
     _streams: Vec<cpal::Stream>,
@@ -350,6 +353,7 @@ impl Station {
             transmit,
             transmit_cable,
             no_transmit,
+            radio_playing: radio_out_name,
             errors: heard,
             _streams: streams,
         })
