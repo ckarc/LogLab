@@ -211,6 +211,13 @@ struct Setting {
     write: bool,
     source: String,
     verified: bool,
+    /// The source that shows the radio takes this setting's own value
+    /// written back, such as a `check-writes` run on a real radio.
+    write_checked: Option<String>,
+    /// Whether it changes by itself, as a clock does: never compared, never
+    /// put back.
+    #[serde(default)]
+    moves: bool,
     note: Option<String>,
 }
 
@@ -301,9 +308,14 @@ pub struct SettingSummary {
     pub raw: bool,
     /// Whether the Agent may ever change it.
     pub write: bool,
-    /// Whether its command and values were checked on a real radio. The
-    /// Agent never writes a setting that wasn't.
+    /// Whether its values' meanings were checked on a real radio.
     pub verified: bool,
+    /// Whether a real radio took its own value written back with the
+    /// command that sets it. The Agent never writes a setting that wasn't
+    /// checked so.
+    pub write_checked: bool,
+    /// Whether it changes by itself, as a clock does.
+    pub moves: bool,
 }
 
 impl SettingSummary {
@@ -540,6 +552,8 @@ fn summarize(file: &File, check: &Check) -> Definition {
                 raw: s.raw,
                 write: s.write,
                 verified: s.verified,
+                write_checked: s.write_checked.is_some(),
+                moves: s.moves,
             })
             .collect(),
         requirements: file
@@ -825,6 +839,19 @@ impl Check {
         }
         self.source(&field, &setting.source);
         self.flag(setting.verified);
+        if let Some(checked) = &setting.write_checked {
+            self.source(&format!("{field} write_checked"), checked);
+            if !setting.write {
+                self.problem(format!(
+                    "{field}: write_checked goes with write = true; the Agent never writes it"
+                ));
+            }
+        }
+        if setting.moves && setting.write {
+            self.problem(format!(
+                "{field}: a setting that moves by itself is never put back, so write = false"
+            ));
+        }
         match (&setting.values, setting.range) {
             (Some(_), _) | (_, Some(_)) if setting.raw => {
                 self.problem(format!("{field}: raw means no named values and no range"));
@@ -1422,6 +1449,22 @@ explain = "Data mode audio must come from USB."
                 "source = \"guess\"\nverified = true",
             ),
             "\"guess\"",
+        );
+    }
+
+    #[test]
+    fn write_checked_needs_a_listed_source_and_a_writable_setting() {
+        refused_for(
+            &changed("write = true", "write = true\nwrite_checked = \"guess\""),
+            "\"guess\"",
+        );
+        refused_for(
+            &changed("write = true", "write = false\nwrite_checked = \"manual\""),
+            "write_checked goes with write = true",
+        );
+        refused_for(
+            &changed("write = true", "write = true\nmoves = true"),
+            "never put back, so write = false",
         );
     }
 

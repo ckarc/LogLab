@@ -6,8 +6,8 @@
 //! The one time the Agent writes a remembered value over the radio's own
 //! (Principle X): only when the operator asks for a setup by name, only
 //! after the operator has seen what would change and confirmed it, and only
-//! settings the radio's definition says may be changed and are verified on a
-//! real radio. Each setting is read again just before it is written, and
+//! settings the radio's definition says may be changed and that a real
+//! radio took when written back (`check-writes`). Each setting is read again just before it is written, and
 //! again after: what the radio then says is the truth, whatever was asked.
 //! Every restore is recorded (what was changed, from what, to what, and
 //! when, in UTC) in a file written whole and never overwritten.
@@ -135,9 +135,9 @@ pub fn plan<'a>(
             kept_back.push(back("the Agent never changes it"));
             continue;
         }
-        if !setting.verified {
+        if !setting.write_checked {
             kept_back.push(back(&format!(
-                "not verified on a real radio yet, so the Agent doesn't write it; \
+                "not checked on a real radio yet, so the Agent doesn't write it; \
                  set it to {} by hand",
                 settings_record::shown(definition, id, Some(bytes))
             )));
@@ -338,15 +338,15 @@ mod tests {
 
     const SERIAL: &str = "IC-7300_02065962";
 
-    /// The IC-7300's definition, with `verified` settings marked verified,
-    /// as they will be once checked on a real radio.
-    fn ic_7300(verified: &[&str]) -> Definition {
+    /// The IC-7300's definition, with only the `checked` settings marked as
+    /// taken by a real radio.
+    fn ic_7300(checked: &[&str]) -> Definition {
         let mut definition = rigdef::built_in()
             .ok()
             .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
             .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
         for setting in &mut definition.settings {
-            setting.verified = verified.contains(&setting.id.as_str());
+            setting.write_checked = checked.contains(&setting.id.as_str());
         }
         definition
     }
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(plan.put[0].setting.id, att_id);
         assert_eq!(plan.put[0].to, [0x00]);
         assert_eq!(plan.kept_back.len(), 1, "{plan:?}");
-        assert!(plan.kept_back[0].why.contains("not verified"), "{plan:?}");
+        assert!(plan.kept_back[0].why.contains("not checked"), "{plan:?}");
         assert!(plan.lines()[0].starts_with("Putting setup FT8 back would change 1 setting:"));
 
         let done = apply(

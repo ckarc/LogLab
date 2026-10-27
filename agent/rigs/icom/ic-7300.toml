@@ -8,10 +8,15 @@
 # This file is data, never code (Principle XII): the Agent checks it against
 # the schema when it loads it.
 #
-# `verified = true` means a value was checked against a real IC-7300. The
-# Agent reads unverified settings but never writes them. Every value below
-# starts unverified; flip each one only after checking it on a radio, and say
-# which firmware in the pull request.
+# `verified = true` means a value was checked against a real IC-7300. Every
+# value below starts unverified; flip each one only after checking it on a
+# radio, and say which firmware in the pull request.
+#
+# `write_checked` names the evidence that a real IC-7300 took a setting's own
+# value written back with the command that sets it (`loglab-agent
+# check-writes`). The Agent writes a setting, in a restore the operator asked
+# for and confirmed, only if it has `write_checked`. `moves = true` marks a
+# setting that changes by itself (the clock): never compared, never put back.
 #
 # All bytes are written in hexadecimal, as the CI-V documents write them.
 
@@ -34,6 +39,19 @@ note = """
 Commands 03, 04, 05, 06, 07 and 0F were not in the part of the manual read for
 this file. They are written from the common Icom CI-V command set and must be
 checked against the full manual and a radio before they are marked verified.
+"""
+
+[[definition.sources]]
+id = "fieldlab_write_check"
+title = "loglab-agent check-writes on a real IC-7300, FieldLab, 2026-10-27"
+note = """
+Run by Brian Krenzin, K9KSU, on the IC-7300 with USB serial IC-7300_02065962
+over USB at 115200 baud, 2026-10-27T22:07:44Z. Each setting the Agent may
+change was read, its own bytes written back with the command that sets it, and
+read again: the radio answered FB and still had the same bytes for 246 of 247.
+Menu item 0028 (TX delay, 70 MHz) was refused (FA) even on read. A full
+settings read afterwards matched the as-received record except the clock.
+The radio's firmware version was not recorded.
 """
 
 [[definition.sources]]
@@ -196,6 +214,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_rx_tone_bass"
@@ -205,6 +224,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_rx_tone_treble"
@@ -214,6 +234,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_rx_hpf_lpf"
@@ -223,6 +244,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_rx_tone_bass"
@@ -232,6 +254,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_rx_tone_treble"
@@ -241,6 +264,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_rx_hpf_lpf"
@@ -250,6 +274,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_rx_tone_bass"
@@ -259,6 +284,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_rx_tone_treble"
@@ -268,6 +294,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_rx_hpf_lpf"
@@ -277,6 +304,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_rx_hpf_lpf"
@@ -286,6 +314,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_tone_bass"
@@ -295,6 +324,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_tone_treble"
@@ -304,6 +334,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_bandwidth_for_wide"
@@ -313,6 +344,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_bandwidth_for_mid"
@@ -322,6 +354,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_bandwidth_for_narrow"
@@ -331,6 +364,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_tx_tone_bass"
@@ -340,6 +374,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_tx_tone_treble"
@@ -349,6 +384,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_tx_tone_bass"
@@ -358,6 +394,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_tx_tone_treble"
@@ -367,6 +404,7 @@ range = [0, 10]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "beep_gain"
@@ -377,6 +415,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "beep_gain_limit"
@@ -386,6 +425,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "confirmation_beep"
@@ -395,6 +435,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "band_edge_beep"
@@ -404,6 +445,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rf_sql_control"
@@ -413,6 +455,7 @@ values = { Auto = 0x00, SQL = 0x01, "RF+SQL" = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "tx_delay_hf"
@@ -422,6 +465,7 @@ values = { OFF = 0x00, "10 ms" = 0x01, "15 ms" = 0x02, "20 ms" = 0x03, "25 ms" =
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "tx_delay_50_mhz"
@@ -431,6 +475,7 @@ values = { OFF = 0x00, "10 ms" = 0x01, "15 ms" = 0x02, "20 ms" = 0x03, "25 ms" =
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "tx_delay_70_mhz"
@@ -449,6 +494,7 @@ values = { OFF = 0x00, "3 min" = 0x01, "5 min" = 0x02, "10 min" = 0x03, "20 min"
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "quick_split"
@@ -458,6 +504,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_split_offset_hf"
@@ -467,6 +514,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "fm_split_offset_50_mhz"
@@ -476,6 +524,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "split_lock"
@@ -485,6 +534,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "tuner_switch"
@@ -494,6 +544,7 @@ values = { Manual = 0x00, Auto = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ptt_tune"
@@ -503,6 +554,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_mark_frequency"
@@ -512,6 +564,7 @@ values = { "1275 Hz" = 0x00, "1615 Hz" = 0x01, "2125 Hz" = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_shift_width"
@@ -521,6 +574,7 @@ values = { "170 Hz" = 0x00, "200 Hz" = 0x01, "425 Hz" = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_keying_polarity"
@@ -530,6 +584,7 @@ values = { Normal = 0x00, Reverse = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "speech_language"
@@ -539,6 +594,7 @@ values = { English = 0x00, Japanese = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "speech_speed"
@@ -548,6 +604,7 @@ values = { Low = 0x00, High = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "s_level_speech"
@@ -557,6 +614,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "speech_with_a_mode_switch"
@@ -566,6 +624,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "speech_level"
@@ -576,6 +635,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "speech_lock_key_function"
@@ -585,6 +645,7 @@ values = { "Push SPEECH, hold LOCK" = 0x00, "Push LOCK, hold SPEECH" = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "lock_function"
@@ -594,6 +655,7 @@ values = { "MAIN DIAL" = 0x00, PANEL = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "memo_pad_numbers"
@@ -603,6 +665,7 @@ values = { "5" = 0x00, "10" = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "main_dial_auto_ts"
@@ -612,6 +675,7 @@ values = { OFF = 0x00, Low = 0x01, High = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mic_up_down_speed"
@@ -621,6 +685,7 @@ values = { Low = 0x00, High = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "quick_rit_dtx_clear"
@@ -630,6 +695,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "item_0050"
@@ -639,6 +705,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "am_notch_operation"
@@ -648,6 +715,7 @@ values = { Auto = 0x00, Manual = 0x01, "Auto/Manual" = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_cw_synchronous_tuning"
@@ -657,6 +725,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_normal_side"
@@ -666,6 +735,7 @@ values = { LSB = 0x00, USB = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "screen_capture_by_the_power_switch"
@@ -675,6 +745,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "screen_capture_file_format"
@@ -684,6 +755,7 @@ values = { PNG = 0x00, BMP = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "keyboard_type"
@@ -693,6 +765,7 @@ values = { Ten-key = 0x00, "Full keyboard" = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "item_0057"
@@ -702,6 +775,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "reference_frequency_adjust"
@@ -712,6 +786,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_af_if_output"
@@ -721,6 +796,7 @@ values = { AF = 0x00, IF = 0x01 }
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_af_output_level"
@@ -731,6 +807,7 @@ percent = true
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_af_squelch"
@@ -740,6 +817,7 @@ values = { "OFF (OPEN)" = 0x00, ON = 0x01 }
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_af_beep_speech"
@@ -749,6 +827,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_if_output_level"
@@ -759,6 +838,7 @@ percent = true
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "acc_mod_level"
@@ -769,6 +849,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_mod_level"
@@ -779,6 +860,7 @@ percent = true
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "data_off_mod"
@@ -788,6 +870,7 @@ values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x0
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "data_mod"
@@ -797,6 +880,7 @@ values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x0
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "external_keypad_for_voice"
@@ -806,6 +890,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "external_keypad_for_keyer"
@@ -815,6 +900,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "external_keypad_for_rtty"
@@ -824,6 +910,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "civ_transceive"
@@ -892,6 +979,7 @@ values = { "4800" = 0x00, "9600" = 0x01, "19200" = 0x02, "38400" = 0x03 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_send"
@@ -930,6 +1018,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "screen_image_type"
@@ -939,6 +1028,7 @@ values = { A = 0x00, B = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "frequency_readout_font"
@@ -948,6 +1038,7 @@ values = { Basic = 0x00, Round = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "meter_peak_hold"
@@ -957,6 +1048,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "memory_name"
@@ -966,6 +1058,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "manual_notch_width_pop_up"
@@ -975,6 +1068,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "pbt_shift_value_display"
@@ -984,6 +1078,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "if_filter_width_and_shift_display"
@@ -993,6 +1088,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "screen_saver"
@@ -1002,6 +1098,7 @@ values = { OFF = 0x00, "15 min" = 0x01, "30 min" = 0x02, "60 min" = 0x03 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "opening_message"
@@ -1011,6 +1108,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "opening_message_text"
@@ -1020,6 +1118,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "power_on_check"
@@ -1029,6 +1128,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "display_language"
@@ -1038,6 +1138,7 @@ values = { English = 0x00, Japanese = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "date"
@@ -1047,6 +1148,7 @@ raw = true
 write = false
 source = "manual_copy"
 verified = false
+moves = true
 note = "The radio's clock. Never put back: an old time is a wrong time."
 
 [[settings]]
@@ -1057,6 +1159,7 @@ raw = true
 write = false
 source = "manual_copy"
 verified = false
+moves = true
 note = "The radio's clock. Never put back: an old time is a wrong time."
 
 [[settings]]
@@ -1077,6 +1180,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_max_hold"
@@ -1086,6 +1190,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_center_frequency"
@@ -1095,6 +1200,7 @@ values = { "Filter center" = 0x00, "Carrier point center" = 0x01, "Carrier point
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_marker_position_fixed"
@@ -1104,6 +1210,7 @@ values = { "Filter center" = 0x00, "Carrier point" = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "external_monitor_signal_width"
@@ -1113,6 +1220,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_averaging"
@@ -1122,6 +1230,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_waveform_type"
@@ -1131,6 +1240,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_color_1_of_3"
@@ -1140,6 +1250,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_color_2_of_3"
@@ -1149,6 +1260,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_color_3_of_3"
@@ -1158,6 +1270,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "waterfall_on_off"
@@ -1167,6 +1280,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "waterfall_speed"
@@ -1176,6 +1290,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "waterfall_height_in_expanded_view"
@@ -1185,6 +1300,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "waterfall_peak_color_level"
@@ -1194,6 +1310,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "waterfall_marker_auto_hide"
@@ -1203,6 +1320,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_0_03_1_60_mhz"
@@ -1212,6 +1330,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_0_03_1_60_mhz"
@@ -1221,6 +1340,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_0_03_1_60_mhz"
@@ -1230,6 +1350,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_1_60_2_00_mhz"
@@ -1239,6 +1360,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_1_60_2_00_mhz"
@@ -1248,6 +1370,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_1_60_2_00_mhz"
@@ -1257,6 +1380,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_2_00_6_00_mhz"
@@ -1266,6 +1390,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_2_00_6_00_mhz"
@@ -1275,6 +1400,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_2_00_6_00_mhz"
@@ -1284,6 +1410,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_6_00_8_00_mhz"
@@ -1293,6 +1420,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_6_00_8_00_mhz"
@@ -1302,6 +1430,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_6_00_8_00_mhz"
@@ -1311,6 +1440,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_8_00_11_00_mhz"
@@ -1320,6 +1450,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_8_00_11_00_mhz"
@@ -1329,6 +1460,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_8_00_11_00_mhz"
@@ -1338,6 +1470,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_11_00_15_00_mhz"
@@ -1347,6 +1480,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_11_00_15_00_mhz"
@@ -1356,6 +1490,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_11_00_15_00_mhz"
@@ -1365,6 +1500,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_15_00_20_00_mhz"
@@ -1374,6 +1510,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_15_00_20_00_mhz"
@@ -1383,6 +1520,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_15_00_20_00_mhz"
@@ -1392,6 +1530,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_20_00_22_00_mhz"
@@ -1401,6 +1540,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_20_00_22_00_mhz"
@@ -1410,6 +1550,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_20_00_22_00_mhz"
@@ -1419,6 +1560,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_22_00_26_00_mhz"
@@ -1428,6 +1570,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_22_00_26_00_mhz"
@@ -1437,6 +1580,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_22_00_26_00_mhz"
@@ -1446,6 +1590,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_26_00_30_00_mhz"
@@ -1455,6 +1600,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_26_00_30_00_mhz"
@@ -1464,6 +1610,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_26_00_30_00_mhz"
@@ -1473,6 +1620,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_30_00_45_00_mhz"
@@ -1482,6 +1630,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_30_00_45_00_mhz"
@@ -1491,6 +1640,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_30_00_45_00_mhz"
@@ -1500,6 +1650,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_45_00_60_00_mhz"
@@ -1509,6 +1660,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_45_00_60_00_mhz"
@@ -1518,6 +1670,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_45_00_60_00_mhz"
@@ -1527,6 +1680,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_1_60_00_74_80_mhz"
@@ -1536,6 +1690,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_2_60_00_74_80_mhz"
@@ -1545,6 +1700,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_3_60_00_74_80_mhz"
@@ -1554,6 +1710,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "audio_fft_display_type"
@@ -1563,6 +1720,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "audio_fft_waveform_color"
@@ -1572,6 +1730,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "audio_fft_waterfall"
@@ -1581,6 +1740,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "audio_oscilloscope_waveform_color"
@@ -1590,6 +1750,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "contest_number_style"
@@ -1599,6 +1760,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "contest_count_up_trigger_channel"
@@ -1608,6 +1770,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "contest_present_number"
@@ -1617,6 +1780,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_sidetone_gain"
@@ -1626,6 +1790,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_sidetone_gain_limit"
@@ -1635,6 +1800,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_keyer_repeat_time"
@@ -1644,6 +1810,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_keyer_dot_dash_ratio"
@@ -1653,6 +1820,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_rise_time"
@@ -1662,6 +1830,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "paddle_polarity"
@@ -1671,6 +1840,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "keyer_type"
@@ -1680,6 +1850,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mic_up_down_keyer"
@@ -1689,6 +1860,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_fft_scope_averaging"
@@ -1698,6 +1870,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_fft_scope_waveform_color"
@@ -1707,6 +1880,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_decode_usos"
@@ -1716,6 +1890,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_decode_new_line_code"
@@ -1725,6 +1900,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_tx_usos"
@@ -1734,6 +1910,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_received_text_color"
@@ -1743,6 +1920,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_transmitted_text_color"
@@ -1752,6 +1930,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_log"
@@ -1761,6 +1940,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_log_file_format"
@@ -1770,6 +1950,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_time_stamp"
@@ -1779,6 +1960,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_log_time_stamp_source"
@@ -1788,6 +1970,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rtty_frequency_stamp"
@@ -1797,6 +1980,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scan_speed"
@@ -1806,6 +1990,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scan_resume"
@@ -1815,6 +2000,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "auto_monitor_for_recorded_voice_tx"
@@ -1824,6 +2010,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "recorded_voice_repeat_interval"
@@ -1833,6 +2020,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "qso_recorder_mode"
@@ -1842,6 +2030,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "qso_recorder_tx_audio_source"
@@ -1851,6 +2040,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "qso_recorder_squelch_relation"
@@ -1860,6 +2050,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "qso_recorder_file_split"
@@ -1869,6 +2060,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ptt_automatic_recording"
@@ -1878,6 +2070,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rx_audio_pre_recording_before_ptt"
@@ -1887,6 +2080,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "qso_playback_skip_time"
@@ -1896,6 +2090,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "nb_depth"
@@ -1905,6 +2100,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "nb_width"
@@ -1914,6 +2110,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "vox_delay"
@@ -1923,6 +2120,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "vox_voice_delay"
@@ -1932,6 +2130,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mf_band_attenuator"
@@ -1941,6 +2140,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "on_screen_keyboard_layout"
@@ -1950,6 +2150,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "voice_tx_level"
@@ -1959,6 +2160,7 @@ raw = true
 write = true
 source = "manual_copy_summary"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_d_tx_bandwidth"
@@ -1968,6 +2170,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "usb_inhibit_timer"
@@ -1977,6 +2180,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "full_manual"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "front_key_vox_bk_in_function"
@@ -1986,6 +2190,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "front_key_autotune_function"
@@ -1995,6 +2200,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "front_key_up_function"
@@ -2004,6 +2210,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "front_key_down_function"
@@ -2013,6 +2220,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mic_key_up_function"
@@ -2022,6 +2230,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mic_key_down_function"
@@ -2031,6 +2240,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_0_03_1_60_mhz"
@@ -2040,6 +2250,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_1_60_2_00_mhz"
@@ -2049,6 +2260,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_2_00_6_00_mhz"
@@ -2058,6 +2270,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_6_00_8_00_mhz"
@@ -2067,6 +2280,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_8_00_11_00_mhz"
@@ -2076,6 +2290,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_11_00_15_00_mhz"
@@ -2085,6 +2300,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_15_00_20_00_mhz"
@@ -2094,6 +2310,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_20_00_22_00_mhz"
@@ -2103,6 +2320,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_22_00_26_00_mhz"
@@ -2112,6 +2330,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_26_00_30_00_mhz"
@@ -2121,6 +2340,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_30_00_45_00_mhz"
@@ -2130,6 +2350,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_45_00_60_00_mhz"
@@ -2139,6 +2360,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "scope_edge_4_60_00_74_80_mhz"
@@ -2148,6 +2370,7 @@ raw = true
 write = true
 source = "info_v140"
 verified = false
+write_checked = "fieldlab_write_check"
 
 # Front-panel controls.
 
@@ -2159,6 +2382,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "af_gain"
@@ -2169,6 +2393,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rf_gain"
@@ -2179,6 +2404,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "squelch"
@@ -2189,6 +2415,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "nr_level"
@@ -2199,6 +2426,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "pbt_inner"
@@ -2209,6 +2437,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "pbt_outer"
@@ -2219,6 +2448,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "cw_pitch"
@@ -2228,6 +2458,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rf_power"
@@ -2238,6 +2469,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "mic_gain"
@@ -2248,6 +2480,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "key_speed"
@@ -2257,6 +2490,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "notch_position"
@@ -2267,6 +2501,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "comp_level"
@@ -2277,6 +2512,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "break_in_delay"
@@ -2286,6 +2522,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "nb_level"
@@ -2296,6 +2533,7 @@ percent = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "monitor_gain"
@@ -2306,6 +2544,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "vox_gain"
@@ -2316,6 +2555,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "anti_vox_gain"
@@ -2326,6 +2566,7 @@ percent = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "preamp"
@@ -2335,6 +2576,7 @@ values = { OFF = 0x00, "P.AMP1" = 0x01, "P.AMP2" = 0x02 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "agc"
@@ -2344,6 +2586,7 @@ values = { OFF = 0x00, FAST = 0x01, MID = 0x02, SLOW = 0x03 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "noise_blanker"
@@ -2353,6 +2596,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "noise_reduction"
@@ -2362,6 +2606,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "auto_notch"
@@ -2371,6 +2616,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "repeater_tone"
@@ -2380,6 +2626,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "compressor"
@@ -2389,6 +2636,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "monitor"
@@ -2398,6 +2646,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "vox"
@@ -2407,6 +2656,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "break_in"
@@ -2416,6 +2666,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "manual_notch"
@@ -2425,6 +2676,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "twin_peak_filter"
@@ -2434,6 +2686,7 @@ values = { OFF = 0x00, ON = 0x01 }
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "dial_lock"
@@ -2443,6 +2696,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "filter_shape"
@@ -2452,6 +2706,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "manual_notch_width"
@@ -2461,6 +2716,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ssb_tx_bandwidth"
@@ -2470,6 +2726,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "ip_plus"
@@ -2479,6 +2736,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "filter_width"
@@ -2488,6 +2746,7 @@ range = [0, 49]
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "agc_time_constant"
@@ -2497,6 +2756,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "data_mode_and_filter"
@@ -2506,6 +2766,7 @@ raw = true
 write = true
 source = "manual_copy"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "repeater_tone_frequency"
@@ -2515,6 +2776,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "tsql_frequency"
@@ -2524,6 +2786,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rit_frequency"
@@ -2533,6 +2796,7 @@ raw = true
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "rit"
@@ -2542,6 +2806,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 [[settings]]
 id = "delta_tx"
@@ -2551,6 +2816,7 @@ range = [0, 1]
 write = true
 source = "hamlib_wfview"
 verified = false
+write_checked = "fieldlab_write_check"
 
 # ---------------------------------------------------------------------------
 # Requirements: settings a job can't work without. The Agent checks them,

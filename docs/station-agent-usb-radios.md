@@ -389,8 +389,13 @@ Each file says:
   the acceptable values and a plain-words explanation for the operator.
 - **Sources**: the documents each part came from.
 - **Verification**: every command and setting carries `verified = true` only
-  once it has been checked against a real radio. The Agent reads unverified
-  settings but **never writes them**.
+  once its values have been checked against a real radio. A setting also
+  carries `write_checked = "SOURCE"` once a real radio took its own value
+  written back with the command that sets it (`loglab-agent check-writes`).
+  The Agent reads every setting, but **writes one only if it is
+  `write_checked`**, and then only in a restore the operator confirmed.
+  `moves = true` marks a setting that changes by itself, such as the clock:
+  never compared, never put back.
 
 Rules (Principle XII): a definition file is untrusted data, never code. The
 Agent checks every file against the schema when it loads it, refuses one that
