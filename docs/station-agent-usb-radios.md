@@ -47,8 +47,9 @@ These come from the maintainer:
    to find the radio, work out what it is and how to talk to it, and offer it
    to programs.
 3. **The Agent adapts to the radio.** It works with the radio's settings as
-   they are. It changes a setting only when the radio cannot work at all
-   without the change, and only with the operator's approval.
+   they are. It changes a setting only to put back a setup kept for the
+   program using the radio, or when the radio cannot work at all without the
+   change, and then only with the operator's approval.
 4. **Each radio is known by its serial number.** The same radio is recognized
    at any workstation.
 5. **The radio's settings are documented on first connect.** Before changing
@@ -184,10 +185,31 @@ and keeps the record by itself, in `records` beside the Agent, and says what
 has changed since the radio arrived.
 
 **Restoring settings.** An operator can ask the Agent to put a radio's
-recorded settings back. The Agent restores only on that explicit request,
-only after the operator confirms it, and records the restore like any other
-change it makes to a radio. It never restores on its own. (Principle X,
-amended in constitution 3.0.0.)
+recorded settings back. The Agent then restores only after the operator
+confirms it, and records the restore like any other change it makes to a
+radio. (Principle X, amended in constitution 3.0.0.)
+
+**Setups per program, applied by themselves.** A radio can also have a setup
+kept for each program: one for WSJT-X, one for VARA, one for MMSSTV. When a
+program starts using the radio's audio through the Agent, the Agent puts that
+program's setup back on the radio without asking, shows what it changed, and
+records it. It does this once, as the program starts; while the program
+runs, the operator's changes on the radio stand. When the program stops, the
+Agent keeps the radio's settings as that program's setup again, so the next
+session starts where this one left off. (Principle X, amended in constitution
+5.0.0.)
+
+- **Only radios with a setup for that program.** A radio gets setups when
+  someone keeps one (`keep`), or when an administrator marks it a station
+  radio on the Engine, which gives it LabLog's starting setup for each program
+  its model has one for. A starting setup is a rig definition's suggested
+  settings for a program, each with the source it came from. A radio with
+  no setup for the program, such as a visitor's, is never changed this way.
+- **Only verified settings.** As with any restore, the Agent writes only
+  settings its rig definition marks writable and verified on a real radio,
+  and reads each one back afterward.
+- **Never mid-transmission.** A setup is applied before the program first
+  keys the radio, never while it is transmitting.
 
 ## Virtual radios (personalities)
 
@@ -231,33 +253,43 @@ protocol.)
 ## Who controls a radio
 
 LabLog is a logging application; it never tunes or transmits. Control of a
-radio belongs to the computer it is connected to, and the person at that
-computer decides which program controls it, in the Agent's tray program.
+radio belongs to the computer it is connected to, and it goes to **the
+program using the radio's audio**, with nothing to click: starting WSJT-X,
+VarAC or MMSSTV is the choice. (Decided by the maintainer, 2026-10-27.)
 
-- **The tray lists each radio and the programs that can use it.** WSJT-X,
-  VarAC, Winlink Express, N3FJP, N1MM Logger+ and so on. VARA is not listed:
-  it never tunes a radio, and its client keys for it, so checking VarAC or
-  Winlink Express also sends VARA's transmit audio to that radio.
-- **One check per radio.** The checked program has full control of that
-  radio: frequency, mode, split, VFO and PTT. Checking another program moves
-  control to it, and the Agent unkeys the radio first if it is transmitting.
-- **Nothing is checked to begin with.** Until someone checks a program,
-  nothing can tune or key the radio.
-- **Unchecked programs are read-only.** They see the frequency and mode and
-  hear receive audio, so they log correctly, but the Agent refuses every
-  command from them that would change the radio, and their transmit audio
-  never reaches it.
+- **The program using the radio's audio controls it.** It has full control:
+  frequency, mode, split, VFO and PTT, and the Agent sets the radio up for it
+  (above). For VARA, that is VARA together with the client connected to the
+  virtual radio (VarAC or Winlink Express): VARA never tunes, and its client
+  keys for it.
+- **One program at a time.** If a second program starts using the same
+  radio's audio while one has it, the first keeps control and the Agent says
+  so; the second is read-only until the first stops.
+- **Nothing in control to begin with.** Until a program uses the radio's
+  audio, nothing can tune or key the radio.
+- **Other programs are read-only.** They see the frequency and mode and hear
+  receive audio, so they log correctly, but the Agent refuses every command
+  from them that would change the radio, and their transmit audio never
+  reaches it.
 - **The radio's own PTT always wins.** Pressing the microphone's PTT on the
   radio overrides the program; the Agent sees it from the radio's state and
   refuses program PTT until it is released.
 - **The network only reads.** Programs on other computers, LabLog included,
   can read a radio's state from the Agent. Nothing on the network can tune or
   key a radio.
+- **The tray shows it.** The tray program shows each radio, which program has
+  it, and the setup it applied. Choosing another program there is possible,
+  but never needed.
 
-**How the Agent knows which program is which.** A program connecting to a
-virtual radio does not say its name. So each program gets its own connection:
-its own rigctld port, virtual COM port, and virtual sound device. The tray's
-list is a list of those connections, each named for its program.
+**How the Agent knows which program is which.** A program does not say its
+name, so the Agent asks Windows. Windows lists the programs using each sound
+device and their process numbers (Core Audio's `IAudioSessionManager2` and
+`IAudioSessionControl2::GetProcessId`, Microsoft Learn), and lists which
+process owns each network connection (`GetExtendedTcpTable`), so the Agent
+matches the program using the radio's virtual sound device to its
+connection to the virtual radio. Microsoft's pages do not say whether
+programs that only record from a device are listed the same way, so this is
+to be checked on a real computer before it is relied on.
 
 **Setting a program up: the setup card.** Except for the programs listed
 below, the Agent never writes another program's settings files. Their formats aren't documented, can change with
@@ -312,7 +344,7 @@ modes, split, and transmit requests; the tray shows the same.
 
 **Failing safe.** When anything goes wrong, the result is not transmitting:
 
-- If the checked program disconnects while keyed, the Agent unkeys.
+- If the program in control disconnects while keyed, the Agent unkeys.
 - If the Agent's transmit watchdog sees PTT held longer than the limit set for
   the radio, it unkeys and reports why.
 - The Agent never keys a radio on its own: not on a timer, not as a retry, not
@@ -345,9 +377,9 @@ devices, and the Agent moves audio between them and the radio.
 - **Runs as a service plus a tray program.** The service starts when the
   computer does, owns the radios, and keeps running, journal included, when
   nobody is signed in to Windows (after a power blip restarts the computer,
-  for example). The tray program is its face: it shows the radios and the
-  program checks, asks the operator to approve setting changes, and talks to
-  the service. Closing the tray program does not release the radios.
+  for example). The tray program is its face: it shows the radios, which
+  program has each one and the setup it applied, asks the operator to approve
+  a setting change a job needs, and talks to the service. Closing the tray program does not release the radios.
 - **Drivers: existing signed drivers first.** Windows only loads signed
   drivers, and a virtual COM port and a virtual sound device both need one.
   The first versions use existing signed drivers: VB-Audio's virtual cables
@@ -406,8 +438,8 @@ definition and the model for the rest.
 
 Everything here works on a station network with no internet (Principle V):
 finding radios, virtual radios, the settings record (kept locally and sent to
-the Engine when it is reachable), and choosing which program controls a radio
-(done in the tray program on the computer itself, with no network at all).
+the Engine when it is reachable), and which program controls a radio (decided on the computer itself, from
+the program using the radio's audio, with no network at all).
 
 ## Order of work
 
@@ -424,10 +456,10 @@ Each step is its own pull request, with tests and a demonstration
 4. **Settings record** on first connect.
 5. **rigctld personality** on `127.0.0.1`: WSJT-X connects to the Agent
    instead of to the radio. Tuning first, no transmit.
-6. **The tray program and the PTT path**: the one-check-per-radio control,
-   read-only unchecked programs, the watchdog, and refusal tests. WSJT-X
+6. **The tray program and the PTT path**: control by the program using the
+   radio's audio, read-only other programs, the watchdog, and refusal tests. WSJT-X
    transmits through the Agent. *The PTT path is done, chosen on the command
-   line until the tray exists (`serve --allow-transmit`): one program at a
+   line until control follows the audio (`serve --allow-transmit`): one program at a
    time, unkey on disconnect, a time limit, the radio's own PTT wins, with
    tests.*
 7. **Audio**: the Agent owns the radio's sound device; WSJT-X uses a virtual
@@ -445,6 +477,7 @@ Each step is its own pull request, with tests and a demonstration
 | --- | --- | --- |
 | 1 | Restore a radio's recorded settings? | **Decided**: yes, on the operator's explicit, confirmed request (Principle X, constitution 3.0.0) |
 | 2 | May the CAT personality speak Kenwood's published command set? | **Decided**: yes (Principle IV, constitution 3.0.0) |
-| 3 | Who decides which program may control and key a radio? | **Decided**: the person at the computer, one checked program per radio in the tray |
+| 3 | Who decides which program may control and key a radio? | **Decided** (changed 2026-10-27): the program using the radio's audio, with nothing to click; the tray only shows it |
 | 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | **Decided**: existing signed drivers first |
 | 5 | Tray program only, or a service with the tray program as its face? | **Decided**: a service, with the tray program as its face |
+| 6 | Must the operator confirm each setup the Agent applies? | **Decided**: no; a radio's kept setup for a program is applied when that program starts using the radio (Principle X, constitution 5.0.0) |

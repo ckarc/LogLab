@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 4.0.0                                                                                  |
+| **Version**    | 5.0.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -223,11 +223,18 @@ value back over the radio's current one.
 If the radio can store and recall a setting itself, the radio keeps it. The
 Agent persists only what the radio cannot store.
 
-One exception: the Agent may record a radio's settings when it first connects,
-and an operator may explicitly ask the Agent to put recorded settings back.
-The Agent restores only on that request, only after the operator confirms it,
-and records the restore — what was changed, from what, and when — like any
-other change it makes to a radio. It never restores on its own.
+Two exceptions. First, the Agent may record a radio's settings when it first
+connects, and an operator may explicitly ask the Agent to put recorded
+settings back; the Agent then restores only after the operator confirms it.
+Second, when a program starts using a radio's audio through the Agent, the
+Agent may put back, without asking, the setup kept for that radio and that
+program. It does so once, as the program starts, and only for a radio that
+already has a setup kept for that program, so a radio nobody has set up for
+it, such as a visitor's, is never changed this way. While the program runs,
+the operator's changes on the radio stand. Every restore, of either kind, is
+shown to the operator and recorded — what was changed, from what, and when —
+like any other change the Agent makes to a radio. Apart from these two
+exceptions, the Agent never restores on its own.
 
 Where a radio can measure a value the log records — transmit power, most
 importantly — the measured value is logged and marked as measured. A value an
@@ -608,6 +615,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 3.0.0   | 2026-10-24 | Repealed Principle XI (The Operator Keys The Transmitter) and Principle XIII (Every Action Has An Identified, Authorized Operator); their numbers are kept so no principle is renumbered. Principle VII now names the operator who made a change directly instead of citing XIII; Principle IX no longer cites XI. Narrowed Principle X: the Agent may record a radio's settings on first connect and restore them on an operator's explicit, confirmed request, recorded like any other change. Widened Principle IV: a radio maker's published command set is an open protocol the Agent may speak through a virtual radio. Situation: LabLog is now purely a logging application with no built-in operating modes. Transmitting is done by programs such as WSJT-X, VarAC and Winlink Express, which reach the radio through the Station Agent; the person at the computer chooses in the Agent which program controls each radio. Requiring LabLog operator accounts to authorize transmitting would put a logger between operators and their own stations, and would leave those programs unable to key a radio at a workstation where nobody has signed in to LabLog, a worse outcome than leaving that choice at the computer. Restoring recorded settings lets a visitor's radio go home set up the way it arrived, which Principle X as written forbade. Programs such as Winlink Express and N1MM Logger+ can only reach a radio through a maker's command set, so without the Principle IV clause they could not share a radio through the Agent at all. Decided by the maintainer. |
 | 4.0.0   | 2026-10-24 | Added Principle XXI (The Log Knows Who Is Asking): every Engine request is made by an identified operator at an identified station; viewing, logging and administration are separate permissions; an operator's own credentials are theirs alone; sign-in works offline; a Station Agent proves its station with an approved key; protocols with no sign-in are accepted only from their own computer. It grants nothing about controlling a radio. Added at the end so no principle is renumbered. Situation: repealing Principle XIII in 3.0.0 removed the radio permissions it held, as intended, but also left the Engine's sign-in, its separate permissions, and each operator's private credentials with no principle behind them; without one, a change could let anyone on a Field Day network read or edit the log, or use another operator's LoTW certificate, with no rule to stop it. Decided by the maintainer. |
 
+| 5.0.0   | 2026-10-27 | Widened Principle X: when a program starts using a radio's audio through the Agent, the Agent may put back the setup kept for that radio and that program without asking, once, as the program starts, and only for a radio that already has a setup kept for that program; every restore is shown and recorded. Restoring on an operator's explicit, confirmed request is unchanged. Situation: FieldLab's radios move between computers and between modes (FT8, VARA, SSTV for youth operators), and each move costs about 30 minutes of resetting filters, noise reduction, RF gain and audio levels by hand. Asking for a confirm every time a program starts turns a radio that should simply work into a step operators skip or get wrong, a worse outcome than applying a setup the station already chose for that radio and program. Limiting it to radios with a kept setup still leaves a visitor's radio untouched, the reason the confirm was required. Decided by the maintainer. |
 ---
 
 ## Ratification
