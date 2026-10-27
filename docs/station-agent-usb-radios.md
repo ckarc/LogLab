@@ -259,8 +259,8 @@ virtual radio does not say its name. So each program gets its own connection:
 its own rigctld port, virtual COM port, and virtual sound device. The tray's
 list is a list of those connections, each named for its program.
 
-**Setting a program up: the setup card.** The Agent never writes another
-program's settings files. Their formats aren't documented, can change with
+**Setting a program up: the setup card.** Except for the programs listed
+below, the Agent never writes another program's settings files. Their formats aren't documented, can change with
 any version, and a program like WSJT-X rewrites its own file when it
 closes, so a change written while it runs is lost. Instead, the tray shows
 a setup card for each program and radio, with exactly what to enter, each
@@ -277,15 +277,29 @@ WSJT-X, for the IC-7300
 
 The person types it in once, and the program keeps it in its own file.
 
-**The exception: VARA's sound devices.** VARA has no command line or
-control-port command for choosing its sound devices (varanny's README:
-"VARA doesn't offer command line configuration options"), and a station
-should work with nothing typed in. So the maintainer decided (2026-10-26)
-that the Agent sets exactly two lines of `VARA.ini`, `Input Device Name` and
-`Output Device Name` under `[Soundcard]`, to the Agent's virtual cables. It
-does so only while VARA isn't running, keeps the file as it first found it
-(`VARA.ini.lablog-original`), and writes the file whole and renames it into
-place. Nothing else in the file, and no other program's file, is touched.
+**The exceptions: VARA, WSJT-X, JS8Call, fldigi and MMSSTV.** None of these
+has a command line or network command for choosing its sound devices or its
+radio (varanny's README: "VARA doesn't offer command line configuration
+options"; for the others, their source code), and a station should work
+with nothing typed in. So the maintainer decided that the Agent sets them up
+itself: VARA's sound devices (2026-10-26), and WSJT-X, JS8Call, fldigi and
+MMSSTV (2026-10-27, "as seamless as it can be"). For each, the Agent changes
+only the lines that name the sound devices and the radio, and only while
+the program isn't running (each writes its own file when it closes). It
+keeps the file as it first found it (`<file>.lablog-original`), and writes
+the file whole and renames it into place. No other line, and no other
+program's file, is touched.
+
+| Program | File | What the Agent sets |
+|---|---|---|
+| VARA | `VARA.ini` next to `VARA.exe` | `[Soundcard]` input and output device |
+| WSJT-X, JS8Call | `%LOCALAPPDATA%\<app>\<app>.ini` | `[Configuration]` `SoundInName`, `SoundOutName`, `Rig` (Hamlib NET rigctl), `CATNetworkPort`, `PTTMethod` (CAT) |
+| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device; Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
+| MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input only, for now |
+
+MMSSTV keys a radio only through a COM port, so it receives through the
+Agent but can't transmit through it until the Agent offers it a virtual COM
+port (step 8).
 
 **When a program complains: the fix.** The Agent sees every request a
 program makes and what became of it, so when one is refused it says why,

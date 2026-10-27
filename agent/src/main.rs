@@ -26,15 +26,27 @@ mod civ_serial;
 #[cfg(any(windows, test))]
 mod driver;
 mod engine;
+#[cfg(any(windows, test))]
+mod fldigi;
 mod flex;
 mod hamlib;
+#[cfg(any(windows, test))]
+mod ini;
 mod journal;
+#[cfg(any(windows, test))]
+mod mmsstv;
 mod pairing;
 mod pretend;
+#[cfg(windows)]
+mod programs;
+#[cfg(any(windows, test))]
+mod qt_settings;
 mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;
+#[cfg(any(windows, test))]
+mod settings_file;
 mod settings_record;
 mod station;
 #[cfg(any(windows, test))]

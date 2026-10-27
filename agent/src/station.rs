@@ -17,8 +17,9 @@
 //! 3. Carries the radio's audio both ways (Windows): receive into VB-CABLE,
 //!    and a program's transmit audio from a second virtual cable to the
 //!    radio, only while the Agent has it keyed for that program.
-//! 4. Points VARA's sound devices at those cables, if VARA isn't running
-//!    (see `vara`).
+//! 4. Points VARA's sound devices at those cables, and sets up WSJT-X,
+//!    `JS8Call`, fldigi and MMSSTV to use the cables and the virtual radio,
+//!    each only if it isn't running (see `vara` and `programs`).
 //! 5. Serves the radio to programs on this computer, which may tune it and
 //!    key it (`serve --allow-transmit`).
 //! 6. With `--engine` and `--key-file`, keeps the radio's settings on the
@@ -669,6 +670,10 @@ pub fn run(
     }
     let server = rigctld_server::Server::start(listen, Arc::clone(&shared) as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
+    #[cfg(windows)]
+    if let Some(station) = &station {
+        crate::programs::set_up(station, server.address());
+    }
     if let (Some(uplink), Some(serial)) = (uplink, found.serial.clone()) {
         let shared = Arc::clone(&shared);
         std::thread::spawn(move || console(&shared, &uplink, &serial, &definition));
