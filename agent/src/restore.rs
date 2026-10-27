@@ -49,6 +49,9 @@ pub struct KeptBack {
 pub struct Plan {
     /// The setup's name.
     pub setup: String,
+    /// Whether it fixes what stops a job working, rather than putting a
+    /// setup back.
+    pub fixes: bool,
     /// The settings it would put back.
     pub put: Vec<Put>,
     /// The settings that differ but would be left as they are.
@@ -68,12 +71,16 @@ impl Plan {
             return lines;
         }
         if !self.put.is_empty() {
-            lines.push(format!(
-                "Putting setup {} back would change {} setting{}:",
-                self.setup,
+            let count = format!(
+                "{} setting{}",
                 self.put.len(),
                 if self.put.len() == 1 { "" } else { "s" }
-            ));
+            );
+            lines.push(if self.fixes {
+                format!("The Agent can fix {count}:")
+            } else {
+                format!("Putting setup {} back would change {count}:", self.setup)
+            });
             lines.extend(
                 self.put
                     .iter()
@@ -193,6 +200,7 @@ pub fn plan<'a>(
     put.sort_by_key(|put| !put.setting.selects);
     Plan {
         setup: setup.to_owned(),
+        fixes: false,
         put,
         kept_back,
     }
@@ -240,6 +248,61 @@ fn selection(
         }
     }
     result
+}
+
+/// What the Agent can set, with one yes, to fix each setting that stops a
+/// job working (DATA MOD on MIC, say): the value the definition offers for
+/// it. Only settings the Agent may change and that a real radio took when
+/// written back; the rest are left for the operator, with the value to set
+/// (Principle X).
+#[must_use]
+pub fn fixes(now: &Record, definition: &Definition) -> Plan {
+    let mut put: Vec<Put> = Vec::new();
+    let mut kept_back = Vec::new();
+    for finding in settings_record::findings(now, definition) {
+        let Some(setting) = definition.settings.iter().find(|s| s.id == finding.setting) else {
+            continue;
+        };
+        if put.iter().any(|p| p.setting.id == setting.id)
+            || kept_back
+                .iter()
+                .any(|k: &KeptBack| k.label == setting.label)
+        {
+            continue;
+        }
+        let wanted = finding
+            .offer
+            .clone()
+            .unwrap_or_else(|| finding.accept.join(" or "));
+        let back = |why: String| KeptBack {
+            label: setting.label.clone(),
+            why,
+        };
+        let code = finding.offer.as_ref().and_then(|offer| {
+            setting
+                .values
+                .as_ref()
+                .and_then(|values| values.get(offer))
+                .copied()
+        });
+        match code {
+            Some(code) if setting.write && setting.write_checked => put.push(Put {
+                setting: setting.clone(),
+                to: vec![code],
+                now: finding.now.clone(),
+                setup: format!("{wanted} ({code:02X}h)"),
+            }),
+            _ => kept_back.push(back(format!(
+                "the Agent can't set it; on the radio, set it to {wanted}"
+            ))),
+        }
+    }
+    Plan {
+        setup: "fixes".to_owned(),
+        fixes: true,
+        put,
+        kept_back,
+    }
 }
 
 /// Bytes written as hex pairs, `00 20`.
@@ -290,6 +353,10 @@ pub struct Restore {
     pub serial: String,
     /// The setup put back.
     pub setup: String,
+    /// Whether it fixed what stops a job working, rather than putting a
+    /// setup back.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub fixes: bool,
     /// When the restore began, in UTC.
     pub started_utc: String,
     /// The computer it was done on.
@@ -307,12 +374,16 @@ impl Restore {
             .iter()
             .filter(|done| done.outcome == "put back")
             .count();
-        let mut lines = vec![format!(
-            "setup {}: put back {back} of {} setting{}.",
-            self.setup,
+        let count = format!(
+            "{back} of {} setting{}",
             self.changes.len(),
             if self.changes.len() == 1 { "" } else { "s" }
-        )];
+        );
+        let mut lines = vec![if self.fixes {
+            format!("fixed {count}.")
+        } else {
+            format!("setup {}: put back {count}.", self.setup)
+        }];
         lines.extend(
             self.changes
                 .iter()
@@ -388,6 +459,7 @@ pub fn apply(
         model: definition.model.clone(),
         serial: serial.to_owned(),
         setup: plan.setup.clone(),
+        fixes: plan.fixes,
         started_utc: settings_record::utc_text(now),
         computer: computer.to_owned(),
         changes,
@@ -918,5 +990,51 @@ mod tests {
             "{done:?}"
         );
         assert_eq!(filter(&read(&mut radio)), kept_mode);
+    }
+
+    #[test]
+    fn offers_to_fix_what_stops_a_job_and_fixes_it_on_a_yes() {
+        let definition = ic_7300(&["data_mod", "data_off_mod"]);
+        let mut radio = radio(&definition);
+        let now = read(&mut radio);
+        let plan = super::fixes(&now, &definition);
+        assert!(plan.fixes);
+        let put: Vec<(&str, &[u8], &str)> = plan
+            .put
+            .iter()
+            .map(|p| (p.setting.id.as_str(), p.to.as_slice(), p.setup.as_str()))
+            .collect();
+        assert_eq!(
+            put,
+            [
+                ("data_mod", &[0x03][..], "USB (03h)"),
+                ("data_off_mod", &[0x04][..], "MIC,USB (04h)"),
+            ],
+            "{plan:?}"
+        );
+        assert_eq!(plan.lines()[0], "The Agent can fix 2 settings:");
+
+        let done = apply(&mut radio, &plan, SERIAL, UNIX_EPOCH, "FL1");
+        assert!(done.fixes);
+        assert_eq!(done.lines()[0], "fixed 2 of 2 settings.");
+        let after = read(&mut radio);
+        assert!(
+            super::fixes(&after, &definition).put.is_empty(),
+            "nothing is left to fix"
+        );
+        assert!(settings_record::findings(&after, &definition).is_empty());
+    }
+
+    #[test]
+    fn leaves_a_fix_it_may_not_write_to_the_operator() {
+        let definition = ic_7300(&["data_off_mod"]);
+        let mut radio = radio(&definition);
+        let now = read(&mut radio);
+        let plan = super::fixes(&now, &definition);
+        assert_eq!(plan.put.len(), 1, "{plan:?}");
+        assert_eq!(plan.put[0].setting.id, "data_off_mod");
+        assert_eq!(plan.kept_back.len(), 1, "{plan:?}");
+        assert_eq!(plan.kept_back[0].label, "DATA MOD");
+        assert!(plan.kept_back[0].why.contains("set it to USB"), "{plan:?}");
     }
 }
