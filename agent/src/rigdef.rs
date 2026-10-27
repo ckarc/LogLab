@@ -218,6 +218,15 @@ struct Setting {
     /// put back.
     #[serde(default)]
     moves: bool,
+    /// Whether it chooses which mode and filter the radio is on, which
+    /// settings marked `per_selection` belong to: put back before them.
+    #[serde(default)]
+    selects: bool,
+    /// Whether it belongs to the selected mode or filter, such as the
+    /// selected filter's width: put back only once the radio is on the
+    /// setup's mode and filter, or it would land on another one.
+    #[serde(default)]
+    per_selection: bool,
     note: Option<String>,
 }
 
@@ -316,6 +325,10 @@ pub struct SettingSummary {
     pub write_checked: bool,
     /// Whether it changes by itself, as a clock does.
     pub moves: bool,
+    /// Whether it chooses which mode and filter the radio is on.
+    pub selects: bool,
+    /// Whether it belongs to the selected mode or filter.
+    pub per_selection: bool,
 }
 
 impl SettingSummary {
@@ -554,6 +567,8 @@ fn summarize(file: &File, check: &Check) -> Definition {
                 verified: s.verified,
                 write_checked: s.write_checked.is_some(),
                 moves: s.moves,
+                selects: s.selects,
+                per_selection: s.per_selection,
             })
             .collect(),
         requirements: file
@@ -847,6 +862,16 @@ impl Check {
                 ));
             }
         }
+        if setting.selects && !setting.write {
+            self.problem(format!(
+                "{field}: selects goes with write = true; it is put back first"
+            ));
+        }
+        if setting.selects && setting.per_selection {
+            self.problem(format!(
+                "{field}: a setting can't both choose the selection and belong to it"
+            ));
+        }
         if setting.moves && setting.write {
             self.problem(format!(
                 "{field}: a setting that moves by itself is never put back, so write = false"
@@ -1006,7 +1031,8 @@ impl Check {
 /// Commands that act when sent bare, such as 07 00 (select VFO A), and the
 /// 1C family, which keys the transmitter and starts the tuner, are not here,
 /// so a definition can't make the Agent change a radio while reading it.
-const READABLE: [&[u8]; 9] = [
+const READABLE: [&[u8]; 10] = [
+    &[0x04],
     &[0x11],
     &[0x14],
     &[0x16],
@@ -1037,9 +1063,13 @@ fn read_command(setting: &Setting) -> Result<Vec<u8>, String> {
             let readable = READABLE.iter().find(|prefix| command.starts_with(prefix));
             match readable {
                 Some(&[0x1A, 0x05]) => Err("menu items are given as item, not command".to_owned()),
-                // 11 is read bare; the others need one byte saying which.
-                Some(&[0x11]) if command.len() == 1 => Ok(command),
-                Some(&[0x11]) => Err("command 11 has nothing after it".to_owned()),
+                // 04 and 11 are read bare; the others need one byte saying
+                // which.
+                Some(&[0x04] | &[0x11]) if command.len() == 1 => Ok(command),
+                Some(&[0x04] | &[0x11]) => Err(format!(
+                    "command {} has nothing after it",
+                    crate::civ::hex(&command[..1])
+                )),
                 Some(prefix) if command.len() == prefix.len() + usize::from(prefix.len() == 1) => {
                     Ok(command)
                 }
@@ -1235,7 +1265,7 @@ explain = "Data mode audio must come from USB."
             .filter_map(|item| crate::civ::level_from_bcd(item))
             .collect();
         assert_eq!(numbers, (1..=216).collect::<Vec<u16>>());
-        assert_eq!(definition.settings.len(), 216 + 43);
+        assert_eq!(definition.settings.len(), 216 + 44);
         let read = |id: &str| {
             definition
                 .settings

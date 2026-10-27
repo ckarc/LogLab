@@ -282,8 +282,8 @@ fn compared_all(kept: &KeptRadio, now: &Record, definition: &Definition) -> Vec<
         lines.extend(compared(setup, now, definition));
     }
     lines.push(
-        "-> Type restore NAME to put a setup back. Settings not yet verified on a real radio \
-         are left for you to set by hand."
+        "-> Type restore NAME to put a setup back. Settings the Agent can't write on this \
+         radio are left for you to set by hand, and it says which."
             .to_owned(),
     );
     lines
