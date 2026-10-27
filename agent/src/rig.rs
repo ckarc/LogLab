@@ -130,6 +130,29 @@ pub trait Radio {
     /// The radio did not answer, or answered with something that is not a
     /// valid state (Principle XII).
     fn read(&mut self) -> Result<Reading, RadioError>;
+
+    /// The radio's settings, one by one, if its driver can read them by a
+    /// rig definition.
+    fn exposes(&mut self) -> Option<&mut dyn Exposes> {
+        None
+    }
+}
+
+/// A radio whose settings the Agent can read one by one, as its rig
+/// definition lists them (the settings record, Principle X).
+pub trait Exposes {
+    /// The radio's rig definition.
+    fn definition(&self) -> &crate::rigdef::Definition;
+
+    /// Reads one setting. Returns its bytes as the radio sent them.
+    ///
+    /// # Errors
+    ///
+    /// The radio refused, didn't answer, or answered about something else.
+    fn read_exposed(
+        &mut self,
+        setting: &crate::rigdef::SettingSummary,
+    ) -> Result<Vec<u8>, RadioError>;
 }
 
 /// A VFO, by the name Hamlib and most radios use for it.

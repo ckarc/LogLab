@@ -21,6 +21,12 @@
 //!    (see `vara`).
 //! 5. Serves the radio to programs on this computer, which may tune it and
 //!    key it (`serve --allow-transmit`).
+//! 6. With `--engine` and `--key-file`, keeps the radio's settings on the
+//!    Engine, so every computer it is plugged into knows them: sends its
+//!    as-received record, lists what differs from each setup an operator
+//!    kept (FT8, say), and keeps the radio's settings as a setup when the
+//!    operator types `keep NAME`. It only reads: nothing is put back on the
+//!    radio (Principle X).
 //!
 //! Starting `station` is the operator's choice that programs on this
 //! computer may key the radio, as `--allow-transmit` is for `serve`
@@ -34,8 +40,11 @@ use std::time::Duration;
 
 use crate::civ_radio::CivRadio;
 use crate::civ_serial::{self, SerialPort};
+use crate::engine::{KeptRadio, KeptReading, SendError, Uplink};
 use crate::rig::{Radio, RadioError};
 use crate::rigctld_server::{self, Shared, Source};
+use crate::rigdef::Definition;
+use crate::settings_record::Record;
 use crate::{rigdef, settings_record};
 
 /// The radio, found and checked.
@@ -141,8 +150,8 @@ fn records_folder() -> std::path::PathBuf {
 
 /// Reads the radio's settings, keeps the first reading of this radio as its
 /// as-received record, and says what changed since and what in them stops
-/// digital modes working.
-fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) {
+/// digital modes working. Returns the reading.
+fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) -> Record {
     let definition = radio.definition().clone();
     let record = settings_record::read(
         radio,
@@ -190,7 +199,6 @@ fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) {
     let found = settings_record::findings(&record, &definition);
     if found.is_empty() {
         println!("Radio settings: every one digital modes need is right.");
-        return;
     }
     for finding in found {
         println!(
@@ -201,6 +209,187 @@ fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) {
             finding.label,
             finding.offer.unwrap_or_else(|| finding.accept.join(" or "))
         );
+    }
+    record
+}
+
+/// The link to the Engine, from `--engine` and the key in `--key-file`, or
+/// a new key from joining as `station` when the file has none.
+fn uplink(
+    engine: &str,
+    key_file: &str,
+    station: Option<&str>,
+    running: &AtomicBool,
+) -> Result<Uplink, String> {
+    let key = crate::station_key(engine, key_file, station, running, false)?;
+    Uplink::new(engine, &key)
+}
+
+/// The radio's settings as a setup kept on the Engine has them, in lines to
+/// show: each setting that differs, or that it matches.
+fn compared(kept: &KeptReading, now: &Record, definition: &Definition) -> Vec<String> {
+    let differ = settings_record::differences(
+        kept.settings
+            .iter()
+            .map(|s| (s.id.as_str(), s.label.as_str(), s.bytes.as_deref())),
+        now,
+        definition,
+    );
+    let what = kept.name.as_deref().map_or_else(
+        || "the as-received record".to_owned(),
+        |name| format!("setup {name}"),
+    );
+    let whence = format!(
+        "kept {} at {}{}",
+        kept.saved_at,
+        kept.station,
+        kept.operator
+            .as_deref()
+            .map(|who| format!(" by {who}"))
+            .unwrap_or_default()
+    );
+    if differ.is_empty() {
+        return vec![format!("the radio matches {what} ({whence}).")];
+    }
+    let mut lines = vec![format!(
+        "{} differ{} from {what} ({whence}):",
+        differ.len(),
+        if differ.len() == 1 { "s" } else { "" }
+    )];
+    lines.extend(differ.into_iter().map(|change| {
+        format!(
+            "  {}: the radio has {}; {what} has {}",
+            change.label, change.after, change.before
+        )
+    }));
+    lines
+}
+
+/// Every setup kept for the radio, compared with what it has now.
+fn compared_all(kept: &KeptRadio, now: &Record, definition: &Definition) -> Vec<String> {
+    if kept.setups.is_empty() {
+        return vec![
+            "no setups are kept for this radio yet.\n-> Set the radio up for a job, then \
+             type keep NAME here (keep FT8, say)."
+                .to_owned(),
+        ];
+    }
+    let mut lines = Vec::new();
+    for setup in &kept.setups {
+        lines.extend(compared(setup, now, definition));
+    }
+    lines.push(
+        "-> For now, change those on the radio by hand: the Agent doesn't put settings \
+         back until they are verified on a real radio."
+            .to_owned(),
+    );
+    lines
+}
+
+/// Sends the radio's as-received record to the Engine, and says how the
+/// radio compares with each setup kept there.
+fn sync(uplink: &Uplink, record: &Record, definition: &Definition) {
+    let Some(serial) = record.serial.as_deref() else {
+        println!(
+            "Engine: the radio's settings aren't kept there, because its serial number isn't \
+             known (it comes with the USB serial port; leave out --civ to find it)."
+        );
+        return;
+    };
+    match uplink.keep_reading(record, None) {
+        Ok(true) => {
+            println!("Engine: kept this as the radio's as-received record, for every computer.");
+        }
+        Ok(false) => println!("Engine: already has this radio's as-received record."),
+        Err(error) => {
+            println!("Engine: {error}");
+            return;
+        }
+    }
+    match uplink.radio_settings(&record.maker, &record.model, serial) {
+        Ok(kept) => {
+            for line in compared_all(&kept, record, definition) {
+                println!("Engine: {line}");
+            }
+        }
+        Err(error) => println!("Engine: {error}"),
+    }
+}
+
+/// A line typed at the Agent's console.
+#[derive(Debug, PartialEq, Eq)]
+enum Typed {
+    /// Keep the radio's settings on the Engine as this setup.
+    Keep(String),
+    /// Compare the radio with every setup kept for it.
+    Compare,
+    /// Say what can be typed.
+    Help,
+    /// Nothing typed.
+    Nothing,
+}
+
+/// What a typed line asks for.
+fn typed(line: &str) -> Result<Typed, String> {
+    let line = line.trim();
+    let (word, rest) = line
+        .split_once(char::is_whitespace)
+        .map_or((line, ""), |(word, rest)| (word, rest.trim()));
+    match (word.to_ascii_lowercase().as_str(), rest) {
+        ("", _) => Ok(Typed::Nothing),
+        ("keep", "") => Err("keep needs a setup name, like keep FT8".to_owned()),
+        ("keep", name) => {
+            crate::engine::check_setup_name(name)?;
+            Ok(Typed::Keep(name.to_owned()))
+        }
+        ("compare", "") => Ok(Typed::Compare),
+        ("help" | "?", "") => Ok(Typed::Help),
+        _ => Err(format!("unknown command {line:?}")),
+    }
+}
+
+/// What can be typed at the Agent's console.
+const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings on the Engine as a setup \
+                         (keep FT8, say), or compare to see what differs from each setup.";
+
+/// Reads the operator's commands from the console until it closes.
+fn console(shared: &Shared, uplink: &Uplink, serial: &str, definition: &Definition) {
+    let read = || {
+        shared.settings(|radio| {
+            settings_record::read(
+                radio,
+                Some(serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        })
+    };
+    for line in std::io::stdin().lines() {
+        let Ok(line) = line else { return };
+        let said = match typed(&line) {
+            Ok(Typed::Nothing) => continue,
+            Ok(Typed::Help) => TYPE_HELP.to_owned(),
+            Err(why) => format!("{why}\n-> {TYPE_HELP}"),
+            Ok(Typed::Keep(name)) => match read() {
+                Ok(record) => match uplink.keep_reading(&record, Some(&name)) {
+                    Ok(_) => format!(
+                        "kept the radio's settings on the Engine as setup {name} ({} settings)",
+                        record.settings.len()
+                    ),
+                    Err(error) => format!("setup {name} not kept: {error}"),
+                },
+                Err(why) => format!("setup {name} not kept: {why}"),
+            },
+            Ok(Typed::Compare) => match read().map_err(SendError::Unreachable).and_then(|now| {
+                uplink
+                    .radio_settings(&now.maker, &now.model, serial)
+                    .map(|kept| compared_all(&kept, &now, definition))
+            }) {
+                Ok(lines) => lines.join("\n"),
+                Err(error) => format!("not compared: {error}"),
+            },
+        };
+        crate::print_event(&said);
     }
 }
 
@@ -291,16 +480,44 @@ fn vara(station: &crate::audio_windows::Station) {
     }
 }
 
+/// Tells the operator how programs on this computer reach the radio.
+fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
+    println!(
+        "Programs on this computer may tune and key the {} at {}: one at a time, for at most \
+         {} s at once, and the radio's own PTT wins.",
+        model,
+        address,
+        limit.as_secs()
+    );
+    println!(
+        "  VarAC: Settings > RIG: Hamlib for PTT and Frequency Control, host localhost, port {}.",
+        address.port()
+    );
+    println!(
+        "  WSJT-X: Settings > Radio: Rig Hamlib NET rigctl, Network Server {address}, PTT Method CAT."
+    );
+}
+
 /// Runs the station until Ctrl-C.
 ///
 /// # Errors
 ///
-/// The radio isn't found, or the virtual radio can't listen.
-pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<(), String> {
+/// The radio isn't found, the virtual radio can't listen, or `engine` (the
+/// Engine's address, the key file, and the station to join as) doesn't
+/// make a link to the Engine.
+pub fn run(
+    port: Option<&str>,
+    listen: SocketAddr,
+    limit: Duration,
+    engine: Option<(&str, &str, Option<&str>)>,
+) -> Result<(), String> {
     let running = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
+    let uplink = engine
+        .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
+        .transpose()?;
     let Some(mut found) = wait_for_radio(port, &running) else {
         println!("stopped");
         return Ok(());
@@ -318,8 +535,12 @@ pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<()
             .unwrap_or_default(),
         found.radio.baud()
     );
-    check_settings(&mut found.radio, found.serial.as_deref());
-    let sound = found.radio.definition().usb_audio.clone();
+    let record = check_settings(&mut found.radio, found.serial.as_deref());
+    let definition = found.radio.definition().clone();
+    if let Some(uplink) = &uplink {
+        sync(uplink, &record, &definition);
+    }
+    let sound = definition.usb_audio.clone();
     let (notes, heard) = mpsc::channel();
     let shared = Arc::new(Shared::with_transmit(Box::new(found.radio), limit).with_notes(notes));
     let on_air = shared.on_air();
@@ -331,21 +552,12 @@ pub fn run(port: Option<&str>, listen: SocketAddr, limit: Duration) -> Result<()
         println!("Audio: carried on Windows only.");
     }
     let server = rigctld_server::Server::start(listen, Arc::clone(&shared) as Arc<dyn Source>)?;
-    println!(
-        "Programs on this computer may tune and key the {} at {}: one at a time, for at most \
-         {} s at once, and the radio's own PTT wins.",
-        identity.model,
-        server.address(),
-        limit.as_secs()
-    );
-    println!(
-        "  VarAC: Settings > RIG: Hamlib for PTT and Frequency Control, host localhost, port {}.",
-        server.address().port()
-    );
-    println!(
-        "  WSJT-X: Settings > Radio: Rig Hamlib NET rigctl, Network Server {}, PTT Method CAT.",
-        server.address()
-    );
+    say_how_to_connect(&identity.model, server.address(), limit);
+    if let (Some(uplink), Some(serial)) = (uplink, found.serial.clone()) {
+        let shared = Arc::clone(&shared);
+        std::thread::spawn(move || console(&shared, &uplink, &serial, &definition));
+        println!("{TYPE_HELP}");
+    }
     println!("Ctrl-C stops.");
     #[cfg(windows)]
     let mut hint: Option<&'static str> = None;
@@ -488,7 +700,92 @@ pub fn startup(what: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::startup_command;
+    use std::time::{Duration, UNIX_EPOCH};
+
+    use super::{Typed, compared, compared_all, startup_command, typed};
+    use crate::civ_pretend::PretendCiv;
+    use crate::civ_radio::{CivRadio, PretendPort};
+    use crate::engine::{KeptRadio, KeptReading, KeptSetting};
+    use crate::rigdef;
+    use crate::settings_record;
+
+    #[test]
+    fn reads_what_the_operator_types() {
+        assert_eq!(typed("  "), Ok(Typed::Nothing));
+        assert_eq!(typed("keep FT8"), Ok(Typed::Keep("FT8".to_owned())));
+        assert_eq!(
+            typed("KEEP  Field Day SSB "),
+            Ok(Typed::Keep("Field Day SSB".to_owned()))
+        );
+        assert_eq!(typed("compare"), Ok(Typed::Compare));
+        assert_eq!(typed("help"), Ok(Typed::Help));
+        assert_eq!(typed("?"), Ok(Typed::Help));
+        assert!(typed("keep").is_err());
+        assert!(typed(&format!("keep {}", "x".repeat(41))).is_err());
+        assert!(
+            typed("restore FT8").is_err(),
+            "nothing puts settings back yet"
+        );
+        assert!(typed("compare FT8").is_err());
+    }
+
+    #[test]
+    fn shows_how_the_radio_differs_from_each_setup() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let ic_7300 = definitions
+            .iter()
+            .find(|d| d.model == "IC-7300")
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let port = PretendPort::new(PretendCiv::new(ic_7300), 115_200);
+        let mut radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let now = settings_record::read(
+            &mut radio,
+            Some("IC-7300_02065962"),
+            UNIX_EPOCH + Duration::from_mins(1),
+            "FL2",
+        );
+        let setup = |name: &str, att: &str| KeptReading {
+            name: Some(name.to_owned()),
+            settings: now
+                .settings
+                .iter()
+                .map(|e| KeptSetting {
+                    id: e.id.clone(),
+                    label: e.label.clone(),
+                    bytes: if e.label == "Attenuator (ATT)" {
+                        Some(att.to_owned())
+                    } else {
+                        e.bytes.clone()
+                    },
+                })
+                .collect(),
+            station: "fieldlab-1".to_owned(),
+            operator: Some("K9KSU".to_owned()),
+            saved_at: "2026-10-27T18:00:00Z".to_owned(),
+        };
+        assert_eq!(
+            compared(&setup("FT8", "00"), &now, ic_7300),
+            ["the radio matches setup FT8 (kept 2026-10-27T18:00:00Z at fieldlab-1 by K9KSU)."]
+        );
+        assert_eq!(
+            compared(&setup("SSB", "00 20"), &now, ic_7300),
+            [
+                "1 differs from setup SSB (kept 2026-10-27T18:00:00Z at fieldlab-1 by K9KSU):",
+                "  Attenuator (ATT): the radio has 00; setup SSB has 00 20"
+            ]
+        );
+        let none = KeptRadio {
+            as_received: None,
+            setups: Vec::new(),
+        };
+        assert!(compared_all(&none, &now, ic_7300)[0].starts_with("no setups"));
+        let two = KeptRadio {
+            as_received: None,
+            setups: vec![setup("FT8", "00"), setup("SSB", "00 20")],
+        };
+        assert_eq!(compared_all(&two, &now, ic_7300).len(), 4);
+    }
 
     #[test]
     fn the_sign_in_command_runs_station_and_fits_windows() {

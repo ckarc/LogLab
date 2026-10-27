@@ -54,7 +54,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
-use crate::rig::{Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
+use crate::rig::{Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
 
 /// The longest command line accepted.
 const MAX_LINE: usize = 256;
@@ -411,6 +411,41 @@ impl Shared {
             self.note(&note);
         }
         Some(done)
+    }
+}
+
+impl Shared {
+    /// Runs `act` on the radio's settings, if its driver can read them, and
+    /// only while no program has it keyed: reading every setting takes a
+    /// while, and nothing may come between a program and its transmission.
+    ///
+    /// # Errors
+    ///
+    /// The radio's settings can't be read by this driver, or it is keyed.
+    pub fn settings<T>(&self, act: impl FnOnce(&mut dyn Exposes) -> T) -> Result<T, String> {
+        let mut held = self
+            .radio
+            .lock()
+            .map_err(|_| "the radio is unavailable".to_owned())?;
+        if self.keyed.lock().map_or(true, |keyed| keyed.is_some()) {
+            return Err(
+                "the radio is transmitting for a program; try again when it's done".to_owned(),
+            );
+        }
+        let radio: &mut dyn Radio = match &mut *held {
+            Held::Read(radio) => radio.as_mut(),
+            Held::Tune(radio) => radio.as_mut(),
+            Held::Key(radio) => radio.as_mut(),
+        };
+        let exposes = radio
+            .exposes()
+            .ok_or("this radio's driver can't read its settings")?;
+        let done = act(exposes);
+        drop(held);
+        if let Ok(mut last) = self.last.lock() {
+            *last = None;
+        }
+        Ok(done)
     }
 }
 
@@ -1490,6 +1525,33 @@ mod tests {
     }
 
     const MINUTE: Duration = Duration::from_mins(1);
+
+    #[test]
+    fn reads_settings_only_while_nobody_has_the_radio_keyed() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let listed = radio.definition().settings.len();
+        let shared = Shared::with_transmit(Box::new(radio), MINUTE);
+        assert_eq!(
+            shared.settings(|radio| radio.definition().settings.len()),
+            Ok(listed)
+        );
+        assert_eq!(as_program(&shared, PROGRAM, "T 1"), "RPRT 0\n");
+        assert!(
+            shared.settings(|_| ()).is_err(),
+            "nothing comes between a program and its transmission"
+        );
+        assert_eq!(as_program(&shared, PROGRAM, "T 0"), "RPRT 0\n");
+        assert!(shared.settings(|_| ()).is_ok());
+    }
+
+    #[test]
+    fn says_when_a_driver_cant_read_settings() {
+        let (radio, _, _) = keyable(MINUTE);
+        assert!(radio.settings(|_| ()).is_err());
+    }
 
     #[test]
     fn keys_and_unkeys_when_programs_may_transmit() {

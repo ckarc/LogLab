@@ -13,6 +13,11 @@
 //! It also hands the Engine the QSOs a program on this computer logged
 //! (WSJT-X, say). The Engine logs each as the operator signed in at this
 //! station, and the Agent keeps it in its journal until then (Principle XV).
+//!
+//! And it keeps readings of the radio's settings on the Engine, so every
+//! computer the radio is plugged into knows them: the radio's as-received
+//! record, and the setups an operator kept by name. Fetching them back only
+//! shows them; nothing here puts a setting on the radio (Principle X).
 
 use std::fmt;
 use std::time::Duration;
@@ -21,6 +26,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::journal::Entry;
 use crate::rig::{RadioIdentity, Reading};
+use crate::settings_record::Record;
 
 /// How long one send may take.
 const SEND_TIMEOUT: Duration = Duration::from_secs(5);
@@ -28,6 +34,11 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_KEY: usize = 128;
 /// The most of an Engine answer the Agent reads.
 const MAX_ANSWER: u64 = 64 * 1024;
+/// The most of a radio's kept settings the Agent reads: its as-received
+/// record and every setup, each up to 2000 settings.
+const MAX_SETTINGS_ANSWER: u64 = 4 * 1024 * 1024;
+/// The longest name a setup may have, as the Engine takes it.
+const MAX_SETUP_NAME: usize = 40;
 
 /// What the Agent sends: the radio's state, or why it has none.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -103,10 +114,62 @@ struct Answer {
     detail: Option<serde_json::Value>,
 }
 
+/// One setting of a reading, as the Engine keeps it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct KeptSetting {
+    /// The rig definition's id for it, such as `data_mod`.
+    pub id: String,
+    /// Its name on the radio's menu.
+    pub label: String,
+    /// The bytes the radio sent, in hex, or None if it couldn't be read.
+    pub bytes: Option<String>,
+}
+
+/// A reading of a radio's settings as the Agent sends it.
+#[derive(Serialize)]
+struct ReadingBody<'a> {
+    maker: &'a str,
+    model: &'a str,
+    serial: &'a str,
+    name: Option<&'a str>,
+    settings: Vec<KeptSetting>,
+}
+
+/// A reading the Engine keeps.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct KeptReading {
+    /// The setup's name, or None for the as-received record.
+    pub name: Option<String>,
+    /// Every setting read.
+    pub settings: Vec<KeptSetting>,
+    /// The station it was read at.
+    pub station: String,
+    /// The operator signed in there then, if any.
+    pub operator: Option<String>,
+    /// When the Engine kept it, as it says it.
+    pub saved_at: String,
+}
+
+/// Everything the Engine keeps for one radio.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct KeptRadio {
+    /// Its as-received record, if any Agent has sent one.
+    pub as_received: Option<KeptReading>,
+    /// Its setups, the newest of each name.
+    pub setups: Vec<KeptReading>,
+}
+
+/// What the Engine said to a reading it was sent.
+#[derive(Deserialize)]
+struct KeptAnswer {
+    created: bool,
+}
+
 /// The Agent's link to the Engine.
 pub struct Uplink {
     url: String,
     qsos_url: String,
+    settings_url: String,
     authorization: String,
     http: ureq::Agent,
 }
@@ -138,6 +201,7 @@ impl Uplink {
         Ok(Self {
             url: format!("{base}/api/v1/agent/rig"),
             qsos_url: format!("{base}/api/v1/agent/qsos"),
+            settings_url: format!("{base}/api/v1/agent/radio-settings"),
             authorization: format!("Bearer {key}"),
             http,
         })
@@ -195,6 +259,86 @@ impl Uplink {
         }
     }
 
+    /// Keep a reading of the radio's settings on the Engine: as `name`, a
+    /// setup like FT8, or with no name as the radio's as-received record.
+    /// Returns false when that was already kept: a radio's as-received
+    /// record is kept once and never replaced.
+    ///
+    /// # Errors
+    ///
+    /// The record has no serial number to know the radio by, the name isn't
+    /// one the Engine takes, or the Engine refused it or can't be reached.
+    pub fn keep_reading(&self, record: &Record, name: Option<&str>) -> Result<bool, SendError> {
+        let serial = record.serial.as_deref().ok_or_else(|| {
+            SendError::Unreachable(
+                "the radio's serial number isn't known, so the Engine can't tell it from \
+                 another of its model"
+                    .to_owned(),
+            )
+        })?;
+        if let Some(name) = name {
+            check_setup_name(name).map_err(SendError::Unreachable)?;
+        }
+        let body = ReadingBody {
+            maker: &record.maker,
+            model: &record.model,
+            serial,
+            name,
+            settings: record
+                .settings
+                .iter()
+                .map(|entry| KeptSetting {
+                    id: entry.id.clone(),
+                    label: entry.label.clone(),
+                    bytes: entry.bytes.clone(),
+                })
+                .collect(),
+        };
+        let mut response = self
+            .http
+            .post(&self.settings_url)
+            .header("Authorization", &self.authorization)
+            .send_json(&body)
+            .map_err(failed)?;
+        let answer: KeptAnswer = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_ANSWER * 16)
+            .read_json()
+            .map_err(|error| SendError::Unreachable(format!("the Engine's answer: {error}")))?;
+        Ok(answer.created)
+    }
+
+    /// What the Engine keeps for one radio, by its maker, model and serial
+    /// number.
+    ///
+    /// # Errors
+    ///
+    /// The Engine refused the key, can't be reached, or sent something that
+    /// isn't an answer to this.
+    pub fn radio_settings(
+        &self,
+        maker: &str,
+        model: &str,
+        serial: &str,
+    ) -> Result<KeptRadio, SendError> {
+        let mut response = self
+            .http
+            .get(&self.settings_url)
+            .query("maker", maker)
+            .query("model", model)
+            .query("serial", serial)
+            .header("Authorization", &self.authorization)
+            .call()
+            .map_err(failed)?;
+        response
+            .body_mut()
+            .with_config()
+            .limit(MAX_SETTINGS_ANSWER)
+            .read_json()
+            .map_err(|error| SendError::Unreachable(format!("the Engine's answer: {error}")))
+    }
+
     fn put(&self, url: &str, body: &impl Serialize) -> Result<(), SendError> {
         match self
             .http
@@ -210,6 +354,35 @@ impl Uplink {
             Err(error) => Err(SendError::Unreachable(error.to_string())),
         }
     }
+}
+
+/// What a failed request says.
+fn failed(error: ureq::Error) -> SendError {
+    match error {
+        ureq::Error::StatusCode(code @ (401 | 403)) => SendError::Refused(code),
+        ureq::Error::StatusCode(code) => {
+            SendError::Unreachable(format!("the Engine answered HTTP {code}"))
+        }
+        error => SendError::Unreachable(error.to_string()),
+    }
+}
+
+/// Refuse a setup name the Engine wouldn't take: empty, longer than 40
+/// characters, or with control characters.
+///
+/// # Errors
+///
+/// It is one of those.
+pub fn check_setup_name(name: &str) -> Result<(), String> {
+    if name.is_empty() || name.chars().count() > MAX_SETUP_NAME {
+        return Err(format!(
+            "a setup's name is 1 to {MAX_SETUP_NAME} characters, like FT8"
+        ));
+    }
+    if name.chars().any(char::is_control) {
+        return Err("a setup's name can't have control characters".to_owned());
+    }
+    Ok(())
 }
 
 /// Refuse anything that is not a station key.
@@ -236,8 +409,164 @@ pub fn check_key(key: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{RadioReport, Report, Uplink, check_key};
+    use std::io::{BufRead, BufReader, Read, Write};
+    use std::net::TcpListener;
+    use std::thread::{self, JoinHandle};
+
+    use super::{RadioReport, Report, SendError, Uplink, check_key, check_setup_name};
     use crate::rig::{ControlPath, Mode, RadioIdentity, Reading};
+    use crate::settings_record::{Entry, Record, Value};
+
+    /// An Engine that answers one request with `status` and `body`, and
+    /// hands back the request it got: its first line and its body.
+    fn engine_once(
+        status: &'static str,
+        body: &'static str,
+    ) -> (String, JoinHandle<(String, String)>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap_or_else(|e| unreachable!("{e}"));
+        let address = listener
+            .local_addr()
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap_or_else(|e| unreachable!("{e}"));
+            let mut reader = BufReader::new(stream);
+            let mut first = String::new();
+            let _ = reader.read_line(&mut first);
+            let mut length = 0;
+            loop {
+                let mut line = String::new();
+                let _ = reader.read_line(&mut line);
+                let line = line.trim_end();
+                if line.is_empty() {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':')
+                    && name.eq_ignore_ascii_case("content-length")
+                {
+                    length = value.trim().parse().unwrap_or(0);
+                }
+            }
+            let mut sent = vec![0; length];
+            let _ = reader.read_exact(&mut sent);
+            let mut stream = reader.into_inner();
+            let _ = write!(
+                stream,
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            (
+                first.trim_end().to_owned(),
+                String::from_utf8_lossy(&sent).into_owned(),
+            )
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn record(serial: Option<&str>) -> Record {
+        Record {
+            format: 2,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            address: 0x94,
+            serial: serial.map(str::to_owned),
+            read_utc: "2026-10-27T18:00:00Z".to_owned(),
+            computer: "FL1".to_owned(),
+            settings: vec![
+                Entry {
+                    id: "att".to_owned(),
+                    label: "Attenuator (ATT)".to_owned(),
+                    value: Value::Raw,
+                    bytes: Some("00 20".to_owned()),
+                },
+                Entry {
+                    id: "nr_level".to_owned(),
+                    label: "NR level".to_owned(),
+                    value: Value::Unread {
+                        why: "no answer".to_owned(),
+                    },
+                    bytes: None,
+                },
+            ],
+        }
+    }
+
+    const KEY: &str = "lla_0123456789abcdef";
+
+    #[test]
+    fn keeps_a_reading_on_the_engine() {
+        let (engine, handle) = engine_once("201 Created", r#"{"created":true,"reading":{}}"#);
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let kept = uplink.keep_reading(&record(Some("IC-7300_02065962")), Some("FT8"));
+        assert!(matches!(kept, Ok(true)), "{kept:?}");
+        let (first, body) = handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(first, "POST /api/v1/agent/radio-settings HTTP/1.1");
+        let sent: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        assert_eq!(
+            sent.to_string(),
+            r#"{"maker":"Icom","model":"IC-7300","name":"FT8","serial":"IC-7300_02065962","settings":[{"bytes":"00 20","id":"att","label":"Attenuator (ATT)"},{"bytes":null,"id":"nr_level","label":"NR level"}]}"#
+        );
+    }
+
+    #[test]
+    fn an_as_received_record_is_kept_once() {
+        let (engine, handle) = engine_once("200 OK", r#"{"created":false,"reading":{}}"#);
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let kept = uplink.keep_reading(&record(Some("IC-7300_02065962")), None);
+        assert!(matches!(kept, Ok(false)), "{kept:?}");
+        let (_, body) = handle.join().unwrap_or_else(|_| unreachable!());
+        let sent: serde_json::Value = serde_json::from_str(&body).unwrap_or_default();
+        assert_eq!(sent["name"], serde_json::Value::Null, "{body}");
+        assert!(sent.get("name").is_some(), "{body}");
+    }
+
+    #[test]
+    fn wont_keep_a_reading_it_cant_name_the_radio_or_setup_of() {
+        let uplink = Uplink::new("http://127.0.0.1:9", KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        assert!(uplink.keep_reading(&record(None), None).is_err());
+        assert!(
+            uplink
+                .keep_reading(&record(Some("IC-7300_02065962")), Some(""))
+                .is_err()
+        );
+        assert!(check_setup_name("FT8").is_ok());
+        assert!(check_setup_name("Field Day SSB").is_ok());
+        assert!(check_setup_name("").is_err());
+        assert!(check_setup_name(&"x".repeat(41)).is_err());
+        assert!(check_setup_name("a\tb").is_err());
+    }
+
+    #[test]
+    fn fetches_what_the_engine_keeps_for_a_radio() {
+        let (engine, handle) = engine_once(
+            "200 OK",
+            r#"{"as_received":null,"setups":[{"maker":"Icom","model":"IC-7300","serial":"IC-7300_02065962","name":"FT8","settings":[{"id":"att","label":"Attenuator (ATT)","bytes":"00"}],"station":"fieldlab-1","operator":"K9KSU","saved_at":"2026-10-27T18:00:00Z"}]}"#,
+        );
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let kept = uplink
+            .radio_settings("Icom", "IC-7300", "IC-7300_02065962")
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        assert!(kept.as_received.is_none());
+        assert_eq!(kept.setups.len(), 1);
+        assert_eq!(kept.setups[0].name.as_deref(), Some("FT8"));
+        assert_eq!(kept.setups[0].settings[0].bytes.as_deref(), Some("00"));
+        let (first, _) = handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            first,
+            "GET /api/v1/agent/radio-settings?maker=Icom&model=IC-7300&serial=IC-7300_02065962 HTTP/1.1"
+        );
+    }
+
+    #[test]
+    fn says_when_the_engine_refuses_the_key() {
+        let (engine, handle) = engine_once("401 Unauthorized", r#"{"detail":"no"}"#);
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let fetched = uplink.radio_settings("Icom", "IC-7300", "IC-7300_02065962");
+        assert!(
+            matches!(fetched, Err(SendError::Refused(401))),
+            "{fetched:?}"
+        );
+        let _ = handle.join();
+    }
 
     #[test]
     fn reports_the_radio_as_the_engine_expects() {
