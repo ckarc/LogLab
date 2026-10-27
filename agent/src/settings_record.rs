@@ -324,7 +324,7 @@ pub fn differences<'a>(
 }
 
 /// A setting's bytes, as hex pairs, in plain words.
-fn shown(definition: &Definition, id: &str, bytes: Option<&str>) -> String {
+pub fn shown(definition: &Definition, id: &str, bytes: Option<&str>) -> String {
     let Some(text) = bytes else {
         return "not read".to_owned();
     };
@@ -367,13 +367,13 @@ pub fn path_for(dir: &Path, record: &Record) -> PathBuf {
 ///
 /// # Errors
 ///
-/// The file could not be written, or one is already there: the as-received
-/// record is never overwritten.
-pub fn save(path: &Path, record: &Record) -> Result<(), String> {
+/// The file could not be written, or one is already there: a record, the
+/// as-received record above all, is never overwritten.
+pub fn save(path: &Path, record: &impl Serialize) -> Result<(), String> {
     let fail = |error: std::io::Error| format!("can't save {}: {error}", path.display());
     if path.exists() {
         return Err(format!(
-            "{} already holds this radio's as-received record; it is never overwritten",
+            "{} already holds a record; it is never overwritten",
             path.display()
         ));
     }

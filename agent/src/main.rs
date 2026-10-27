@@ -31,6 +31,7 @@ mod hamlib;
 mod journal;
 mod pairing;
 mod pretend;
+mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;

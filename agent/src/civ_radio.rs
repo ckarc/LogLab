@@ -43,6 +43,8 @@ const ANSWER_WAIT: Duration = Duration::from_millis(300);
 const LISTEN: Duration = Duration::from_millis(20);
 /// The most messages it skips while waiting for one answer.
 const MAX_SKIPPED: usize = 32;
+/// The most bytes one setting's value may have, as the Engine keeps them.
+const MAX_SETTING_BYTES: usize = 64;
 
 /// What the CI-V driver needs from a port.
 pub trait Port {
@@ -440,6 +442,42 @@ impl<P: Port> Exposes for CivRadio<P> {
 
     fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
         self.read_one(setting)
+    }
+
+    fn write_exposed(&mut self, setting: &SettingSummary, bytes: &[u8]) -> Result<(), RadioError> {
+        if !setting.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                setting.label
+            )));
+        }
+        if !setting.verified {
+            return Err(RadioError(format!(
+                "{} isn't verified on a real radio yet, so the Agent doesn't write it",
+                setting.label
+            )));
+        }
+        if bytes.is_empty() || bytes.len() > MAX_SETTING_BYTES {
+            return Err(RadioError(format!(
+                "{} is not a value for {}",
+                civ::hex(bytes),
+                setting.label
+            )));
+        }
+        // A setting is set by the command that reads it, with the value
+        // after it.
+        let command = match (setting.item(), setting.read.as_slice()) {
+            (Some(item), _) => Ask::Setting(item).payload(),
+            (None, [0x11]) => Ask::Attenuator.payload(),
+            (None, [a, b]) => Ask::Control([*a, *b]).payload(),
+            (None, other) => {
+                return Err(RadioError(format!(
+                    "{} is not a command settings are set with",
+                    civ::hex(other)
+                )));
+            }
+        };
+        self.command(&[command.as_slice(), bytes].concat())
     }
 }
 
