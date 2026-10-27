@@ -23,6 +23,8 @@ mod civ_demo;
 mod civ_pretend;
 mod civ_radio;
 mod civ_serial;
+#[cfg(any(windows, test))]
+mod driver;
 mod engine;
 mod flex;
 mod hamlib;

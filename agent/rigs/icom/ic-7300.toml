@@ -37,6 +37,15 @@ checked against the full manual and a radio before they are marked verified.
 """
 
 [[definition.sources]]
+id = "silabs_driver"
+title = "Silicon Labs, CP210x Universal Windows Driver release notes (11.6.0, 2026-09-15), silabs.com/documents/public/release-notes/CP210x_Universal_Windows_Driver_ReleaseNotes.txt"
+note = """
+The package's address was found quoted on forum.arduino.cc, not on Silicon
+Labs' own page, so it is unverified until the Agent fetches it at FieldLab.
+silabser.inf is the file installed by hand at FieldLab on 2026-10-26.
+"""
+
+[[definition.sources]]
 id = "manual_copy"
 title = "IC-7300 manual, section 19 (control command), pages 19-3 to 19-13, as copied at radio.pk2.se/article/IC-7300-CAT-commands.pdf"
 note = """
@@ -77,8 +86,28 @@ says what the values mean, the setting is kept raw.
 # The radio holds a USB hub with a USB-to-serial bridge and a USB sound device
 # behind it. The Agent pairs the two by their shared parent in the device tree.
 # 10C4:EA60 is Silicon Labs' standard ID for its CP210x serial bridges.
-serial = { vid = 0x10C4, pid = 0xEA60, role = "civ", verified = false }
 audio = { name_contains = "USB Audio CODEC", verified = false }
+
+# Windows has no driver for this bridge: Windows Update installs Silicon Labs'
+# driver only for its alternate IDs EA63, EA7A and EA7B ("CP210x Universal
+# Windows Driver" release notes, silabs.com). Its license lets anyone
+# download it and install it on any number of computers, but not ship it with
+# the Agent, so the Agent fetches it (or has the operator download it) and
+# keeps a copy for the next computer.
+[usb.serial]
+vid = 0x10C4
+pid = 0xEA60
+role = "civ"
+verified = false
+
+[usb.serial.driver]
+name = "Silicon Labs CP210x"
+download = "https://www.silabs.com/documents/public/software/CP210x_Universal_Windows_Driver.zip"
+page = "https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers"
+file = "CP210x_Universal_Windows_Driver.zip"
+inf = "silabser.inf"
+source = "silabs_driver"
+verified = false
 
 # ---------------------------------------------------------------------------
 # The CI-V link.

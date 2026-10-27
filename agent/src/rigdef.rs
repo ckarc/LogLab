@@ -125,6 +125,19 @@ struct UsbSerial {
     pid: u16,
     role: String,
     verified: bool,
+    driver: Option<UsbDriver>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct UsbDriver {
+    name: String,
+    download: String,
+    page: String,
+    file: String,
+    inf: String,
+    source: String,
+    verified: bool,
 }
 
 #[derive(Deserialize)]
@@ -237,6 +250,8 @@ pub struct Definition {
     pub usb_serial: Option<(u16, u16)>,
     /// Part of the name of the radio's USB sound device, if it has one.
     pub usb_audio: Option<String>,
+    /// The Windows driver its USB serial bridge needs, if Windows has none.
+    pub usb_driver: Option<DriverSummary>,
     /// The radio's mode codes, by rig-model mode name.
     pub mode_codes: BTreeMap<String, u8>,
     /// The menu settings the Agent may read, in file order.
@@ -247,6 +262,21 @@ pub struct Definition {
     pub checked_values: usize,
     /// How many of them are marked verified.
     pub verified_values: usize,
+}
+
+/// The Windows driver a radio's USB serial bridge needs.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DriverSummary {
+    /// Its name, such as "Silicon Labs `CP210x`".
+    pub name: String,
+    /// Where the maker publishes its package, to fetch directly.
+    pub download: String,
+    /// The maker's download page, to open in a browser when fetching fails.
+    pub page: String,
+    /// The package's file name, as the download saves it.
+    pub file: String,
+    /// The driver's INF file inside the package.
+    pub inf: String,
 }
 
 /// One setting the radio exposes: a menu item or a front-panel control.
@@ -478,6 +508,18 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .as_ref()
             .and_then(|usb| usb.audio.as_ref())
             .map(|audio| audio.name_contains.clone()),
+        usb_driver: file
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.serial.as_ref())
+            .and_then(|serial| serial.driver.as_ref())
+            .map(|driver| DriverSummary {
+                name: driver.name.clone(),
+                download: driver.download.clone(),
+                page: driver.page.clone(),
+                file: driver.file.clone(),
+                inf: driver.inf.clone(),
+            }),
         mode_codes: file.modes.codes.clone(),
         settings: file
             .settings
@@ -578,10 +620,41 @@ impl Check {
             }
             self.text("usb.serial.role", &serial.role);
             self.flag(serial.verified);
+            if let Some(driver) = &serial.driver {
+                self.driver(driver);
+            }
         }
         if let Some(audio) = &usb.audio {
             self.text("usb.audio.name_contains", &audio.name_contains);
             self.flag(audio.verified);
+        }
+    }
+
+    fn driver(&mut self, driver: &UsbDriver) {
+        self.text("usb.serial.driver.name", &driver.name);
+        self.source("usb.serial.driver", &driver.source);
+        self.flag(driver.verified);
+        for (field, url) in [("download", &driver.download), ("page", &driver.page)] {
+            let host = url
+                .strip_prefix("https://")
+                .and_then(|rest| rest.split('/').next());
+            if !host.is_some_and(|host| !host.is_empty() && !url.contains(char::is_whitespace)) {
+                self.problem(format!(
+                    "usb.serial.driver.{field} must be an https:// address, not {url:?}"
+                ));
+            }
+        }
+        for (field, name, extension) in
+            [("file", &driver.file, ".zip"), ("inf", &driver.inf, ".inf")]
+        {
+            let plain = name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'));
+            if !plain || !name.to_ascii_lowercase().ends_with(extension) || name.starts_with('.') {
+                self.problem(format!(
+                    "usb.serial.driver.{field} must be a plain {extension} file name, not {name:?}"
+                ));
+            }
         }
     }
 
@@ -1111,6 +1184,12 @@ explain = "Data mode audio must come from USB."
         assert_eq!(definition.baud_rates.first(), Some(&115_200));
         assert_eq!(definition.usb_serial, Some((0x10C4, 0xEA60)));
         assert_eq!(definition.usb_audio.as_deref(), Some("USB Audio CODEC"));
+        let driver = definition
+            .usb_driver
+            .clone()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(driver.inf, "silabser.inf");
+        assert!(driver.download.starts_with("https://www.silabs.com/"));
         // Every menu item firmware 1.40 has, 0001 to 0216, then the
         // front-panel controls.
         let items: Vec<[u8; 2]> = definition
@@ -1218,6 +1297,41 @@ explain = "Data mode audio must come from USB."
         refused_for(
             &changed("values = { MIC = 0x00, USB = 0x03 }\n", ""),
             "or say raw = true",
+        );
+    }
+
+    #[test]
+    fn a_driver_comes_from_an_https_address_as_plain_files() {
+        let driver = |download: &str, file: &str, inf: &str| {
+            changed(
+                "[[settings]]",
+                &format!(
+                    "[usb.serial]\nvid = 0x10C4\npid = 0xEA60\nrole = \"civ\"\nverified = false\n\n\
+                     [usb.serial.driver]\nname = \"x\"\ndownload = \"{download}\"\n\
+                     page = \"https://example.com/\"\nfile = \"{file}\"\ninf = \"{inf}\"\n\
+                     source = \"manual\"\nverified = false\n\n[[settings]]"
+                ),
+            )
+        };
+        let good = parse(&driver("https://example.com/d.zip", "d.zip", "d.inf"))
+            .unwrap_or_else(|problems| unreachable!("{problems:?}"));
+        assert_eq!(good.usb_driver.map(|d| d.inf), Some("d.inf".to_owned()));
+        refused_for(
+            &driver("http://example.com/d.zip", "d.zip", "d.inf"),
+            "https://",
+        );
+        refused_for(&driver("https:///d.zip", "d.zip", "d.inf"), "https://");
+        refused_for(
+            &driver("https://example.com/d.zip", "../d.zip", "d.inf"),
+            "plain .zip",
+        );
+        refused_for(
+            &driver("https://example.com/d.zip", "d.exe", "d.inf"),
+            "plain .zip",
+        );
+        refused_for(
+            &driver("https://example.com/d.zip", "d.zip", "a/d.inf"),
+            "plain .inf",
         );
     }
 

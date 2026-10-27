@@ -46,8 +46,10 @@ struct Found {
 }
 
 /// Finds the radio on `port`, or, with none given, on whichever serial port
-/// looks like a known radio's and answers as one.
-fn find(port: Option<&str>) -> Result<Found, String> {
+/// looks like a known radio's and answers as one. On Windows, a radio
+/// plugged in with no driver for its USB serial bridge gets one first (see
+/// `driver`).
+fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     let definitions = rigdef::built_in()?;
     if let Some(port) = port {
         let opened = SerialPort::open(port)?;
@@ -59,6 +61,14 @@ fn find(port: Option<&str>) -> Result<Found, String> {
         });
     }
     let candidates = civ_serial::radio_ports(&definitions)?;
+    #[cfg(windows)]
+    let candidates = if candidates.is_empty() && crate::driver::ensure(&definitions, running)? {
+        civ_serial::radio_ports(&definitions)?
+    } else {
+        candidates
+    };
+    #[cfg(not(windows))]
+    let _ = running;
     if candidates.is_empty() {
         return Err("no radio's USB serial port is on this computer.\n\
              -> Is the radio on, with its USB cable in? If it is, unplug the USB cable and \
@@ -101,7 +111,7 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
-        match find(port) {
+        match find(port, running) {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {

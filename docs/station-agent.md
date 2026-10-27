@@ -149,6 +149,16 @@ loglab-agent station --civ COM5      # or names its port
    radio it knows (an IC-7300's Silicon Labs CP210x bridge, 10C4:EA60, with a
    USB serial number like `IC-7300_02065962` tried first), and takes the one
    whose radio answers "who are you?", at whatever speed it answers at.
+   If the radio is plugged in but Windows has no driver for its USB serial
+   bridge (the IC-7300's Silicon Labs CP210x has none built in), the Agent
+   gets it: from the copy in `drivers` beside the Agent or in Downloads,
+   else from Silicon Labs with Windows' own `curl.exe`, else by opening
+   Silicon Labs' download page in your browser and waiting for the file to
+   arrive in Downloads. It unpacks it and installs it; Windows asks once
+   whether to allow that. It keeps the file in `drivers`, so copying that
+   folder to the next computer lets it install with no internet. (The
+   driver's license allows that copy, not shipping the driver with the
+   Agent.)
 2. **Reads all the radio's settings** (259 on the IC-7300) and keeps the
    first reading of each radio, by its serial number, as its as-received
    record in `records` beside the Agent. On later starts it lists what has
