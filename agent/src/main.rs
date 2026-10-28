@@ -51,6 +51,9 @@ mod settings_file;
 mod settings_record;
 mod setups;
 mod station;
+mod tray;
+#[cfg(windows)]
+mod tray_windows;
 #[cfg(any(windows, test))]
 mod vara;
 mod write_check;
@@ -113,7 +116,8 @@ Usage:
                                        a time, for at most 60 seconds at
                                        once (--tx-limit, up to 600); both
                                        --civ or --civ-pretend only
-  loglab-agent station [--civ PORT] [--listen 127.0.0.1:4532] [--tx-limit SECONDS]
+  loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
+                    [--tx-limit SECONDS]
                     [--engine URL --key-file FILE [--station NAME]]
                                        everything programs on this computer
                                        need to use the radio: finds it and
@@ -125,15 +129,25 @@ Usage:
                                        (it waits for the radio if it is off);
                                        with --engine, keeps the radio's
                                        settings there for every computer:
-                                       type keep NAME to keep a setup
+                                       type keep NAME to keep a setup;
+                                       quit, or its input closing, stops it
+  loglab-agent tray [station's options]
+                                       station in the background, with an
+                                       icon by the clock instead of a
+                                       window: its menu does what is typed
+                                       at station, and a Yes/No box asks
+                                       before the radio is changed
+                                       (Windows only)
   loglab-agent check-writes [--civ PORT]
                                        find out which of the radio's
                                        settings the Agent can set: writes
                                        each one's own value back and reads
                                        it again, so nothing changes; asks
                                        first
-  loglab-agent startup on|off|status   whether Windows runs `station` each
-                                       time you sign in
+  loglab-agent startup on [station's options] | off | status
+                                       whether Windows starts the tray each
+                                       time you sign in, and with which
+                                       options (--engine, say)
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -221,6 +235,8 @@ enum Command {
     },
     Station {
         port: Option<String>,
+        /// The pretend IC-7300 in place of a radio.
+        pretend: bool,
         listen: SocketAddr,
         limit: Duration,
         /// The Engine's address, the station key's file, and the station to
@@ -228,7 +244,11 @@ enum Command {
         /// there.
         engine: Option<(String, String, Option<String>)>,
     },
-    Startup(String),
+    /// `on`, `off` or `status`, and for `on`, the `station` options the
+    /// tray runs it with.
+    Startup(String, Vec<String>),
+    /// The tray: `station`, with these options, in the background.
+    Tray(Vec<String>),
     /// Write each changeable setting's own value back, on this port or
     /// whichever the radio is on.
     CheckWrites(Option<String>),
@@ -315,6 +335,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
     if verb == "station" {
         return station_command(rest);
     }
+    if verb == "tray" {
+        station_command(rest)?;
+        return Ok(Command::Tray(rest.to_vec()));
+    }
     if matches!(verb.as_str(), "check-writes" | "startup") {
         return station_tool_command(verb, rest);
     }
@@ -394,6 +418,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
 /// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS]`.
 fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
+    let mut pretend = false;
     let mut listen = SocketAddr::from(([127, 0, 0, 1], 4532));
     let mut limit = TX_LIMIT;
     let mut engine = None;
@@ -401,6 +426,10 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut station = None;
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
+        if flag == "--civ-pretend" {
+            pretend = true;
+            continue;
+        }
         let value = words
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?
@@ -429,8 +458,12 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             );
         }
     };
+    if pretend && port.is_some() {
+        return Err("station takes --civ PORT or --civ-pretend, not both".to_owned());
+    }
     Ok(Command::Station {
         port,
+        pretend,
         listen,
         limit,
         engine,
@@ -446,9 +479,13 @@ fn station_tool_command(verb: &str, rest: &[String]) -> Result<Command, String> 
         }
         ("check-writes", _) => Err("check-writes takes only --civ PORT".to_owned()),
         ("startup", [what]) if matches!(what.as_str(), "on" | "off" | "status") => {
-            Ok(Command::Startup(what.clone()))
+            Ok(Command::Startup(what.clone(), Vec::new()))
         }
-        _ => Err("startup takes one of: on, off, status".to_owned()),
+        ("startup", [what, options @ ..]) if what == "on" => {
+            station_command(options)?;
+            Ok(Command::Startup(what.clone(), options.to_vec()))
+        }
+        _ => Err("startup takes one of: on, off, status (on may add station's options)".to_owned()),
     }
 }
 
@@ -1250,18 +1287,21 @@ fn main() -> ExitCode {
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::Station {
             port,
+            pretend,
             listen,
             limit,
             engine,
         }) => station::run(
             port.as_deref(),
+            pretend,
             listen,
             limit,
             engine.as_ref().map(|(engine, key_file, station)| {
                 (engine.as_str(), key_file.as_str(), station.as_deref())
             }),
         ),
-        Ok(Command::Startup(what)) => station::startup(&what),
+        Ok(Command::Startup(what, options)) => station::startup(&what, &options),
+        Ok(Command::Tray(options)) => tray::run(&options),
         Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
@@ -1489,6 +1529,7 @@ mod tests {
             parse(&args("station")),
             Ok(Command::Station {
                 port: None,
+                pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
                 engine: None,
@@ -1500,6 +1541,7 @@ mod tests {
             )),
             Ok(Command::Station {
                 port: Some("COM5".to_owned()),
+                pretend: false,
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
                 engine: None,
@@ -1511,6 +1553,7 @@ mod tests {
             )),
             Ok(Command::Station {
                 port: None,
+                pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
                 engine: Some((
@@ -1522,8 +1565,31 @@ mod tests {
         );
         assert_eq!(
             parse(&args("startup on")),
-            Ok(Command::Startup("on".to_owned()))
+            Ok(Command::Startup("on".to_owned(), Vec::new()))
         );
+        assert_eq!(
+            parse(&args("startup on --engine http://x:8073 --key-file k")),
+            Ok(Command::Startup(
+                "on".to_owned(),
+                args("--engine http://x:8073 --key-file k")
+            ))
+        );
+        assert!(parse(&args("startup on --engine http://x:8073")).is_err());
+        assert!(parse(&args("startup off --civ COM5")).is_err());
+        assert_eq!(
+            parse(&args("tray --civ-pretend")),
+            Ok(Command::Tray(args("--civ-pretend")))
+        );
+        assert!(parse(&args("tray --nonsense")).is_err());
+        assert!(matches!(
+            parse(&args("station --civ-pretend")),
+            Ok(Command::Station {
+                pretend: true,
+                port: None,
+                ..
+            })
+        ));
+        assert!(parse(&args("station --civ-pretend --civ COM5")).is_err());
         assert!(parse(&args("startup")).is_err());
         assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
         assert_eq!(
