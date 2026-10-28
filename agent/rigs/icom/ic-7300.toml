@@ -2893,6 +2893,13 @@ alc = [[0, 0], [120, 100]]
 # (the USB input's level, while DATA MOD includes USB) sets how hard it
 # drives the transmitter.
 drive = "usb_mod_level"
+# RF power is what Po should reach at a good drive level; well short of it
+# with ALC near zero, the drive is too low.
+power_setting = "rf_power"
+# 1C 01 sent bare reads the antenna tuner: 00 off, 01 on, 02 tuning
+# (Hamlib icom_defs.h S_ANT_TUN; wfview IC-7300.rig "Tuner/ATU Status",
+# 0 to 2). While it tunes, the meters read its carrier, not the audio.
+tuner = { command = "1C 01", tuning = 0x02, source = "hamlib_wfview" }
 
 [[requirements]]
 job = "control"

@@ -632,37 +632,116 @@ fn numbered(ask: &str, number: u32) -> String {
     format!("{ask} (question {number})")
 }
 
-/// How far each offer lowers the drive level, in percent of its scale.
+/// How far each offer moves the drive level, in percent of its scale.
 const DRIVE_STEP: u32 = 10;
 
-/// After a transmission whose ALC ran over a third of its scale, the change
-/// that lowers the radio's drive level one step and what it is, or `None`
-/// when there is nothing to change.
-fn drive_offer(shared: &Shared, definition: &Definition) -> Option<(String, crate::restore::Plan)> {
-    let peak = shared.last_peak()?;
-    if peak.alc <= rigctld_server::ALC_HIGHEST {
-        return None;
-    }
-    let id = definition.meters.as_ref()?.drive.as_ref()?;
-    let setting = definition.settings.iter().find(|s| &s.id == id)?;
-    let [low, high] = setting.range?;
-    if !(setting.write && setting.write_checked) {
-        return None;
-    }
+/// ALC at or under this, in percent of its scale, leaves room for more
+/// drive.
+const ALC_LOW: u16 = 10;
+
+/// Po under this many tenths of the power the radio is set to, with ALC
+/// low, means too little drive.
+const POWER_SHORT_TENTHS: u32 = 7;
+
+/// Po under this, in percent, means no audio reached the radio, not too
+/// little drive: the Agent never raises the drive for silence.
+const POWER_SOME: u16 = 5;
+
+/// The fewest meter readings (a quarter second apart) a transmission needs
+/// before a low Po counts: a short burst may be read on its way up.
+const READINGS_FOR_LOW: u16 = 4;
+
+/// What the drive levels tried so far showed, in percent of the setting's
+/// scale, so the next step never goes back past one of them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct DriveTried {
+    /// The latest level whose Po fell short.
+    too_low: Option<u32>,
+    /// The latest level whose ALC ran over a third.
+    too_high: Option<u32>,
+}
+
+/// A level setting's value, and that value in percent of its scale.
+fn level_percent(shared: &Shared, setting: &SettingSummary) -> Option<(Vec<u8>, u32)> {
+    let [_, high] = setting.range?;
     let bytes = shared
         .settings(|radio| radio.read_exposed(setting))
         .ok()?
         .ok()?;
     let level = crate::civ::level_from_bcd(&bytes)?;
     let percent = (u32::from(level) * 100 + u32::from(high) / 2) / u32::from(high.max(1));
-    if percent <= u32::from(low) {
+    Some((bytes, percent))
+}
+
+/// After a transmission whose ALC ran over a third of its scale, or whose
+/// Po fell well short of the power the radio is set to with ALC near zero,
+/// the change that moves the radio's drive level one step, and what it is;
+/// `None` when there is nothing to change. A transmission while the
+/// radio's own tuner was tuning says nothing about the drive. A step never
+/// goes back past a level already tried: it stops halfway instead.
+fn drive_offer(
+    shared: &Shared,
+    definition: &Definition,
+    tried: &mut DriveTried,
+) -> Option<(String, crate::restore::Plan)> {
+    let peak = shared.last_peak()?;
+    if peak.tuning {
         return None;
     }
-    let lower = percent.saturating_sub(DRIVE_STEP);
-    let to = u16::try_from((lower * u32::from(high) + 50) / 100)
+    let meters = definition.meters.as_ref()?;
+    let id = meters.drive.as_ref()?;
+    let setting = definition.settings.iter().find(|s| &s.id == id)?;
+    let [low, high] = setting.range?;
+    if !(setting.write && setting.write_checked) {
+        return None;
+    }
+    let (bytes, now) = level_percent(shared, setting)?;
+    let set_power = meters
+        .power_setting
+        .as_ref()
+        .and_then(|id| definition.settings.iter().find(|s| &s.id == id))
+        .and_then(|power| level_percent(shared, power))
+        .map(|(_, percent)| percent);
+    let (target, why) = if peak.alc > rigctld_server::ALC_HIGHEST {
+        tried.too_high = Some(now);
+        let step = now.saturating_sub(DRIVE_STEP);
+        let target = match tried.too_low {
+            Some(floor) if step <= floor && floor < now => (floor + now).div_ceil(2),
+            _ => step,
+        };
+        (target, format!("ALC peaked at {}% of its scale", peak.alc))
+    } else if let Some(set) = set_power
+        && peak.alc <= ALC_LOW
+        && peak.power >= POWER_SOME
+        && peak.readings >= READINGS_FOR_LOW
+        && u32::from(peak.power) * 10 < set * POWER_SHORT_TENTHS
+    {
+        tried.too_low = Some(now);
+        let step = (now + DRIVE_STEP).min(100);
+        let target = match tried.too_high {
+            Some(ceiling) if step >= ceiling && ceiling > now => u32::midpoint(now, ceiling),
+            _ => step,
+        };
+        (
+            target,
+            format!(
+                "Po reached {}% with the radio set to {set}% and ALC at {}%",
+                peak.power, peak.alc
+            ),
+        )
+    } else {
+        return None;
+    };
+    if target == now {
+        return None;
+    }
+    let to = u16::try_from((target * u32::from(high) + 50) / 100)
         .ok()?
-        .max(u16::from(low));
+        .clamp(u16::from(low), u16::from(high));
     let to = crate::civ::level_to_bcd(to)?.to_vec();
+    if to == bytes {
+        return None;
+    }
     let shown =
         |bytes: &[u8]| settings_record::shown(definition, id, Some(&crate::civ::hex(bytes)));
     let plan = crate::restore::Plan {
@@ -677,14 +756,17 @@ fn drive_offer(shared: &Shared, definition: &Definition) -> Option<(String, crat
         kept_back: Vec::new(),
     };
     let about = format!(
-        "ALC peaked at {}% of its scale: lower {} from {} to {}.",
-        peak.alc, setting.label, plan.put[0].now, plan.put[0].setup
+        "{why}: {} {} from {} to {}.",
+        if target > now { "raise" } else { "lower" },
+        setting.label,
+        plan.put[0].now,
+        plan.put[0].setup
     );
     Some((about, plan))
 }
 
-/// How to say yes to lowering the drive.
-const DRIVE_ASK: &str = "-> Type yes to set it, then transmit again to see the new ALC; \
+/// How to say yes to moving the drive.
+const DRIVE_ASK: &str = "-> Type yes to set it, then transmit again to see the new meters; \
                          anything else leaves the radio as it is.";
 
 /// What the Agent can fix.
@@ -769,7 +851,7 @@ fn show(shared: &Shared, definition: &Definition, name: &str) -> String {
 }
 
 /// What to look at each time round: whenever the Agent has just unkeyed,
-/// offers to lower the drive if ALC ran high.
+/// moves the drive a step if the meters show it too high or too low.
 fn after_unkey<'a>(
     shared: &'a Shared,
     definition: &'a Definition,
@@ -777,12 +859,13 @@ fn after_unkey<'a>(
     on_air: &'a AtomicBool,
 ) -> impl FnMut() + 'a {
     let mut was_keyed = false;
+    let mut tried = DriveTried::default();
     move || {
         let keyed = on_air.load(Ordering::SeqCst);
         if std::mem::replace(&mut was_keyed, keyed)
             && !keyed
             && let Some(desk) = &desk
-            && let Some((about, plan)) = drive_offer(shared, definition)
+            && let Some((about, plan)) = drive_offer(shared, definition, &mut tried)
         {
             crate::print_event(&desk.propose(shared, &about, DRIVE_ASK, plan));
         }
@@ -1350,8 +1433,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        DRIVE_ASK, Desk, Typed, compared, compared_all, drive_offer, restore_plan, startup_command,
-        typed,
+        DRIVE_ASK, Desk, DriveTried, Typed, compared, compared_all, drive_offer, restore_plan,
+        startup_command, typed,
     };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
@@ -1363,12 +1446,23 @@ mod tests {
     /// The pretend IC-7300, shared for transmitting, after one transmission
     /// whose meters read `meters` (raw Po, SWR, ALC levels).
     fn transmitted(meters: [u16; 3]) -> (Shared, rigdef::Definition) {
+        transmitted_for(meters, false, 1)
+    }
+
+    /// The same, with its tuner tuning or not, keyed for `readings` meter
+    /// readings.
+    fn transmitted_for(
+        meters: [u16; 3],
+        tuning: bool,
+        readings: u32,
+    ) -> (Shared, rigdef::Definition) {
         let definition = rigdef::built_in()
             .ok()
             .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
             .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
         let mut pretend = PretendCiv::new(&definition);
         pretend.set_tx_meters(meters);
+        pretend.set_tuning(tuning);
         let radio = CivRadio::find(
             PretendPort::new(pretend, 115_200),
             std::slice::from_ref(&definition),
@@ -1377,8 +1471,10 @@ mod tests {
         let shared = Shared::with_transmit(Box::new(radio), Duration::from_mins(1));
         let program = SocketAddr::from(([127, 0, 0, 1], 50_001));
         assert!(shared.transmit(program, true).is_ok());
-        std::thread::sleep(Duration::from_millis(300));
-        shared.watch();
+        for _ in 0..readings {
+            std::thread::sleep(Duration::from_millis(270));
+            shared.watch();
+        }
         assert!(shared.transmit(program, false).is_ok());
         (shared, definition)
     }
@@ -1387,7 +1483,8 @@ mod tests {
     fn offers_to_lower_the_drive_only_when_alc_ran_high() {
         // ALC 84 of 120 is 70% of its scale.
         let (shared, definition) = transmitted([60, 20, 84]);
-        let Some((say, plan)) = drive_offer(&shared, &definition) else {
+        let Some((say, plan)) = drive_offer(&shared, &definition, &mut DriveTried::default())
+        else {
             unreachable!("ALC ran high")
         };
         assert!(
@@ -1402,7 +1499,7 @@ mod tests {
             .settings(|radio| crate::restore::apply(radio, &plan, "test", UNIX_EPOCH, "test-pc"))
             .unwrap_or_else(|why| unreachable!("{why}"));
         assert_eq!(done.lines()[0], "fixed 1 of 1 setting.");
-        let Some((say, _)) = drive_offer(&shared, &definition) else {
+        let Some((say, _)) = drive_offer(&shared, &definition, &mut DriveTried::default()) else {
             unreachable!("still the same peak")
         };
         assert!(
@@ -1411,7 +1508,47 @@ mod tests {
         );
         // ALC 40 of 120 is a third: nothing to offer.
         let (shared, definition) = transmitted([60, 20, 40]);
-        assert!(drive_offer(&shared, &definition).is_none());
+        assert!(drive_offer(&shared, &definition, &mut DriveTried::default()).is_none());
+    }
+
+    #[test]
+    fn raises_the_drive_when_po_falls_short_and_alc_stays_low() {
+        // Po 29 of 213 is 10%; the pretend RF power is 50%.
+        let (shared, definition) = transmitted_for([29, 0, 0], false, 4);
+        let mut tried = DriveTried::default();
+        let Some((say, _)) = drive_offer(&shared, &definition, &mut tried) else {
+            unreachable!("Po fell short")
+        };
+        assert_eq!(
+            say,
+            "Po reached 10% with the radio set to 50% and ALC at 0%: raise USB MOD Level \
+             from 127 of 255 (50%) to 153 of 255 (60%)."
+        );
+        assert_eq!(tried.too_low, Some(50));
+        // Never back past a level whose ALC ran high: halfway instead.
+        let mut tried = DriveTried {
+            too_low: None,
+            too_high: Some(55),
+        };
+        let halfway = drive_offer(&shared, &definition, &mut tried).map(|(say, _)| say);
+        assert!(
+            halfway
+                .as_deref()
+                .is_some_and(|say| say.ends_with("(52%).")),
+            "{halfway:?}"
+        );
+        // Silence, and a burst too short to judge, change nothing.
+        let (shared, definition) = transmitted_for([0, 0, 0], false, 4);
+        assert!(drive_offer(&shared, &definition, &mut DriveTried::default()).is_none());
+        let (shared, definition) = transmitted_for([29, 0, 0], false, 1);
+        assert!(drive_offer(&shared, &definition, &mut DriveTried::default()).is_none());
+    }
+
+    #[test]
+    fn says_nothing_about_the_drive_while_the_tuner_tunes() {
+        let (shared, definition) = transmitted_for([60, 20, 84], true, 1);
+        assert!(shared.last_peak().is_some_and(|peak| peak.tuning));
+        assert!(drive_offer(&shared, &definition, &mut DriveTried::default()).is_none());
     }
 
     #[test]
@@ -1427,7 +1564,8 @@ mod tests {
             auto: Arc::new(AtomicBool::new(false)),
             serial: "test".to_owned(),
         };
-        let Some((about, plan)) = drive_offer(&shared, &definition) else {
+        let Some((about, plan)) = drive_offer(&shared, &definition, &mut DriveTried::default())
+        else {
             unreachable!("ALC ran high")
         };
         let said = desk.propose(&shared, &about, DRIVE_ASK, plan.clone());
@@ -1443,7 +1581,8 @@ mod tests {
         );
         let again = desk.propose(&shared, &about, DRIVE_ASK, plan.clone());
         assert!(again.ends_with("(question 2)"), "a new number: {again}");
-        let unchanged = drive_offer(&shared, &definition).map(|(about, _)| about);
+        let unchanged =
+            drive_offer(&shared, &definition, &mut DriveTried::default()).map(|(about, _)| about);
         assert_eq!(
             unchanged.as_deref(),
             Some(about.as_str()),
@@ -1455,7 +1594,8 @@ mod tests {
             said.contains("\nAuto mode: fixed 1 of 1 setting."),
             "makes it and says so: {said}"
         );
-        let next = drive_offer(&shared, &definition).map(|(about, _)| about);
+        let next =
+            drive_offer(&shared, &definition, &mut DriveTried::default()).map(|(about, _)| about);
         assert!(
             next.is_some_and(|about| about.contains("from 102 of 255 (40%)")),
             "the radio has the new level"

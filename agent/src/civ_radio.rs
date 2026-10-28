@@ -35,7 +35,7 @@ use crate::rig::{
     ControlPath, Exposes, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity,
     Reading, Tunable, Tuning, TxMeters, Vfo,
 };
-use crate::rigdef::{Definition, SettingSummary};
+use crate::rigdef::{self, Definition, SettingSummary};
 
 /// How long the driver waits for one answer.
 const ANSWER_WAIT: Duration = Duration::from_millis(300);
@@ -485,10 +485,31 @@ impl<P: Port> Keyable for CivRadio<P> {
                 ))),
             }
         };
+        let power = meters.power.value(level(POWER_METER)?);
+        let swr_tenths = meters.swr.value(level(SWR_METER)?);
+        let alc = meters.alc.value(level(ALC_METER)?);
+        // Only the one question that only asks (rigdef checks it is 1C 01).
+        let tuning = match &meters.tuner {
+            Some((command, tuning)) if command.as_slice() == rigdef::TUNER_STATUS => {
+                match self.exchange(command)?.as_slice() {
+                    [asked @ .., state] if asked == command.as_slice() => state == tuning,
+                    other => {
+                        return Err(RadioError(format!(
+                            "odd answer to {}: {}",
+                            civ::hex(command),
+                            civ::hex(other)
+                        )));
+                    }
+                }
+            }
+            _ => false,
+        };
         Ok(Some(TxMeters {
-            power: meters.power.value(level(POWER_METER)?),
-            swr_tenths: meters.swr.value(level(SWR_METER)?),
-            alc: meters.alc.value(level(ALC_METER)?),
+            power,
+            swr_tenths,
+            alc,
+            tuning,
+            readings: 0,
         }))
     }
 }
@@ -853,7 +874,8 @@ mod tests {
             Some(TxMeters {
                 power: 0,
                 swr_tenths: 10,
-                alc: 0
+                alc: 0,
+                ..TxMeters::default()
             }),
             "receiving: every meter at the bottom"
         );
@@ -867,8 +889,17 @@ mod tests {
             Some(TxMeters {
                 power: 100,
                 swr_tenths: 20,
-                alc: 33
+                alc: 33,
+                ..TxMeters::default()
             })
+        );
+        radio.port.radio().set_tuning(true);
+        let tuning = radio
+            .meters()
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert!(
+            tuning.is_some_and(|meters| meters.tuning),
+            "the tuner's carrier, said so"
         );
         assert!(radio.transmit(false).is_ok());
     }
