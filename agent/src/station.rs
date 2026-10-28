@@ -40,6 +40,7 @@ use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::auto_mode;
 use crate::civ_radio::CivRadio;
 use crate::civ_serial::{self, SerialPort};
 use crate::engine::{KeptRadio, KeptReading, Uplink};
@@ -341,6 +342,8 @@ enum Typed {
     Restore(String),
     /// Yes: go ahead with the restore just shown.
     Yes,
+    /// Turn auto mode on or off on this computer, or (`None`) say which.
+    Auto(Option<bool>),
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -370,6 +373,12 @@ fn typed(line: &str) -> Result<Typed, String> {
             Ok(Typed::Restore(name.to_owned()))
         }
         ("yes", "") => Ok(Typed::Yes),
+        ("auto", rest) => match rest.to_ascii_lowercase().as_str() {
+            "" => Ok(Typed::Auto(None)),
+            "on" => Ok(Typed::Auto(Some(true))),
+            "off" => Ok(Typed::Auto(Some(false))),
+            _ => Err("auto takes on or off, like auto on".to_owned()),
+        },
         ("help" | "?", "") => Ok(Typed::Help),
         _ => Err(format!("unknown command {line:?}")),
     }
@@ -378,8 +387,9 @@ fn typed(line: &str) -> Result<Typed, String> {
 /// What can be typed at the Agent's console.
 const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
                          say), compare to see what differs from each setup, restore NAME to put \
-                         one back, show NAME to read a setting (show DATA MOD, say), or fix to \
-                         fix what stops a job working.";
+                         one back, show NAME to read a setting (show DATA MOD, say), fix to \
+                         fix what stops a job working, or auto on to let the Agent make its \
+                         fixes without asking.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -461,30 +471,89 @@ fn start_console(
     serial: String,
     definition: Definition,
     record: &Record,
-) -> Waiting {
+) -> Desk {
     let setups: Box<dyn Setups> = match uplink {
         Some(uplink) => Box::new(uplink),
         None => Box::new(crate::setups::Local::new(records_folder())),
     };
     println!("Setups: kept {}.", setups.place());
     println!("{TYPE_HELP}");
-    let waiting: Waiting = Arc::new(Mutex::new(offer_fixes(record, &definition)));
+    let desk = Desk {
+        waiting: Arc::new(Mutex::new(None)),
+        auto: Arc::new(AtomicBool::new(auto_mode::load(&auto_mode::path(
+            &records_folder(),
+        )))),
+        serial,
+    };
+    if desk.auto.load(Ordering::SeqCst) {
+        println!("Auto mode: on, so the Agent makes its fixes without asking (auto off asks).");
+    }
+    let plan = crate::restore::fixes(record, &definition);
+    if !plan.put.is_empty() {
+        println!(
+            "{}",
+            desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
+        );
+    }
     let shared = Arc::clone(shared);
-    let slot = Arc::clone(&waiting);
-    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition, &slot));
-    waiting
+    let console_desk = desk.clone();
+    std::thread::spawn(move || console(&shared, setups.as_ref(), &definition, &console_desk));
+    desk
 }
 
 /// What waits for the operator's yes: shown last, taken by the next line
 /// they type, whatever it is (Principle X).
 type Waiting = Arc<Mutex<Option<crate::restore::Plan>>>;
 
+/// The operator's side of the Agent: what waits for their yes, whether
+/// auto mode is on, and the radio's serial number.
+#[derive(Clone)]
+struct Desk {
+    waiting: Waiting,
+    auto: Arc<AtomicBool>,
+    serial: String,
+}
+
+impl Desk {
+    /// Turns auto mode on or off on this computer, and says which it is.
+    fn set_auto(&self, on: bool) -> String {
+        match auto_mode::save(&auto_mode::path(&records_folder()), on) {
+            Ok(()) => {
+                self.auto.store(on, Ordering::SeqCst);
+                auto_mode::said(on)
+            }
+            Err(error) => format!("auto mode not changed: {error}"),
+        }
+    }
+
+    /// With auto mode on, makes the change `plan` says and says what
+    /// became of it; otherwise leaves it waiting for a yes. `about` says
+    /// what the change is and why, `ask` how to say yes (Principle X).
+    fn propose(
+        &self,
+        shared: &Shared,
+        about: &str,
+        ask: &str,
+        plan: crate::restore::Plan,
+    ) -> String {
+        if self.auto.load(Ordering::SeqCst) {
+            format!(
+                "{about}\nAuto mode: {}",
+                restore(shared, &plan, &self.serial)
+            )
+        } else {
+            wait_for_yes(&self.waiting, plan);
+            format!("{about}\n{ask}")
+        }
+    }
+}
+
 /// How far each offer lowers the drive level, in percent of its scale.
 const DRIVE_STEP: u32 = 10;
 
-/// After a transmission whose ALC ran over a third of its scale, offers to
-/// lower the radio's drive level one step. Returns what to say and the
-/// plan, or `None` when there is nothing to offer.
+/// After a transmission whose ALC ran over a third of its scale, the change
+/// that lowers the radio's drive level one step and what it is, or `None`
+/// when there is nothing to change.
 fn drive_offer(shared: &Shared, definition: &Definition) -> Option<(String, crate::restore::Plan)> {
     let peak = shared.last_peak()?;
     if peak.alc <= rigctld_server::ALC_HIGHEST {
@@ -523,28 +592,19 @@ fn drive_offer(shared: &Shared, definition: &Definition) -> Option<(String, crat
         }],
         kept_back: Vec::new(),
     };
-    let say = format!(
-        "ALC peaked at {}% of its scale. The Agent can lower {} from {} to {}.\n\
-         -> Type yes to set it, then transmit again to see the new ALC; anything else \
-         leaves the radio as it is.",
+    let about = format!(
+        "ALC peaked at {}% of its scale: lower {} from {} to {}.",
         peak.alc, setting.label, plan.put[0].now, plan.put[0].setup
     );
-    Some((say, plan))
+    Some((about, plan))
 }
 
-/// Shows what the Agent can set to fix what stops a job working, and
-/// returns it to wait for the operator's yes (Principle X).
-fn offer_fixes(record: &Record, definition: &Definition) -> Option<crate::restore::Plan> {
-    let plan = crate::restore::fixes(record, definition);
-    if plan.put.is_empty() {
-        return None;
-    }
-    println!("{}", fix_offer(&plan));
-    Some(plan)
-}
+/// How to say yes to lowering the drive.
+const DRIVE_ASK: &str = "-> Type yes to set it, then transmit again to see the new ALC; \
+                         anything else leaves the radio as it is.";
 
-/// What the Agent can fix, and how to say yes.
-fn fix_offer(plan: &crate::restore::Plan) -> String {
+/// What the Agent can fix.
+fn fix_about(plan: &crate::restore::Plan) -> String {
     let mut lines = vec!["Radio settings: the Agent can fix what stops a job working.".to_owned()];
     lines.extend(plan.lines().into_iter().map(|line| format!("  {line}")));
     if plan.put.iter().any(|put| !put.setting.verified) {
@@ -554,11 +614,15 @@ fn fix_offer(plan: &crate::restore::Plan) -> String {
                 .to_owned(),
         );
     }
-    lines.push(format!(
+    lines.join("\n")
+}
+
+/// How to say yes to the fixes.
+fn fix_ask(plan: &crate::restore::Plan) -> String {
+    format!(
         "-> Type yes to set {}; anything else leaves the radio as it is.",
         if plan.put.len() == 1 { "it" } else { "them" }
-    ));
-    lines.join("\n")
+    )
 }
 
 /// The most settings `show` reads at once.
@@ -625,7 +689,7 @@ fn show(shared: &Shared, definition: &Definition, name: &str) -> String {
 fn after_unkey<'a>(
     shared: &'a Shared,
     definition: &'a Definition,
-    waiting: Option<Waiting>,
+    desk: Option<Desk>,
     on_air: &'a AtomicBool,
 ) -> impl FnMut() + 'a {
     let mut was_keyed = false;
@@ -633,11 +697,10 @@ fn after_unkey<'a>(
         let keyed = on_air.load(Ordering::SeqCst);
         if std::mem::replace(&mut was_keyed, keyed)
             && !keyed
-            && let Some(waiting) = &waiting
-            && let Some((say, plan)) = drive_offer(shared, definition)
+            && let Some(desk) = &desk
+            && let Some((about, plan)) = drive_offer(shared, definition)
         {
-            crate::print_event(&say);
-            wait_for_yes(waiting, plan);
+            crate::print_event(&desk.propose(shared, &about, DRIVE_ASK, plan));
         }
     }
 }
@@ -651,13 +714,8 @@ fn wait_for_yes(waiting: &Mutex<Option<crate::restore::Plan>>, plan: crate::rest
 }
 
 /// Reads the operator's commands from the console until it closes.
-fn console(
-    shared: &Shared,
-    setups: &dyn Setups,
-    serial: &str,
-    definition: &Definition,
-    waiting: &Mutex<Option<crate::restore::Plan>>,
-) {
+fn console(shared: &Shared, setups: &dyn Setups, definition: &Definition, desk: &Desk) {
+    let (serial, waiting) = (desk.serial.as_str(), &desk.waiting);
     let read = || {
         shared.settings(|radio| {
             settings_record::read(
@@ -711,6 +769,8 @@ fn console(
                 }
             }
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
+            Ok(Typed::Auto(None)) => auto_mode::said(desk.auto.load(Ordering::SeqCst)),
+            Ok(Typed::Auto(Some(on))) => desk.set_auto(on),
             Ok(Typed::Show(name)) => show(shared, definition, &name),
             Ok(Typed::Fix) => match read() {
                 Ok(now) => {
@@ -725,9 +785,7 @@ fn console(
                         );
                         lines.join("\n")
                     } else {
-                        let offer = fix_offer(&plan);
-                        wait_for_yes(waiting, plan);
-                        offer
+                        desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
                     }
                 }
                 Err(why) => format!("not checked: {why}"),
@@ -931,11 +989,11 @@ pub fn run(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
-    let waiting = found
+    let desk = found
         .serial
         .clone()
         .map(|serial| start_console(&shared, uplink, serial, definition.clone(), &record));
-    let mut offer_drive = after_unkey(&shared, &definition, waiting, &on_air);
+    let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C stops.");
     #[cfg(windows)]
     let mut hint: Option<&'static str> = None;
@@ -1137,11 +1195,15 @@ pub fn startup(what: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::SocketAddr;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
-    use std::net::SocketAddr;
-
-    use super::{Typed, compared, compared_all, drive_offer, restore_plan, startup_command, typed};
+    use super::{
+        DRIVE_ASK, Desk, Typed, compared, compared_all, drive_offer, restore_plan, startup_command,
+        typed,
+    };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::engine::{KeptRadio, KeptReading, KeptSetting};
@@ -1179,8 +1241,10 @@ mod tests {
         let Some((say, plan)) = drive_offer(&shared, &definition) else {
             unreachable!("ALC ran high")
         };
-        assert!(say.starts_with("ALC peaked at 70% of its scale."), "{say}");
-        assert!(say.contains("lower USB MOD Level from"), "{say}");
+        assert!(
+            say.starts_with("ALC peaked at 70% of its scale: lower USB MOD Level from"),
+            "{say}"
+        );
         assert!(say.contains("(50%) to 102 of 255 (40%)"), "{say}");
         assert_eq!(plan.put.len(), 1);
         assert_eq!(plan.put[0].setting.id, "usb_mod_level");
@@ -1199,6 +1263,46 @@ mod tests {
         // ALC 40 of 120 is a third: nothing to offer.
         let (shared, definition) = transmitted([60, 20, 40]);
         assert!(drive_offer(&shared, &definition).is_none());
+    }
+
+    #[test]
+    fn auto_mode_makes_the_change_and_otherwise_waits_for_a_yes() {
+        assert_eq!(typed("auto"), Ok(Typed::Auto(None)));
+        assert_eq!(typed("AUTO ON"), Ok(Typed::Auto(Some(true))));
+        assert_eq!(typed("auto off"), Ok(Typed::Auto(Some(false))));
+        assert!(typed("auto maybe").is_err());
+        let (shared, definition) = transmitted([60, 20, 84]);
+        let desk = Desk {
+            waiting: Arc::new(Mutex::new(None)),
+            auto: Arc::new(AtomicBool::new(false)),
+            serial: "test".to_owned(),
+        };
+        let Some((about, plan)) = drive_offer(&shared, &definition) else {
+            unreachable!("ALC ran high")
+        };
+        let said = desk.propose(&shared, &about, DRIVE_ASK, plan.clone());
+        assert!(said.ends_with(DRIVE_ASK), "asks first: {said}");
+        assert!(
+            desk.waiting.lock().is_ok_and(|slot| slot.is_some()),
+            "and waits for the yes"
+        );
+        let unchanged = drive_offer(&shared, &definition).map(|(about, _)| about);
+        assert_eq!(
+            unchanged.as_deref(),
+            Some(about.as_str()),
+            "nothing written"
+        );
+        desk.auto.store(true, Ordering::SeqCst);
+        let said = desk.propose(&shared, &about, DRIVE_ASK, plan);
+        assert!(
+            said.contains("\nAuto mode: fixed 1 of 1 setting."),
+            "makes it and says so: {said}"
+        );
+        let next = drive_offer(&shared, &definition).map(|(about, _)| about);
+        assert!(
+            next.is_some_and(|about| about.contains("from 102 of 255 (40%)")),
+            "the radio has the new level"
+        );
     }
 
     #[test]

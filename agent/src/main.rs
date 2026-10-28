@@ -18,6 +18,7 @@
 mod audio;
 #[cfg(windows)]
 mod audio_windows;
+mod auto_mode;
 mod civ;
 mod civ_demo;
 mod civ_pretend;
