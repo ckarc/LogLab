@@ -212,7 +212,7 @@ struct Keyed {
 const METER_EVERY: Duration = Duration::from_millis(250);
 /// The most ALC that is fine, in percent of its scale: Icom suggests about
 /// a third of the scale; Winlink asks for little or none.
-const ALC_HIGHEST: u16 = 33;
+pub const ALC_HIGHEST: u16 = 33;
 /// The highest SWR, in tenths, before the operator is warned.
 const SWR_HIGHEST: u16 = 20;
 
@@ -371,6 +371,8 @@ pub struct Shared {
     keyed: Mutex<Option<Keyed>>,
     limit: Duration,
     on_air: Arc<AtomicBool>,
+    /// The meters' peaks during the last transmission that had any.
+    last_peak: Mutex<Option<TxMeters>>,
 }
 
 impl Shared {
@@ -383,7 +385,15 @@ impl Shared {
             keyed: Mutex::new(None),
             limit,
             on_air: Arc::new(AtomicBool::new(false)),
+            last_peak: Mutex::new(None),
         }
+    }
+
+    /// The transmit meters' peaks during the last transmission the Agent
+    /// keyed and read them in.
+    #[must_use]
+    pub fn last_peak(&self) -> Option<TxMeters> {
+        self.last_peak.lock().ok().and_then(|peak| *peak)
     }
 
     /// Set exactly while the Agent has the radio keyed for a program, so a
@@ -437,7 +447,14 @@ impl Shared {
             return None;
         };
         let mut keyed = self.keyed.lock().ok()?;
+        let peak = keyed.as_ref().and_then(|now| now.peak);
         let (done, note) = act(radio.as_mut(), &mut keyed);
+        if keyed.is_none()
+            && peak.is_some()
+            && let Ok(mut last) = self.last_peak.lock()
+        {
+            *last = peak;
+        }
         // Audio goes to the radio only while it is keyed for a program and
         // not stuck: after keying, and never after a request to unkey.
         self.on_air.store(
