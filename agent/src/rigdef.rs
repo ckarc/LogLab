@@ -104,6 +104,9 @@ struct MetersTable {
     swr: Vec<[u16; 2]>,
     /// ALC, in percent of its scale.
     alc: Vec<[u16; 2]>,
+    /// The level setting that sets how hard the Agent's transmit audio
+    /// drives the radio, offered lower when ALC runs high.
+    drive: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -306,6 +309,9 @@ pub struct Meters {
     pub swr: Scale,
     /// ALC, in percent of its scale.
     pub alc: Scale,
+    /// The id of the level setting that sets how hard the Agent's transmit
+    /// audio drives the radio, if the definition names one.
+    pub drive: Option<String>,
 }
 
 /// Points along a meter's scale: the level the radio sends, and what it
@@ -651,6 +657,7 @@ fn summarize(file: &File, check: &Check) -> Definition {
             power: Scale(m.power.clone()),
             swr: Scale(m.swr.clone()),
             alc: Scale(m.alc.clone()),
+            drive: m.drive.clone(),
         }),
     }
 }
@@ -687,12 +694,23 @@ impl Check {
         let settings = self.settings(&file.settings);
         self.requirements(&file.requirements, &settings);
         if let Some(meters) = &file.meters {
-            self.meters(meters);
+            self.meters(meters, &settings);
         }
     }
 
-    fn meters(&mut self, meters: &MetersTable) {
+    fn meters(&mut self, meters: &MetersTable, settings: &BTreeMap<&str, &Setting>) {
         self.source("meters", &meters.source);
+        if let Some(drive) = &meters.drive {
+            match settings.get(drive.as_str()) {
+                Some(setting) if setting.range.is_some() && setting.write => {}
+                Some(_) => self.problem(format!(
+                    "meters.drive: setting {drive:?} must be a level (a range) the Agent may write"
+                )),
+                None => self.problem(format!(
+                    "meters.drive: setting {drive:?} is not one of the file's settings"
+                )),
+            }
+        }
         for (name, points) in [
             ("power", &meters.power),
             ("swr", &meters.swr),
@@ -1714,6 +1732,15 @@ explain = "Data mode audio must come from USB."
             ),
             "nowhere",
         );
+        let drive = |id: &str| {
+            with_meters("[[0, 0], [213, 100]]").replacen(
+                "alc = [[0, 0], [120, 100]]",
+                &format!("alc = [[0, 0], [120, 100]]\ndrive = \"{id}\""),
+                1,
+            )
+        };
+        refused_for(&drive("data_mod"), "must be a level");
+        refused_for(&drive("usb_mod"), "not one of the file's settings");
     }
 
     #[test]

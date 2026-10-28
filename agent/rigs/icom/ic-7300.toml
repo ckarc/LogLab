@@ -2889,6 +2889,10 @@ power = [[0, 0], [143, 50], [213, 100]]
 swr = [[0, 10], [48, 15], [80, 20], [120, 30]]
 # 00 00 = minimum, 01 20 = maximum; as percent of the scale.
 alc = [[0, 0], [120, 100]]
+# The Agent's transmit audio reaches the radio over USB, so USB MOD Level
+# (the USB input's level, while DATA MOD includes USB) sets how hard it
+# drives the transmitter.
+drive = "usb_mod_level"
 
 [[requirements]]
 job = "control"

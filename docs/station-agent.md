@@ -302,6 +302,21 @@ How it behaves:
   from Icom's CI-V guide (`15 11`, `15 12`, `15 13`). Reading the meters only
   reads: it never keys, unkeys or changes anything (Principle X). A
   transmission shorter than a quarter second has no meter line.
+
+  Under `station`, when ALC ran over a third, the Agent also offers to lower
+  the radio's drive level 10 points (on the IC-7300, USB MOD Level, since
+  the Agent's transmit audio reaches the radio over USB; the rig
+  definition's `meters.drive` names it):
+
+  ```
+  ALC peaked at 70% of its scale. The Agent can lower USB MOD Level from 128 of 255 (50%) to 102 of 255 (40%).
+  -> Type yes to set it, then transmit again to see the new ALC; anything else leaves the radio as it is.
+  ```
+
+  `yes` writes it and reads it back; anything else leaves the radio as it
+  is (Principle X). Transmit again and repeat until the `->` ALC line stops
+  appearing. The Agent never transmits to test it: the next transmission is
+  always one a program asked for.
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
 - Any radio the Agent can read can be served: `--civ PORT`, `--civ-pretend`, `--pretend`,

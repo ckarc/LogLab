@@ -35,9 +35,9 @@
 //! (Principle IX).
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::civ_radio::CivRadio;
@@ -461,16 +461,75 @@ fn start_console(
     serial: String,
     definition: Definition,
     record: &Record,
-) {
+) -> Waiting {
     let setups: Box<dyn Setups> = match uplink {
         Some(uplink) => Box::new(uplink),
         None => Box::new(crate::setups::Local::new(records_folder())),
     };
     println!("Setups: kept {}.", setups.place());
     println!("{TYPE_HELP}");
-    let fixes = offer_fixes(record, &definition);
+    let waiting: Waiting = Arc::new(Mutex::new(offer_fixes(record, &definition)));
     let shared = Arc::clone(shared);
-    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition, fixes));
+    let slot = Arc::clone(&waiting);
+    std::thread::spawn(move || console(&shared, setups.as_ref(), &serial, &definition, &slot));
+    waiting
+}
+
+/// What waits for the operator's yes: shown last, taken by the next line
+/// they type, whatever it is (Principle X).
+type Waiting = Arc<Mutex<Option<crate::restore::Plan>>>;
+
+/// How far each offer lowers the drive level, in percent of its scale.
+const DRIVE_STEP: u32 = 10;
+
+/// After a transmission whose ALC ran over a third of its scale, offers to
+/// lower the radio's drive level one step. Returns what to say and the
+/// plan, or `None` when there is nothing to offer.
+fn drive_offer(shared: &Shared, definition: &Definition) -> Option<(String, crate::restore::Plan)> {
+    let peak = shared.last_peak()?;
+    if peak.alc <= rigctld_server::ALC_HIGHEST {
+        return None;
+    }
+    let id = definition.meters.as_ref()?.drive.as_ref()?;
+    let setting = definition.settings.iter().find(|s| &s.id == id)?;
+    let [low, high] = setting.range?;
+    if !(setting.write && setting.write_checked) {
+        return None;
+    }
+    let bytes = shared
+        .settings(|radio| radio.read_exposed(setting))
+        .ok()?
+        .ok()?;
+    let level = crate::civ::level_from_bcd(&bytes)?;
+    let percent = (u32::from(level) * 100 + u32::from(high) / 2) / u32::from(high.max(1));
+    if percent <= u32::from(low) {
+        return None;
+    }
+    let lower = percent.saturating_sub(DRIVE_STEP);
+    let to = u16::try_from((lower * u32::from(high) + 50) / 100)
+        .ok()?
+        .max(u16::from(low));
+    let to = crate::civ::level_to_bcd(to)?.to_vec();
+    let shown =
+        |bytes: &[u8]| settings_record::shown(definition, id, Some(&crate::civ::hex(bytes)));
+    let plan = crate::restore::Plan {
+        setup: "drive".to_owned(),
+        fixes: true,
+        put: vec![crate::restore::Put {
+            setting: setting.clone(),
+            now: shown(&bytes),
+            setup: shown(&to),
+            to,
+        }],
+        kept_back: Vec::new(),
+    };
+    let say = format!(
+        "ALC peaked at {}% of its scale. The Agent can lower {} from {} to {}.\n\
+         -> Type yes to set it, then transmit again to see the new ALC; anything else \
+         leaves the radio as it is.",
+        peak.alc, setting.label, plan.put[0].now, plan.put[0].setup
+    );
+    Some((say, plan))
 }
 
 /// Shows what the Agent can set to fix what stops a job working, and
@@ -561,13 +620,43 @@ fn show(shared: &Shared, definition: &Definition, name: &str) -> String {
     }
 }
 
+/// What to look at each time round: whenever the Agent has just unkeyed,
+/// offers to lower the drive if ALC ran high.
+fn after_unkey<'a>(
+    shared: &'a Shared,
+    definition: &'a Definition,
+    waiting: Option<Waiting>,
+    on_air: &'a AtomicBool,
+) -> impl FnMut() + 'a {
+    let mut was_keyed = false;
+    move || {
+        let keyed = on_air.load(Ordering::SeqCst);
+        if std::mem::replace(&mut was_keyed, keyed)
+            && !keyed
+            && let Some(waiting) = &waiting
+            && let Some((say, plan)) = drive_offer(shared, definition)
+        {
+            crate::print_event(&say);
+            wait_for_yes(waiting, plan);
+        }
+    }
+}
+
+/// Leaves `plan` waiting for the operator's yes, in place of anything
+/// that was.
+fn wait_for_yes(waiting: &Mutex<Option<crate::restore::Plan>>, plan: crate::restore::Plan) {
+    if let Ok(mut slot) = waiting.lock() {
+        *slot = Some(plan);
+    }
+}
+
 /// Reads the operator's commands from the console until it closes.
 fn console(
     shared: &Shared,
     setups: &dyn Setups,
     serial: &str,
     definition: &Definition,
-    mut waiting: Option<crate::restore::Plan>,
+    waiting: &Mutex<Option<crate::restore::Plan>>,
 ) {
     let read = || {
         shared.settings(|radio| {
@@ -585,7 +674,8 @@ fn console(
         // A restore goes ahead only on a yes typed right after it was shown.
         // Anything else leaves the radio as it is, and is then done as
         // typed.
-        if let Some(plan) = waiting.take() {
+        let pending = waiting.lock().ok().and_then(|mut slot| slot.take());
+        if let Some(plan) = pending {
             if matches!(typed, Ok(Typed::Yes)) {
                 crate::print_event(&restore(shared, &plan, serial));
                 continue;
@@ -612,7 +702,7 @@ fn console(
                             "-> Type yes to put {} back on the radio; anything else leaves it as it is.",
                             if plan.put.len() == 1 { "it" } else { "them" }
                         ));
-                            waiting = Some(plan);
+                            wait_for_yes(waiting, plan);
                         }
                         lines.join("\n")
                     }
@@ -636,7 +726,7 @@ fn console(
                         lines.join("\n")
                     } else {
                         let offer = fix_offer(&plan);
-                        waiting = Some(plan);
+                        wait_for_yes(waiting, plan);
                         offer
                     }
                 }
@@ -841,9 +931,11 @@ pub fn run(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
-    if let Some(serial) = found.serial.clone() {
-        start_console(&shared, uplink, serial, definition, &record);
-    }
+    let waiting = found
+        .serial
+        .clone()
+        .map(|serial| start_console(&shared, uplink, serial, definition.clone(), &record));
+    let mut offer_drive = after_unkey(&shared, &definition, waiting, &on_air);
     println!("Ctrl-C stops.");
     #[cfg(windows)]
     let mut hint: Option<&'static str> = None;
@@ -852,6 +944,7 @@ pub fn run(
     #[cfg(windows)]
     let mut was_on_air = false;
     crate::show_until_stopped(shared.as_ref(), &heard, &running, || {
+        offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
             for error in station.errors.try_iter() {
@@ -1046,12 +1139,67 @@ pub fn startup(what: &str) -> Result<(), String> {
 mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
-    use super::{Typed, compared, compared_all, restore_plan, startup_command, typed};
+    use std::net::SocketAddr;
+
+    use super::{Typed, compared, compared_all, drive_offer, restore_plan, startup_command, typed};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::engine::{KeptRadio, KeptReading, KeptSetting};
+    use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
+
+    /// The pretend IC-7300, shared for transmitting, after one transmission
+    /// whose meters read `meters` (raw Po, SWR, ALC levels).
+    fn transmitted(meters: [u16; 3]) -> (Shared, rigdef::Definition) {
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let mut pretend = PretendCiv::new(&definition);
+        pretend.set_tx_meters(meters);
+        let radio = CivRadio::find(
+            PretendPort::new(pretend, 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Shared::with_transmit(Box::new(radio), Duration::from_mins(1));
+        let program = SocketAddr::from(([127, 0, 0, 1], 50_001));
+        assert!(shared.transmit(program, true).is_ok());
+        std::thread::sleep(Duration::from_millis(300));
+        shared.watch();
+        assert!(shared.transmit(program, false).is_ok());
+        (shared, definition)
+    }
+
+    #[test]
+    fn offers_to_lower_the_drive_only_when_alc_ran_high() {
+        // ALC 84 of 120 is 70% of its scale.
+        let (shared, definition) = transmitted([60, 20, 84]);
+        let Some((say, plan)) = drive_offer(&shared, &definition) else {
+            unreachable!("ALC ran high")
+        };
+        assert!(say.starts_with("ALC peaked at 70% of its scale."), "{say}");
+        assert!(say.contains("lower USB MOD Level from"), "{say}");
+        assert!(say.contains("(50%) to 102 of 255 (40%)"), "{say}");
+        assert_eq!(plan.put.len(), 1);
+        assert_eq!(plan.put[0].setting.id, "usb_mod_level");
+        assert_eq!(plan.put[0].to, [0x01, 0x02]);
+        let done = shared
+            .settings(|radio| crate::restore::apply(radio, &plan, "test", UNIX_EPOCH, "test-pc"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        assert_eq!(done.lines()[0], "fixed 1 of 1 setting.");
+        let Some((say, _)) = drive_offer(&shared, &definition) else {
+            unreachable!("still the same peak")
+        };
+        assert!(
+            say.contains("from 102 of 255 (40%) to 77 of 255 (30%)"),
+            "{say}"
+        );
+        // ALC 40 of 120 is a third: nothing to offer.
+        let (shared, definition) = transmitted([60, 20, 40]);
+        assert!(drive_offer(&shared, &definition).is_none());
+    }
 
     #[test]
     fn show_finds_a_setting_by_its_menu_name() {
