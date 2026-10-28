@@ -57,7 +57,9 @@ note = """
 Commands 04 (read) and 06 (set) carry the operating mode code and then the
 filter: 01 FIL1, 02 FIL2, 03 FIL3. 1A 03 sets or reads the IF filter width of
 the selected filter (SSB/CW 10 to 40 is 600 Hz to 3.6 kHz in 100 Hz steps).
-This is the MK2's guide, not the original IC-7300's; FieldLab's IC-7300 agreed
+Command 15 11, 15 12 and 15 13 read the Po, SWR and ALC meters (00 00 to
+02 55; Po 01 43 = 50%, 02 13 = 100%; SWR 00 48 = 1.5, 00 80 = 2.0, 01 20 =
+3.0; ALC 00 00 minimum to 01 20 maximum). This is the MK2's guide, not the original IC-7300's; FieldLab's IC-7300 agreed
 on step 22 being 1.8 kHz on FIL3, 2026-10-27.
 """
 
@@ -2876,6 +2878,18 @@ write_checked = "fieldlab_write_check"
 # operator's approval (docs/station-agent-usb-radios.md, "Adapting to the
 # radio"). A requirement can only offer to change a setting with write = true.
 # ---------------------------------------------------------------------------
+# What the transmit meters (15 11 Po, 15 12 SWR, 15 13 ALC) mean: the level
+# the radio sends, as the guide writes it (BCD "01 43" is 143), and what it
+# means. While receiving, these read 00 00.
+[meters]
+source = "icom_7300mk2_civ"
+# 00 00 = 0%, 01 43 = 50%, 02 13 = 100%.
+power = [[0, 0], [143, 50], [213, 100]]
+# 00 00 = SWR 1.0, 00 48 = 1.5, 00 80 = 2.0, 01 20 = 3.0; in tenths.
+swr = [[0, 10], [48, 15], [80, 20], [120, 30]]
+# 00 00 = minimum, 01 20 = maximum; as percent of the scale.
+alc = [[0, 0], [120, 100]]
+
 [[requirements]]
 job = "control"
 setting = "usb_serial_function"

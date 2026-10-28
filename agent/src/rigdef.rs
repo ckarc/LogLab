@@ -89,6 +89,21 @@ struct File {
     settings: Vec<Setting>,
     #[serde(default)]
     requirements: Vec<Requirement>,
+    meters: Option<MetersTable>,
+}
+
+/// What the radio's transmit meters' readings mean: each a list of points,
+/// the level the radio sends and what it means, in rising order.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MetersTable {
+    source: String,
+    /// Power output, in percent of full power.
+    power: Vec<[u16; 2]>,
+    /// SWR, in tenths (15 is 1.5).
+    swr: Vec<[u16; 2]>,
+    /// ALC, in percent of its scale.
+    alc: Vec<[u16; 2]>,
 }
 
 #[derive(Deserialize)]
@@ -278,6 +293,54 @@ pub struct Definition {
     pub checked_values: usize,
     /// How many of them are marked verified.
     pub verified_values: usize,
+    /// What its transmit meters' readings mean, if the definition says.
+    pub meters: Option<Meters>,
+}
+
+/// What a radio's transmit meters' readings mean.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Meters {
+    /// Power output, in percent of full power.
+    pub power: Scale,
+    /// SWR, in tenths (15 is 1.5).
+    pub swr: Scale,
+    /// ALC, in percent of its scale.
+    pub alc: Scale,
+}
+
+/// Points along a meter's scale: the level the radio sends, and what it
+/// means. Levels between points are read along the straight line between
+/// them; levels past the last point mean what the last point does.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Scale(pub Vec<[u16; 2]>);
+
+impl Scale {
+    /// What `level` means on this scale.
+    #[must_use]
+    pub fn value(&self, level: u16) -> u16 {
+        let points = &self.0;
+        let Some(first) = points.first() else {
+            return 0;
+        };
+        if level <= first[0] {
+            return first[1];
+        }
+        for pair in points.windows(2) {
+            let ([low, from], [high, to]) = (pair[0], pair[1]);
+            if level <= high {
+                let span = u32::from(high - low).max(1);
+                let into = u32::from(level - low);
+                let (from, to) = (u32::from(from), u32::from(to));
+                let value = if to >= from {
+                    from + (to - from) * into / span
+                } else {
+                    from - (from - to) * into / span
+                };
+                return u16::try_from(value).unwrap_or(u16::MAX);
+            }
+        }
+        points.last().map_or(0, |last| last[1])
+    }
 }
 
 /// The Windows driver a radio's USB serial bridge needs.
@@ -584,6 +647,11 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .collect(),
         checked_values: check.checked,
         verified_values: check.verified,
+        meters: file.meters.as_ref().map(|m| Meters {
+            power: Scale(m.power.clone()),
+            swr: Scale(m.swr.clone()),
+            alc: Scale(m.alc.clone()),
+        }),
     }
 }
 
@@ -618,6 +686,28 @@ impl Check {
         self.commands(&file.commands);
         let settings = self.settings(&file.settings);
         self.requirements(&file.requirements, &settings);
+        if let Some(meters) = &file.meters {
+            self.meters(meters);
+        }
+    }
+
+    fn meters(&mut self, meters: &MetersTable) {
+        self.source("meters", &meters.source);
+        for (name, points) in [
+            ("power", &meters.power),
+            ("swr", &meters.swr),
+            ("alc", &meters.alc),
+        ] {
+            if points.len() < 2 {
+                self.problem(format!("meters.{name}: give at least two points"));
+            }
+            if points.windows(2).any(|pair| pair[1][0] <= pair[0][0]) {
+                self.problem(format!("meters.{name}: the levels must rise"));
+            }
+            if points.iter().any(|point| point[0] > 255) {
+                self.problem(format!("meters.{name}: a meter level is 0 to 255"));
+            }
+        }
     }
 
     fn header(&mut self, header: &Header) {
@@ -1584,6 +1674,45 @@ explain = "Data mode audio must come from USB."
         refused_for(
             &changed("setting = \"data_mod\"", "setting = \"usb_mod\""),
             "not one of the file's settings",
+        );
+    }
+
+    /// A `[meters]` table, put before the requirements.
+    fn with_meters(power: &str) -> String {
+        changed(
+            "[[requirements]]",
+            &format!(
+                "[meters]\nsource = \"manual\"\npower = {power}\n\
+                 swr = [[0, 10], [48, 15], [80, 20], [120, 30]]\n\
+                 alc = [[0, 0], [120, 100]]\n\n[[requirements]]"
+            ),
+        )
+    }
+
+    #[test]
+    fn reads_meter_scales_and_checks_them() {
+        let definition = parse(&with_meters("[[0, 0], [143, 50], [213, 100]]"))
+            .unwrap_or_else(|problems| unreachable!("{problems:?}"));
+        let meters = definition
+            .meters
+            .unwrap_or_else(|| unreachable!("the table was given"));
+        assert_eq!(meters.power.value(0), 0);
+        assert_eq!(meters.power.value(143), 50);
+        assert_eq!(meters.power.value(178), 75, "halfway between points");
+        assert_eq!(meters.power.value(255), 100, "held at the last point");
+        assert_eq!(meters.swr.value(64), 17, "SWR in tenths");
+        assert_eq!(meters.alc.value(40), 33);
+        assert!(parse(MINIMAL).is_ok_and(|d| d.meters.is_none()));
+        refused_for(&with_meters("[[0, 0]]"), "at least two points");
+        refused_for(&with_meters("[[143, 50], [0, 0]]"), "must rise");
+        refused_for(&with_meters("[[0, 0], [300, 100]]"), "0 to 255");
+        refused_for(
+            &with_meters("[[0, 0], [213, 100]]").replacen(
+                "source = \"manual\"\npower",
+                "source = \"nowhere\"\npower",
+                1,
+            ),
+            "nowhere",
         );
     }
 

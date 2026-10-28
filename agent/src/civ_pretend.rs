@@ -35,6 +35,9 @@ const START_A_HZ: u64 = 14_074_000;
 const START_B_HZ: u64 = 14_076_000;
 /// The filter numbers a radio has: FIL1, FIL2 and FIL3.
 const FILTERS: [u8; 3] = [1, 2, 3];
+/// Raw Po, SWR and ALC levels it reports while transmitting until told
+/// otherwise: pretend values (about half power, SWR 1.5, low ALC).
+const PRETEND_TX_METERS: [u16; 3] = [143, 48, 20];
 
 /// One VFO's state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -70,6 +73,9 @@ pub struct PretendCiv {
     selected: usize,
     split: bool,
     transmitting: bool,
+    /// Raw Po, SWR and ALC meter levels (15 11 / 12 / 13) while
+    /// transmitting; every meter reads 0 while receiving.
+    tx_meters: [u16; 3],
     /// Every setting, by the command that reads it.
     menu: BTreeMap<Vec<u8>, Menu>,
     /// The echo-back setting and its "ON" code, if the definition has one.
@@ -108,6 +114,7 @@ impl PretendCiv {
             selected: 0,
             split: false,
             transmitting: false,
+            tx_meters: PRETEND_TX_METERS,
             menu: BTreeMap::new(),
             echo: None,
             transceive: None,
@@ -215,6 +222,12 @@ impl PretendCiv {
         fits
     }
 
+    /// Sets the raw Po, SWR and ALC levels it reports while transmitting.
+    #[cfg(test)]
+    pub fn set_tx_meters(&mut self, levels: [u16; 3]) {
+        self.tx_meters = levels;
+    }
+
     /// Whether it says it is transmitting.
     #[cfg(test)]
     #[must_use]
@@ -260,6 +273,17 @@ impl PretendCiv {
                 vec![0x1A, 0x06, u8::from(vfo.data), filter]
             }
             [0x1A, 0x06, data, filter] => done(self.set_data(*data, *filter)),
+            [0x15, which @ 0x11..=0x13] => {
+                let level = if self.transmitting {
+                    self.tx_meters[usize::from(*which - 0x11)]
+                } else {
+                    0
+                };
+                match civ::level_to_bcd(level) {
+                    Some([high, low]) => vec![0x15, *which, high, low],
+                    None => done(false),
+                }
+            }
             [0x1C, 0x00] => vec![0x1C, 0x00, u8::from(self.transmitting)],
             [0x1C, 0x00, on @ (0x00 | 0x01)] => {
                 self.transmitting = *on == 0x01;
@@ -633,6 +657,17 @@ mod tests {
         assert!(radio.transmitting());
         assert_eq!(answer(&mut radio, &[0x1C, 0x00, 0x00]), [OK]);
         assert!(!radio.transmitting());
+    }
+
+    #[test]
+    fn reports_meters_only_while_transmitting() {
+        let mut radio = radio();
+        assert_eq!(answer(&mut radio, &[0x15, 0x13]), [0x15, 0x13, 0x00, 0x00]);
+        radio.set_tx_meters([213, 80, 120]);
+        assert_eq!(answer(&mut radio, &[0x1C, 0x00, 0x01]), [OK]);
+        assert_eq!(answer(&mut radio, &[0x15, 0x11]), [0x15, 0x11, 0x02, 0x13]);
+        assert_eq!(answer(&mut radio, &[0x15, 0x12]), [0x15, 0x12, 0x00, 0x80]);
+        assert_eq!(answer(&mut radio, &[0x15, 0x13]), [0x15, 0x13, 0x01, 0x20]);
     }
 
     #[test]
