@@ -314,7 +314,8 @@ How it behaves:
   ```
 
   `yes` writes it and reads it back; anything else leaves the radio as it
-  is (Principle X). Transmit again and repeat until the `->` ALC line stops
+  is (Principle X). With auto mode on (below), the Agent sets it without
+  asking and says so. Transmit again and repeat until the `->` ALC line stops
   appearing. The Agent never transmits to test it: the next transmission is
   always one a program asked for.
 - **Several programs at once.** Up to eight can connect; readings are
@@ -411,6 +412,15 @@ real radio are said to be so, so you can look at the radio's menu afterwards.
 **Reading one setting.** Type `show DATA MOD` (any setting's menu name, or
 part of one: `show PBT`) to read it from the radio now. Type `fix` to see
 again what the Agent can fix, and say `yes` to it.
+
+**Auto mode.** Type `auto on` to let the Agent make its fixes without
+asking: what stops a job working (at start-up, or when you type `fix`), and
+lowering the drive level when ALC ran high. Each change is shown, starting
+`Auto mode:`, and recorded like any other. It changes nothing while a
+program has the radio keyed and never keys the radio to try a change.
+`auto off` goes back to asking; `auto` says which it is. Auto mode is off
+until turned on, and kept for this computer only, in `auto-mode.txt` in the
+records folder (Principle X, third exception, constitution 6.0.0).
 
 ### Setups kept on the Engine
 
