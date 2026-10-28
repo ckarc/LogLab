@@ -28,6 +28,12 @@ ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 # workstations are Windows, and Linux's backend needs system ALSA libraries.
 [target.'cfg(windows)'.dependencies]
 cpal = { version = "0.18.2", default-features = false }
+# The tray: its icon by the clock, menu and notices (Windows'
+# Shell_NotifyIconW and popup menus). MIT.
+native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "message-window", "menu", "cursor", "notice"] }
+# Windows' own message box, kept on top until answered (MB_TOPMOST). Already
+# in the build through cpal. MIT OR Apache-2.0.
+windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging"] }
 
 [lints.rust]
 # `unsafe` is denied (not forbidden) so a hardware or platform interface that

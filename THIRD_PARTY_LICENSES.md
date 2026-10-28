@@ -29,8 +29,12 @@ The Station Agent's crates, compiled into its single executable:
 | core-foundation, core-foundation-sys, io-kit-sys, mach2 | serialport dependencies (macOS) | MIT OR Apache-2.0; mach2 BSD-2-Clause OR MIT OR Apache-2.0 |
 | cpal             | Sound devices, for a radio's audio (Windows build only) | Apache-2.0           |
 | dasp_sample      | cpal dependency (sample formats)          | MIT OR Apache-2.0                |
-| windows, windows-core, windows-collections, windows-future, windows-numerics, windows-result, windows-strings, windows-threading | cpal dependencies (Windows audio system) | MIT OR Apache-2.0 |
+| windows, windows-core, windows-collections, windows-future, windows-numerics, windows-result, windows-strings, windows-threading | cpal dependencies (Windows audio system); windows also for the tray's Yes/No box | MIT OR Apache-2.0 |
 | windows-implement, windows-interface | Build time only (windows dependencies) | MIT OR Apache-2.0  |
+| native-windows-gui | The tray: icon by the clock, menu, notices (Windows build only) | MIT              |
+| winapi, lazy_static, bitflags 1 | native-windows-gui dependencies (Windows build only) | MIT OR Apache-2.0 |
+| winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu | winapi dependencies, for GNU Windows targets only (not in the shipped MSVC build) | MIT OR Apache-2.0 |
+| winapi-build     | Build time only (native-windows-gui dependency) | MIT                            |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
 | windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |

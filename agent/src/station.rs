@@ -35,13 +35,13 @@
 //! (Principle IX).
 
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use crate::auto_mode;
-use crate::civ_radio::CivRadio;
+use crate::civ_radio::{CivRadio, Port};
 use crate::civ_serial::{self, SerialPort};
 use crate::engine::{KeptRadio, KeptReading, Uplink};
 use crate::rig::{Radio, RadioError};
@@ -52,8 +52,8 @@ use crate::setups::Setups;
 use crate::{rigdef, settings_record};
 
 /// The radio, found and checked.
-struct Found {
-    radio: CivRadio<SerialPort>,
+struct Found<P: Port> {
+    radio: CivRadio<P>,
     port: String,
     serial: Option<String>,
 }
@@ -62,7 +62,7 @@ struct Found {
 /// looks like a known radio's and answers as one. On Windows, a radio
 /// plugged in with no driver for its USB serial bridge gets one first (see
 /// `driver`).
-fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
+fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found<SerialPort>, String> {
     let definitions = rigdef::built_in()?;
     if let Some(port) = port {
         let opened = SerialPort::open(port)?;
@@ -121,7 +121,7 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found<SerialPort>> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
         match find(port, running) {
@@ -145,7 +145,7 @@ fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
 }
 
 /// Where settings records are kept: `records` beside the Agent.
-fn records_folder() -> std::path::PathBuf {
+pub(crate) fn records_folder() -> std::path::PathBuf {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|folder| folder.join("records")))
@@ -155,7 +155,7 @@ fn records_folder() -> std::path::PathBuf {
 /// Reads the radio's settings, keeps the first reading of this radio as its
 /// as-received record, and says what changed since and what in them stops
 /// digital modes working. Returns the reading.
-fn check_settings(radio: &mut CivRadio<SerialPort>, serial: Option<&str>) -> Record {
+fn check_settings<P: Port>(radio: &mut CivRadio<P>, serial: Option<&str>) -> Record {
     let definition = radio.definition().clone();
     let record = settings_record::read(
         radio,
@@ -340,8 +340,14 @@ enum Typed {
     Fix,
     /// Show what putting this setup back would change, and wait for a yes.
     Restore(String),
-    /// Yes: go ahead with the restore just shown.
-    Yes,
+    /// Yes: go ahead with the change just shown, or (`Some`) with the
+    /// change asked as that question number, and only if it is still the
+    /// one waiting.
+    Yes(Option<u32>),
+    /// No: leave the radio as it is.
+    No,
+    /// Stop the Agent, as Ctrl-C does.
+    Quit,
     /// Turn auto mode on or off on this computer, or (`None`) say which.
     Auto(Option<bool>),
     /// Say what can be typed.
@@ -372,7 +378,13 @@ fn typed(line: &str) -> Result<Typed, String> {
             crate::engine::check_setup_name(name)?;
             Ok(Typed::Restore(name.to_owned()))
         }
-        ("yes", "") => Ok(Typed::Yes),
+        ("yes", "") => Ok(Typed::Yes(None)),
+        ("yes", number) => number
+            .parse()
+            .map(|number| Typed::Yes(Some(number)))
+            .map_err(|_| format!("yes takes a question number or nothing, not {number:?}")),
+        ("no", "") => Ok(Typed::No),
+        ("quit" | "exit", "") => Ok(Typed::Quit),
         ("auto", rest) => match rest.to_ascii_lowercase().as_str() {
             "" => Ok(Typed::Auto(None)),
             "on" => Ok(Typed::Auto(Some(true))),
@@ -388,8 +400,8 @@ fn typed(line: &str) -> Result<Typed, String> {
 const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup (keep FT8, \
                          say), compare to see what differs from each setup, restore NAME to put \
                          one back, show NAME to read a setting (show DATA MOD, say), fix to \
-                         fix what stops a job working, or auto on to let the Agent make its \
-                         fixes without asking.";
+                         fix what stops a job working, auto on to let the Agent make its \
+                         fixes without asking, or quit to stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -462,15 +474,56 @@ fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String
     lines.join("\n")
 }
 
-/// Starts reading the operator's commands. Setups are kept on the Engine
-/// when there is one, otherwise on this computer, so keep and restore work
-/// with no network (Principle V).
+/// What the operator types, read from the moment the Agent starts: quit
+/// (or the input closing, as when the tray stops) stops the Agent at any
+/// time; every other line goes to the console once the radio is found.
+#[derive(Clone)]
+struct Typing {
+    to_console: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+}
+
+/// Starts reading what the operator types, until quit or the input
+/// closes; either turns `running` false.
+fn start_typing(running: Arc<AtomicBool>) -> Typing {
+    let typing = Typing {
+        to_console: Arc::new(Mutex::new(None)),
+    };
+    let slot = Arc::clone(&typing.to_console);
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lines() {
+            let Ok(line) = line else { break };
+            if typed(&line) == Ok(Typed::Quit) {
+                break;
+            }
+            let console = slot.lock().ok().and_then(|slot| slot.clone());
+            match console {
+                Some(console) => {
+                    if console.send(line).is_err() {
+                        break;
+                    }
+                }
+                None if typed(&line) == Ok(Typed::Nothing) => {}
+                None => crate::print_event(
+                    "not yet: the Agent is still finding the radio (quit stops it).",
+                ),
+            }
+        }
+        crate::print_event("stopping: asked to quit.");
+        running.store(false, Ordering::SeqCst);
+    });
+    typing
+}
+
+/// Starts the operator's console. Setups are kept on the Engine when there
+/// is one, otherwise on this computer, so keep and restore work with no
+/// network (Principle V).
 fn start_console(
     shared: &Arc<Shared>,
     uplink: Option<Uplink>,
     serial: String,
     definition: Definition,
     record: &Record,
+    typing: &Typing,
 ) -> Desk {
     let setups: Box<dyn Setups> = match uplink {
         Some(uplink) => Box::new(uplink),
@@ -480,6 +533,7 @@ fn start_console(
     println!("{TYPE_HELP}");
     let desk = Desk {
         waiting: Arc::new(Mutex::new(None)),
+        asked: Arc::new(AtomicU32::new(0)),
         auto: Arc::new(AtomicBool::new(auto_mode::load(&auto_mode::path(
             &records_folder(),
         )))),
@@ -495,21 +549,35 @@ fn start_console(
             desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
         );
     }
+    let (lines, typed_lines) = mpsc::channel();
+    if let Ok(mut slot) = typing.to_console.lock() {
+        *slot = Some(lines);
+    }
     let shared = Arc::clone(shared);
     let console_desk = desk.clone();
-    std::thread::spawn(move || console(&shared, setups.as_ref(), &definition, &console_desk));
+    std::thread::spawn(move || {
+        console(
+            &shared,
+            setups.as_ref(),
+            &definition,
+            &console_desk,
+            &typed_lines,
+        );
+    });
     desk
 }
 
-/// What waits for the operator's yes: shown last, taken by the next line
-/// they type, whatever it is (Principle X).
-type Waiting = Arc<Mutex<Option<crate::restore::Plan>>>;
+/// What waits for the operator's yes, and its question number: shown last,
+/// taken by the next line they type, whatever it is (Principle X).
+type Waiting = Arc<Mutex<Option<(u32, crate::restore::Plan)>>>;
 
-/// The operator's side of the Agent: what waits for their yes, whether
-/// auto mode is on, and the radio's serial number.
+/// The operator's side of the Agent: what waits for their yes, how many
+/// questions have been asked, whether auto mode is on, and the radio's
+/// serial number.
 #[derive(Clone)]
 struct Desk {
     waiting: Waiting,
+    asked: Arc<AtomicU32>,
     auto: Arc<AtomicBool>,
     serial: String,
 }
@@ -542,10 +610,26 @@ impl Desk {
                 restore(shared, &plan, &self.serial)
             )
         } else {
-            wait_for_yes(&self.waiting, plan);
-            format!("{about}\n{ask}")
+            let number = self.wait_for_yes(plan);
+            format!("{about}\n{}", numbered(ask, number))
         }
     }
+
+    /// Leaves `plan` waiting for the operator's yes, in place of anything
+    /// that was, and returns its question number.
+    fn wait_for_yes(&self, plan: crate::restore::Plan) -> u32 {
+        let number = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
+        if let Ok(mut slot) = self.waiting.lock() {
+            *slot = Some((number, plan));
+        }
+        number
+    }
+}
+
+/// How to say yes, with the question's number, so an answer given to one
+/// question (by the tray, say) is never taken for a newer one.
+fn numbered(ask: &str, number: u32) -> String {
+    format!("{ask} (question {number})")
 }
 
 /// How far each offer lowers the drive level, in percent of its scale.
@@ -705,17 +789,56 @@ fn after_unkey<'a>(
     }
 }
 
-/// Leaves `plan` waiting for the operator's yes, in place of anything
-/// that was.
-fn wait_for_yes(waiting: &Mutex<Option<crate::restore::Plan>>, plan: crate::restore::Plan) {
-    if let Ok(mut slot) = waiting.lock() {
-        *slot = Some(plan);
+/// Takes what waits for the operator's yes, if anything, and answers it
+/// with what they typed: a change goes ahead only on a yes typed right
+/// after it was shown and, with a question number, only if that question is
+/// still the one waiting. Anything else leaves the radio as it is. Returns
+/// whether the line was used up (a yes, or a no), or is still to be done
+/// as typed.
+fn answer_waiting(shared: &Shared, desk: &Desk, typed: &Result<Typed, String>) -> bool {
+    let pending = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
+    let Some((number, plan)) = pending else {
+        return false;
+    };
+    match typed {
+        Ok(Typed::Yes(None)) => {
+            crate::print_event(&restore(shared, &plan, &desk.serial));
+            true
+        }
+        Ok(Typed::Yes(Some(answered))) if *answered == number => {
+            crate::print_event(&restore(shared, &plan, &desk.serial));
+            true
+        }
+        Ok(Typed::Yes(Some(answered))) => {
+            crate::print_event(&format!(
+                "question {answered} was replaced by question {number}; nothing changed."
+            ));
+            if let Ok(mut slot) = desk.waiting.lock() {
+                slot.get_or_insert((number, plan));
+            }
+            true
+        }
+        _ => {
+            crate::print_event(&if plan.fixes {
+                "nothing fixed; the radio is as it was.".to_owned()
+            } else {
+                format!("setup {} not put back; nothing changed.", plan.setup)
+            });
+            matches!(typed, Ok(Typed::No))
+        }
     }
 }
 
-/// Reads the operator's commands from the console until it closes.
-fn console(shared: &Shared, setups: &dyn Setups, definition: &Definition, desk: &Desk) {
-    let (serial, waiting) = (desk.serial.as_str(), &desk.waiting);
+/// Answers the operator's commands, from what they type, until the Agent
+/// stops.
+fn console(
+    shared: &Shared,
+    setups: &dyn Setups,
+    definition: &Definition,
+    desk: &Desk,
+    lines: &mpsc::Receiver<String>,
+) {
+    let serial = desk.serial.as_str();
     let read = || {
         shared.settings(|radio| {
             settings_record::read(
@@ -726,27 +849,15 @@ fn console(shared: &Shared, setups: &dyn Setups, definition: &Definition, desk: 
             )
         })
     };
-    for line in std::io::stdin().lines() {
-        let Ok(line) = line else { return };
+    for line in lines {
         let typed = typed(&line);
-        // A restore goes ahead only on a yes typed right after it was shown.
-        // Anything else leaves the radio as it is, and is then done as
-        // typed.
-        let pending = waiting.lock().ok().and_then(|mut slot| slot.take());
-        if let Some(plan) = pending {
-            if matches!(typed, Ok(Typed::Yes)) {
-                crate::print_event(&restore(shared, &plan, serial));
-                continue;
-            }
-            crate::print_event(&if plan.fixes {
-                "nothing fixed; the radio is as it was.".to_owned()
-            } else {
-                format!("setup {} not put back; nothing changed.", plan.setup)
-            });
+        if answer_waiting(shared, desk, &typed) {
+            continue;
         }
         let said = match typed {
-            Ok(Typed::Nothing) => continue,
-            Ok(Typed::Yes) => "nothing is waiting for a yes.".to_owned(),
+            // Quit is read, and acted on, where the operator's typing is.
+            Ok(Typed::Nothing | Typed::Quit) => continue,
+            Ok(Typed::Yes(_) | Typed::No) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
                 match read().and_then(|now| {
                     setups
@@ -756,11 +867,12 @@ fn console(shared: &Shared, setups: &dyn Setups, definition: &Definition, desk: 
                     Ok(Ok(plan)) => {
                         let mut lines = plan.lines();
                         if !plan.put.is_empty() {
-                            lines.push(format!(
-                            "-> Type yes to put {} back on the radio; anything else leaves it as it is.",
-                            if plan.put.len() == 1 { "it" } else { "them" }
-                        ));
-                            wait_for_yes(waiting, plan);
+                            let ask = format!(
+                                "-> Type yes to put {} back on the radio; anything else leaves it as it is.",
+                                if plan.put.len() == 1 { "it" } else { "them" }
+                            );
+                            let number = desk.wait_for_yes(plan);
+                            lines.push(numbered(&ask, number));
                         }
                         lines.join("\n")
                     }
@@ -939,6 +1051,7 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
 /// make a link to the Engine.
 pub fn run(
     port: Option<&str>,
+    pretend: bool,
     listen: SocketAddr,
     limit: Duration,
     engine: Option<(&str, &str, Option<&str>)>,
@@ -947,13 +1060,37 @@ pub fn run(
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
+    let typing = start_typing(Arc::clone(&running));
     let uplink = engine
         .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
         .transpose()?;
-    let Some(mut found) = wait_for_radio(port, &running) else {
+    if pretend {
+        let found = Found {
+            radio: crate::civ_pretend_radio().map_err(|error| error.to_string())?,
+            port: "the pretend port".to_owned(),
+            serial: Some(PRETEND_SERIAL.to_owned()),
+        };
+        return run_found(found, listen, limit, uplink, &running, &typing);
+    }
+    let Some(found) = wait_for_radio(port, &running) else {
         println!("stopped");
         return Ok(());
     };
+    run_found(found, listen, limit, uplink, &running, &typing)
+}
+
+/// The serial number the pretend radio's settings are kept under.
+const PRETEND_SERIAL: &str = "PRETEND";
+
+/// Runs the station with the radio found, until stopped.
+fn run_found<P: Port + Send + 'static>(
+    mut found: Found<P>,
+    listen: SocketAddr,
+    limit: Duration,
+    uplink: Option<Uplink>,
+    running: &AtomicBool,
+    typing: &Typing,
+) -> Result<(), String> {
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -992,16 +1129,16 @@ pub fn run(
     let desk = found
         .serial
         .clone()
-        .map(|serial| start_console(&shared, uplink, serial, definition.clone(), &record));
+        .map(|serial| start_console(&shared, uplink, serial, definition.clone(), &record, typing));
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
-    println!("Ctrl-C stops.");
+    println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
     let mut hint: Option<&'static str> = None;
     #[cfg(windows)]
     let mut last = std::time::Instant::now();
     #[cfg(windows)]
     let mut was_on_air = false;
-    crate::show_until_stopped(shared.as_ref(), &heard, &running, || {
+    crate::show_until_stopped(shared.as_ref(), &heard, running, || {
         offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
@@ -1113,26 +1250,32 @@ const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
 #[cfg(windows)]
 const RUN_NAME: &str = "LabLog Station Agent";
 
-/// The command line Windows runs at sign-in: this program's `station`.
-/// Windows takes at most 260 characters there.
+/// The command line Windows runs at sign-in: this program's tray, with
+/// `options` for the `station` it runs. Windows takes at most 260
+/// characters there.
 #[cfg(any(windows, test))]
-fn startup_command(exe: &std::path::Path) -> Result<String, String> {
-    let command = format!("\"{}\" station", exe.display());
+fn startup_command(exe: &std::path::Path, options: &[String]) -> Result<String, String> {
+    let mut command = format!("\"{}\" tray", exe.display());
+    for option in options {
+        command.push(' ');
+        command.push_str(&crate::tray::quoted(option)?);
+    }
     if command.chars().count() > 260 {
         return Err(format!(
-            "the Agent's path is too long for Windows to start it at sign-in ({command})"
+            "the command is too long for Windows to start it at sign-in ({command})"
         ));
     }
     Ok(command)
 }
 
 /// `startup on`, `startup off` or `startup status`: whether Windows starts
-/// `station` each time this user signs in.
+/// the tray each time this user signs in. `startup on` also starts it now,
+/// with `options` for its `station`.
 ///
 /// # Errors
 ///
 /// Windows' registry couldn't be read or changed, or this isn't Windows.
-pub fn startup(what: &str) -> Result<(), String> {
+pub fn startup(what: &str, options: &[String]) -> Result<(), String> {
     #[cfg(windows)]
     {
         let reg = |args: &[&str]| {
@@ -1145,7 +1288,7 @@ pub fn startup(what: &str) -> Result<(), String> {
             "on" => {
                 let exe = std::env::current_exe()
                     .map_err(|error| format!("can't tell where the Agent is: {error}"))?;
-                let command = startup_command(&exe)?;
+                let command = startup_command(&exe, options)?;
                 let done = reg(&[
                     "add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &command, "/f",
                 ])?;
@@ -1157,6 +1300,11 @@ pub fn startup(what: &str) -> Result<(), String> {
                 }
                 println!("Windows will run {command} each time you sign in.");
                 println!("Windows may wait a little after sign-in before starting it.");
+                crate::tray::start_hidden(&exe, options)?;
+                println!(
+                    "The Agent is starting now too: look for its icon by the clock (it may be \
+                     under the ^ arrow)."
+                );
                 Ok(())
             }
             "off" => {
@@ -1166,6 +1314,7 @@ pub fn startup(what: &str) -> Result<(), String> {
                 } else {
                     println!("Windows wasn't starting the Agent at sign-in.");
                 }
+                println!("If the Agent's icon is by the clock, its menu's Quit stops it.");
                 Ok(())
             }
             "status" => {
@@ -1185,7 +1334,7 @@ pub fn startup(what: &str) -> Result<(), String> {
     }
     #[cfg(not(windows))]
     {
-        let _ = what;
+        let _ = (what, options);
         Err(
             "startup is for Windows; elsewhere, use the system's own way to start programs"
                 .to_owned(),
@@ -1196,7 +1345,7 @@ pub fn startup(what: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use std::net::SocketAddr;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, UNIX_EPOCH};
 
@@ -1274,6 +1423,7 @@ mod tests {
         let (shared, definition) = transmitted([60, 20, 84]);
         let desk = Desk {
             waiting: Arc::new(Mutex::new(None)),
+            asked: Arc::new(AtomicU32::new(0)),
             auto: Arc::new(AtomicBool::new(false)),
             serial: "test".to_owned(),
         };
@@ -1281,11 +1431,18 @@ mod tests {
             unreachable!("ALC ran high")
         };
         let said = desk.propose(&shared, &about, DRIVE_ASK, plan.clone());
-        assert!(said.ends_with(DRIVE_ASK), "asks first: {said}");
         assert!(
-            desk.waiting.lock().is_ok_and(|slot| slot.is_some()),
+            said.ends_with(&format!("{DRIVE_ASK} (question 1)")),
+            "asks first, numbered: {said}"
+        );
+        assert!(
+            desk.waiting
+                .lock()
+                .is_ok_and(|slot| slot.as_ref().is_some_and(|(number, _)| *number == 1)),
             "and waits for the yes"
         );
+        let again = desk.propose(&shared, &about, DRIVE_ASK, plan.clone());
+        assert!(again.ends_with("(question 2)"), "a new number: {again}");
         let unchanged = drive_offer(&shared, &definition).map(|(about, _)| about);
         assert_eq!(
             unchanged.as_deref(),
@@ -1350,8 +1507,13 @@ mod tests {
         assert!(typed(&format!("keep {}", "x".repeat(41))).is_err());
         assert_eq!(typed("restore FT8"), Ok(Typed::Restore("FT8".to_owned())));
         assert!(typed("restore").is_err());
-        assert_eq!(typed(" YES "), Ok(Typed::Yes));
+        assert_eq!(typed(" YES "), Ok(Typed::Yes(None)));
+        assert_eq!(typed("yes 12"), Ok(Typed::Yes(Some(12))));
         assert!(typed("yes please").is_err());
+        assert_eq!(typed("No"), Ok(Typed::No));
+        assert_eq!(typed("quit"), Ok(Typed::Quit));
+        assert_eq!(typed("exit"), Ok(Typed::Quit));
+        assert!(typed("quit now").is_err());
         assert!(typed("compare FT8").is_err());
     }
 
@@ -1429,13 +1591,28 @@ mod tests {
     }
 
     #[test]
-    fn the_sign_in_command_runs_station_and_fits_windows() {
+    fn the_sign_in_command_runs_the_tray_and_fits_windows() {
         let exe = std::path::Path::new(r"C:\LabLog\loglab-agent.exe");
         assert_eq!(
-            startup_command(exe).as_deref(),
-            Ok(r#""C:\LabLog\loglab-agent.exe" station"#)
+            startup_command(exe, &[]).as_deref(),
+            Ok(r#""C:\LabLog\loglab-agent.exe" tray"#)
         );
+        let options: Vec<String> = [
+            "--engine",
+            "http://10.73.10.10:8073",
+            "--key-file",
+            r"C:\LabLog\FL 1.key",
+        ]
+        .map(str::to_owned)
+        .to_vec();
+        assert_eq!(
+            startup_command(exe, &options).as_deref(),
+            Ok(
+                r#""C:\LabLog\loglab-agent.exe" tray --engine http://10.73.10.10:8073 --key-file "C:\LabLog\FL 1.key""#
+            )
+        );
+        assert!(startup_command(exe, &["say \"hi\"".to_owned()]).is_err());
         let deep = std::path::PathBuf::from("x".repeat(300));
-        assert!(startup_command(&deep).is_err(), "over 260 characters");
+        assert!(startup_command(&deep, &[]).is_err(), "over 260 characters");
     }
 }

@@ -374,12 +374,16 @@ devices, and the Agent moves audio between them and the radio.
 
 ## Windows specifics
 
-- **Runs as a service plus a tray program.** The service starts when the
-  computer does, owns the radios, and keeps running, journal included, when
-  nobody is signed in to Windows (after a power blip restarts the computer,
-  for example). The tray program is its face: it shows the radios, which
-  program has each one and the setup it applied, asks the operator to approve
-  a setting change a job needs, and talks to the service. Closing the tray program does not release the radios.
+- **Runs as a tray program, not a service.** Windows starts it at sign-in
+  (`startup on`, the Run key), with no window; its icon by the clock shows
+  the radio's state, its menu does what is typed at `station`, and a Yes/No
+  box asks before a change the operator must approve. It is one program in
+  the signed-in person's session, because a service can't show anything to
+  the person at the computer (Microsoft Learn, "Interactive Services":
+  "Services cannot directly interact with a user as of Windows Vista") and
+  the radio's audio devices and programs' settings belong to that person.
+  So the Agent runs only while someone is signed in. (Decided by the
+  maintainer, 2026-10-28.)
 - **Drivers: existing signed drivers first.** Windows only loads signed
   drivers, and a virtual COM port and a virtual sound device both need one.
   The first versions use existing signed drivers: VB-Audio's virtual cables
@@ -484,5 +488,5 @@ Each step is its own pull request, with tests and a demonstration
 | 2 | May the CAT personality speak Kenwood's published command set? | **Decided**: yes (Principle IV, constitution 3.0.0) |
 | 3 | Who decides which program may control and key a radio? | **Decided** (changed 2026-10-27): the program using the radio's audio, with nothing to click; the tray only shows it |
 | 4 | Existing signed drivers (VB-Audio, com0com) first, or our own? | **Decided**: existing signed drivers first |
-| 5 | Tray program only, or a service with the tray program as its face? | **Decided**: a service, with the tray program as its face |
+| 5 | Tray program only, or a service with the tray program as its face? | **Decided** (changed 2026-10-28): tray program only; the Agent runs while someone is signed in |
 | 6 | Must the operator confirm each setup the Agent applies? | **Decided**: no; a radio's kept setup for a program is applied when that program starts using the radio (Principle X, constitution 5.0.0) |
