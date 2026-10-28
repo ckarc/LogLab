@@ -2,7 +2,7 @@
 
 | Field          | Value                                                                                  |
 | -------------- | -------------------------------------------------------------------------------------- |
-| **Version**    | 5.0.0                                                                                  |
+| **Version**    | 6.0.0                                                                                  |
 | **Status**     | `STABLE`                                                                               |
 | **Maintainer** | Brian Krenzin, K9KSU                                                                   |
 | **License**    | GNU Affero General Public License v3.0 (AGPL-3.0)                                      |
@@ -223,7 +223,7 @@ value back over the radio's current one.
 If the radio can store and recall a setting itself, the radio keeps it. The
 Agent persists only what the radio cannot store.
 
-Two exceptions. First, the Agent may record a radio's settings when it first
+Three exceptions. First, the Agent may record a radio's settings when it first
 connects, and an operator may explicitly ask the Agent to put recorded
 settings back; the Agent then restores only after the operator confirms it.
 Second, when a program starts using a radio's audio through the Agent, the
@@ -231,10 +231,19 @@ Agent may put back, without asking, the setup kept for that radio and that
 program. It does so once, as the program starts, and only for a radio that
 already has a setup kept for that program, so a radio nobody has set up for
 it, such as a visitor's, is never changed this way. While the program runs,
-the operator's changes on the radio stand. Every restore, of either kind, is
-shown to the operator and recorded — what was changed, from what, and when —
-like any other change the Agent makes to a radio. Apart from these two
-exceptions, the Agent never restores on its own.
+the operator's changes on the radio stand. Third, an operator may turn on
+auto mode on a station computer. While it is on, the Agent may make, without
+asking, the changes it would otherwise offer for the operator's yes: setting
+what stops a job working, such as the audio source a data mode transmits
+from, and lowering a transmit drive level that the radio's own meters show
+is too high. It changes nothing while a program has the radio keyed, and it
+never keys a radio to try a change: it adjusts only between transmissions a
+program asked for. Auto mode is off until an operator turns it on, it applies
+only on the computer where it was turned on, and while it is off the Agent
+asks first. Every change of these kinds is shown to the operator and recorded
+— what was changed, from what, and when — like any other change the Agent
+makes to a radio. Apart from these three exceptions, the Agent never changes
+a radio's settings on its own.
 
 Where a radio can measure a value the log records — transmit power, most
 importantly — the measured value is logged and marked as measured. A value an
@@ -616,6 +625,7 @@ the constitution is a draft and changes bump the minor version. From 1.0.0 on:
 | 4.0.0   | 2026-10-24 | Added Principle XXI (The Log Knows Who Is Asking): every Engine request is made by an identified operator at an identified station; viewing, logging and administration are separate permissions; an operator's own credentials are theirs alone; sign-in works offline; a Station Agent proves its station with an approved key; protocols with no sign-in are accepted only from their own computer. It grants nothing about controlling a radio. Added at the end so no principle is renumbered. Situation: repealing Principle XIII in 3.0.0 removed the radio permissions it held, as intended, but also left the Engine's sign-in, its separate permissions, and each operator's private credentials with no principle behind them; without one, a change could let anyone on a Field Day network read or edit the log, or use another operator's LoTW certificate, with no rule to stop it. Decided by the maintainer. |
 
 | 5.0.0   | 2026-10-27 | Widened Principle X: when a program starts using a radio's audio through the Agent, the Agent may put back the setup kept for that radio and that program without asking, once, as the program starts, and only for a radio that already has a setup kept for that program; every restore is shown and recorded. Restoring on an operator's explicit, confirmed request is unchanged. Situation: FieldLab's radios move between computers and between modes (FT8, VARA, SSTV for youth operators), and each move costs about 30 minutes of resetting filters, noise reduction, RF gain and audio levels by hand. Asking for a confirm every time a program starts turns a radio that should simply work into a step operators skip or get wrong, a worse outcome than applying a setup the station already chose for that radio and program. Limiting it to radios with a kept setup still leaves a visitor's radio untouched, the reason the confirm was required. Decided by the maintainer. |
+| 6.0.0   | 2026-10-28 | Widened Principle X with a third exception, auto mode: an operator may turn it on for a station computer, and while it is on the Agent makes, without asking, the changes it would otherwise offer for a yes (settings that stop a job working, and lowering a transmit drive level the radio's meters show is too high). Never while a program has the radio keyed, never by keying the radio itself, only between transmissions a program asked for; off until turned on, per computer; every change shown and recorded. Major, following 5.0.0, because a case where the Agent asked first becomes one where it may act. Situation: at FieldLab's first VARA contact on 2026-10-28 the Agent measured ALC at 70 to 92 percent of its scale, where data modes want little or none; bringing it down meant a confirm after every test transmission, and a youth operator at an unattended position would leave a radio overdriving rather than answer each one, a worse outcome than letting the Agent make a measured, recorded change the station chose to allow. Changes made to a visitor's radio stay recorded against the settings it arrived with, so it can still be put back as found. Decided by the maintainer. |
 ---
 
 ## Ratification
