@@ -33,7 +33,7 @@ use crate::civ::{self, Decoder, Frame, NG, OK};
 use crate::civ_pretend::PretendCiv;
 use crate::rig::{
     ControlPath, Exposes, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity,
-    Reading, Tunable, Tuning, Vfo,
+    Reading, Tunable, Tuning, TxMeters, Vfo,
 };
 use crate::rigdef::{Definition, SettingSummary};
 
@@ -87,6 +87,9 @@ pub enum Ask {
     Setting([u8; 2]),
     /// The attenuator (`11`).
     Attenuator,
+    /// A transmit meter (`15` and which: `11` Po, `12` SWR, `13` ALC).
+    /// Bare, it only asks.
+    Meter(u8),
     /// A front-panel control's value, by its command, such as `14 02` for
     /// the RF gain. Only commands a rig definition may read settings with
     /// get here (`rigdef::READABLE`): each only asks when sent bare.
@@ -96,12 +99,15 @@ pub enum Ask {
 impl Ask {
     /// Every question there is, for the test that none of them changes a radio.
     #[cfg(test)]
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 8] = [
         Self::Identity,
         Self::Frequency,
         Self::Mode,
         Self::DataMode,
         Self::Transmitting,
+        Self::Meter(POWER_METER),
+        Self::Meter(SWR_METER),
+        Self::Meter(ALC_METER),
     ];
 
     /// The command bytes for this question.
@@ -116,6 +122,7 @@ impl Ask {
             // With no value after the item number, 1A 05 only asks.
             Self::Setting([a, b]) => vec![0x1A, 0x05, a, b],
             Self::Attenuator => vec![0x11],
+            Self::Meter(which) => vec![0x15, which],
             Self::Control([a, b]) => vec![a, b],
         }
     }
@@ -461,7 +468,37 @@ impl<P: Port> Keyable for CivRadio<P> {
     fn transmit(&mut self, on: bool) -> Result<(), RadioError> {
         self.command(&transmit_payload(on))
     }
+
+    fn meters(&mut self) -> Result<Option<TxMeters>, RadioError> {
+        let Some(meters) = self.definition.meters.clone() else {
+            return Ok(None);
+        };
+        let mut level = |which: u8| -> Result<u16, RadioError> {
+            match self.ask(Ask::Meter(which))?.as_slice() {
+                [0x15, asked, bcd @ ..] if *asked == which && bcd.len() == 2 => {
+                    civ::level_from_bcd(bcd)
+                        .ok_or_else(|| RadioError(format!("not a meter level: {}", civ::hex(bcd))))
+                }
+                other => Err(RadioError(format!(
+                    "odd answer to 15 {which:02X}: {}",
+                    civ::hex(other)
+                ))),
+            }
+        };
+        Ok(Some(TxMeters {
+            power: meters.power.value(level(POWER_METER)?),
+            swr_tenths: meters.swr.value(level(SWR_METER)?),
+            alc: meters.alc.value(level(ALC_METER)?),
+        }))
+    }
 }
+
+/// The Po meter (`15 11`).
+const POWER_METER: u8 = 0x11;
+/// The SWR meter (`15 12`).
+const SWR_METER: u8 = 0x12;
+/// The ALC meter (`15 13`).
+const ALC_METER: u8 = 0x13;
 
 impl<P: Port> Exposes for CivRadio<P> {
     fn definition(&self) -> &Definition {
@@ -642,7 +679,7 @@ mod tests {
     use super::{Ask, Change, CivRadio, Port, PretendPort, transmit_payload};
     use crate::civ::Frame;
     use crate::civ_pretend::PretendCiv;
-    use crate::rig::{ControlPath, Keyable, Mode, Radio, Tunable, Tuning, Vfo};
+    use crate::rig::{ControlPath, Keyable, Mode, Radio, Tunable, Tuning, TxMeters, Vfo};
     use crate::rigdef::{self, Definition};
 
     fn ic_7300() -> Definition {
@@ -730,12 +767,15 @@ mod tests {
         // The commands that change an Icom radio carry data after their
         // command bytes (05, 06, 07 xx, 0F xx, 1A 05 .. value, 1C 00 xx).
         // Every question here is one of the bare read forms.
-        let reads: [&[u8]; 5] = [
+        let reads: [&[u8]; 8] = [
             &[0x19, 0x00],
             &[0x03],
             &[0x04],
             &[0x1A, 0x06],
             &[0x1C, 0x00],
+            &[0x15, 0x11],
+            &[0x15, 0x12],
+            &[0x15, 0x13],
         ];
         let asked: Vec<Vec<u8>> = Ask::ALL.iter().map(|ask| ask.payload()).collect();
         assert_eq!(asked, reads);
@@ -800,6 +840,37 @@ mod tests {
         assert!(!radio.port.radio().transmitting());
         let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
         assert_eq!(reading.ptt, Some(false));
+    }
+
+    #[test]
+    fn reads_the_transmit_meters_on_the_radio_s_scales() {
+        let mut radio = found(115_200);
+        let idle = radio
+            .meters()
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(
+            idle,
+            Some(TxMeters {
+                power: 0,
+                swr_tenths: 10,
+                alc: 0
+            }),
+            "receiving: every meter at the bottom"
+        );
+        radio.port.radio().set_tx_meters([213, 80, 40]);
+        assert!(radio.transmit(true).is_ok());
+        let keyed = radio
+            .meters()
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(
+            keyed,
+            Some(TxMeters {
+                power: 100,
+                swr_tenths: 20,
+                alc: 33
+            })
+        );
+        assert!(radio.transmit(false).is_ok());
     }
 
     #[test]

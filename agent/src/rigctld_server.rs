@@ -54,7 +54,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
-use crate::rig::{Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, Vfo};
+use crate::rig::{
+    Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters, Vfo,
+};
 
 /// The longest command line accepted.
 const MAX_LINE: usize = 256;
@@ -199,6 +201,42 @@ struct Keyed {
     unkey_at: Instant,
     /// An attempt to unkey it failed: it may still be transmitting.
     stuck: bool,
+    /// The highest each transmit meter read while keyed, if the radio's
+    /// meters can be read.
+    peak: Option<TxMeters>,
+    /// When the meters are next read.
+    next_meters: Instant,
+}
+
+/// How often the transmit meters are read while keyed.
+const METER_EVERY: Duration = Duration::from_millis(250);
+/// The most ALC that is fine, in percent of its scale: Icom suggests about
+/// a third of the scale; Winlink asks for little or none.
+const ALC_HIGHEST: u16 = 33;
+/// The highest SWR, in tenths, before the operator is warned.
+const SWR_HIGHEST: u16 = 20;
+
+/// The transmit meters' peaks, in words, and what to do if one is too high.
+fn meter_note(peak: TxMeters) -> String {
+    let mut note = format!(
+        "; peak Po {}%, ALC {}% of its scale, SWR {}.{}",
+        peak.power,
+        peak.alc,
+        peak.swr_tenths / 10,
+        peak.swr_tenths % 10
+    );
+    if peak.alc > ALC_HIGHEST {
+        note.push_str(
+            "\n-> ALC went over a third of its scale: lower the radio's USB MOD Level, or the \
+             program's drive level, until it stays under.",
+        );
+    }
+    if peak.swr_tenths > SWR_HIGHEST {
+        note.push_str(
+            "\n-> SWR went over 2.0: check the antenna and tuner before transmitting again.",
+        );
+    }
+    note
 }
 
 /// Keys `radio` for `program`, unless something else is transmitting.
@@ -247,6 +285,8 @@ fn key(
                 since,
                 unkey_at: since + limit,
                 stuck: false,
+                peak: None,
+                next_meters: since + METER_EVERY,
             });
             (
                 Ok(()),
@@ -263,6 +303,8 @@ fn key(
                     since,
                     unkey_at: Instant::now() + UNKEY_RETRY,
                     stuck: true,
+                    peak: None,
+                    next_meters: since + METER_EVERY,
                 });
                 note.push_str(&stuck_hint(&again.to_string()));
             }
@@ -287,8 +329,9 @@ fn unkey(
     match radio.transmit(false) {
         Ok(()) => {
             let held = now.since.elapsed().as_secs_f64();
+            let meters = now.peak.map(meter_note).unwrap_or_default();
             *keyed = None;
-            (Ok(()), format!("{why}: unkeyed after {held:.1} s"))
+            (Ok(()), format!("{why}: unkeyed after {held:.1} s{meters}"))
         }
         Err(error) => {
             now.stuck = true;
@@ -572,6 +615,21 @@ impl Source for Shared {
                     );
                 }
                 ((), Some(note))
+            }
+            // While keyed, the meters are read every so often and their
+            // peaks kept, to say after the transmission.
+            Some(now) if !now.stuck && Instant::now() >= now.next_meters => {
+                let read = radio.meters();
+                if let Some(now) = keyed.as_mut() {
+                    now.next_meters = Instant::now() + METER_EVERY;
+                    if let Ok(Some(meters)) = read {
+                        let peak = now.peak.get_or_insert_with(TxMeters::default);
+                        peak.power = peak.power.max(meters.power);
+                        peak.swr_tenths = peak.swr_tenths.max(meters.swr_tenths);
+                        peak.alc = peak.alc.max(meters.alc);
+                    }
+                }
+                ((), None)
             }
             _ => ((), None),
         });
@@ -1074,12 +1132,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{Reply, Server, Shared, Source, respond};
+    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
     use crate::rig::{
         ControlPath, Keyable, Mode, Radio, RadioError, RadioIdentity, Reading, Tunable, Tuning,
+        TxMeters,
     };
     use crate::rigdef;
 
@@ -1439,6 +1498,8 @@ mod tests {
         /// How many times it was asked to unkey.
         unkeyed: usize,
         fault: Fault,
+        /// What its meters read while transmitting, if it has any.
+        meters: Option<TxMeters>,
     }
 
     /// A radio the tests can watch and press the PTT of.
@@ -1497,6 +1558,18 @@ mod tests {
                 bench.transmitting = on;
                 Ok(())
             })
+        }
+
+        fn meters(&mut self) -> Result<Option<TxMeters>, RadioError> {
+            Ok(on_bench(&self.bench, |bench| {
+                bench.meters.map(|keyed| {
+                    if bench.transmitting {
+                        keyed
+                    } else {
+                        TxMeters::default()
+                    }
+                })
+            }))
         }
     }
 
@@ -1659,6 +1732,60 @@ mod tests {
         on_bench(&bench, |bench| bench.fault = Fault::PttUnknown);
         assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT -9\n");
         assert_eq!(on_bench(&bench, |bench| bench.keyed), 0);
+    }
+
+    #[test]
+    fn says_the_meters_peaks_after_a_transmission() {
+        let (radio, bench, heard) = keyable(MINUTE);
+        on_bench(&bench, |bench| {
+            bench.meters = Some(TxMeters {
+                power: 100,
+                swr_tenths: 13,
+                alc: 50,
+            });
+        });
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        std::thread::sleep(METER_EVERY + Duration::from_millis(20));
+        radio.watch();
+        assert!(transmitting(&bench), "reading the meters keeps it keyed");
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(
+            heard[1].contains("; peak Po 100%, ALC 50% of its scale, SWR 1.3"),
+            "{heard:?}"
+        );
+        assert!(
+            heard[1].contains("lower the radio's USB MOD Level"),
+            "{heard:?}"
+        );
+        // A radio without meters, or a transmission too short to read
+        // them, says nothing about them.
+        let (radio, _, heard) = keyable(MINUTE);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        radio.watch();
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(!heard[1].contains("peak"), "{heard:?}");
+    }
+
+    #[test]
+    fn warns_only_when_alc_or_swr_is_too_high() {
+        let fine = TxMeters {
+            power: 50,
+            swr_tenths: 20,
+            alc: 33,
+        };
+        assert_eq!(
+            meter_note(fine),
+            "; peak Po 50%, ALC 33% of its scale, SWR 2.0"
+        );
+        let note = meter_note(TxMeters {
+            swr_tenths: 21,
+            alc: 34,
+            ..fine
+        });
+        assert!(note.contains("ALC went over a third"), "{note}");
+        assert!(note.contains("SWR went over 2.0"), "{note}");
     }
 
     #[test]

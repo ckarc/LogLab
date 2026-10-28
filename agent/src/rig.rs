@@ -220,4 +220,25 @@ pub trait Keyable: Tunable {
     ///
     /// The radio refused or didn't answer: it may or may not be transmitting.
     fn transmit(&mut self, on: bool) -> Result<(), RadioError>;
+
+    /// What the transmit meters read now, if the driver can read them: only
+    /// meaningful while transmitting.
+    ///
+    /// # Errors
+    ///
+    /// The radio refused or didn't answer.
+    fn meters(&mut self) -> Result<Option<TxMeters>, RadioError> {
+        Ok(None)
+    }
+}
+
+/// The transmit meters, as the radio measured them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TxMeters {
+    /// Power output, in percent of full power.
+    pub power: u16,
+    /// SWR, in tenths (15 is 1.5).
+    pub swr_tenths: u16,
+    /// ALC, in percent of its scale.
+    pub alc: u16,
 }

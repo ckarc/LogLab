@@ -287,12 +287,21 @@ How it behaves:
   21:38:26Z  radio: 7.074000 MHz DATA-USB, receiving
   21:38:28Z  asked to transmit: transmitting (127.0.0.1:55526)
   21:38:28Z  radio: 7.074000 MHz DATA-USB, transmitting
-  21:38:41Z  asked to stop transmitting: unkeyed after 12.7 s
+  21:38:41Z  asked to stop transmitting: unkeyed after 12.7 s; peak Po 50%, ALC 16% of its scale, SWR 1.3
   ```
 
   The `radio:` lines are read from the radio itself, so if a program's
   display ever disagrees with the latest one, the program is showing what it
   asked for rather than what the radio did (Principle X).
+- **Transmit meters.** While a program has the radio keyed, the Agent reads
+  its Po, SWR and ALC meters four times a second and, when it unkeys, says
+  the highest of each. Po and ALC are percent of the meter's scale; SWR is
+  the ratio. Over a third of the ALC scale (data modes want little or no ALC)
+  or SWR over 2.0, it adds a `->` line saying what to change. Only radios
+  whose rig definition has a `[meters]` table are read; the IC-7300's comes
+  from Icom's CI-V guide (`15 11`, `15 12`, `15 13`). Reading the meters only
+  reads: it never keys, unkeys or changes anything (Principle X). A
+  transmission shorter than a quarter second has no meter line.
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
 - Any radio the Agent can read can be served: `--civ PORT`, `--civ-pretend`, `--pretend`,
