@@ -303,20 +303,36 @@ How it behaves:
   reads: it never keys, unkeys or changes anything (Principle X). A
   transmission shorter than a quarter second has no meter line.
 
-  Under `station`, when ALC ran over a third, the Agent also offers to lower
-  the radio's drive level 10 points (on the IC-7300, USB MOD Level, since
-  the Agent's transmit audio reaches the radio over USB; the rig
-  definition's `meters.drive` names it):
+  Under `station`, the Agent also offers to move the radio's drive level
+  (on the IC-7300, USB MOD Level, since the Agent's transmit audio reaches
+  the radio over USB; the rig definition's `meters.drive` names it) one
+  step of 10 points:
+
+  - **lower** when ALC ran over a third of its scale;
+  - **raise** when ALC stayed at 10% or under and Po fell short of 70% of
+    the power the radio is set to (`meters.power_setting`, RF power on the
+    IC-7300). It never raises for a transmission under a second, or for one
+    whose Po stayed under 5%, which is silence rather than too little drive.
 
   ```
-  ALC peaked at 70% of its scale. The Agent can lower USB MOD Level from 128 of 255 (50%) to 102 of 255 (40%).
-  -> Type yes to set it, then transmit again to see the new ALC; anything else leaves the radio as it is.
+  ALC peaked at 74% of its scale: lower USB MOD Level from 128 of 255 (50%) to 102 of 255 (40%).
+  -> Type yes to set it, then transmit again to see the new meters; anything else leaves the radio as it is. (question 1)
   ```
+
+  A step never goes back past a level already tried while the Agent runs:
+  if 40% ran ALC too high and 30% fell short, the next step is halfway, 35%.
+
+  **The radio's own tuner.** While the radio's antenna tuner is tuning (a
+  frequency change with PTT tune on, or the TUNE button), its carrier, not
+  the program's audio, moves the meters. The Agent asks the tuner's state
+  with each reading (`1C 01` on Icom radios: 02 while tuning, per Hamlib
+  and wfview), says so on the unkey line, and moves nothing for that
+  transmission.
 
   `yes` writes it and reads it back; anything else leaves the radio as it
   is (Principle X). With auto mode on (below), the Agent sets it without
-  asking and says so. Transmit again and repeat until the `->` ALC line stops
-  appearing. The Agent never transmits to test it: the next transmission is
+  asking and says so. Transmit again and repeat until neither `->` line
+  appears. The Agent never transmits to test it: the next transmission is
   always one a program asked for.
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.

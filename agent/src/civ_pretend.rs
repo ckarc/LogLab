@@ -76,6 +76,8 @@ pub struct PretendCiv {
     /// Raw Po, SWR and ALC meter levels (15 11 / 12 / 13) while
     /// transmitting; every meter reads 0 while receiving.
     tx_meters: [u16; 3],
+    /// Whether its antenna tuner is tuning (`1C 01` answers 02).
+    tuning: bool,
     /// Every setting, by the command that reads it.
     menu: BTreeMap<Vec<u8>, Menu>,
     /// The echo-back setting and its "ON" code, if the definition has one.
@@ -115,6 +117,7 @@ impl PretendCiv {
             split: false,
             transmitting: false,
             tx_meters: PRETEND_TX_METERS,
+            tuning: false,
             menu: BTreeMap::new(),
             echo: None,
             transceive: None,
@@ -228,6 +231,12 @@ impl PretendCiv {
         self.tx_meters = levels;
     }
 
+    /// Starts or stops its pretend antenna tuner tuning.
+    #[cfg(test)]
+    pub fn set_tuning(&mut self, tuning: bool) {
+        self.tuning = tuning;
+    }
+
     /// Whether it says it is transmitting.
     #[cfg(test)]
     #[must_use]
@@ -285,6 +294,9 @@ impl PretendCiv {
                 }
             }
             [0x1C, 0x00] => vec![0x1C, 0x00, u8::from(self.transmitting)],
+            // The tuner's state: 01 on, 02 tuning (Hamlib icom_defs.h
+            // S_ANT_TUN). It never starts tuning when asked to.
+            [0x1C, 0x01] => vec![0x1C, 0x01, if self.tuning { 0x02 } else { 0x01 }],
             [0x1C, 0x00, on @ (0x00 | 0x01)] => {
                 self.transmitting = *on == 0x01;
                 done(true)

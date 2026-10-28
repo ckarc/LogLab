@@ -107,6 +107,28 @@ struct MetersTable {
     /// The level setting that sets how hard the Agent's transmit audio
     /// drives the radio, offered lower when ALC runs high.
     drive: Option<String>,
+    /// The level setting for the power the radio is set to, which the Po
+    /// meter should reach: offered higher drive when Po falls well short.
+    power_setting: Option<String>,
+    /// How to ask whether the radio's own antenna tuner is tuning, when
+    /// its carrier would make the meters say nothing about the drive.
+    tuner: Option<TunerTable>,
+}
+
+/// The one tuner question the Agent sends: Icom's `1C 01`, which only asks
+/// when sent bare (with `02` after it, it starts the tuner).
+pub const TUNER_STATUS: &[u8] = &[0x1C, 0x01];
+
+/// A question whose answer says whether the radio's antenna tuner is
+/// tuning.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TunerTable {
+    /// The command that asks, sent bare: only asks.
+    command: String,
+    /// The value the answer has while tuning.
+    tuning: u8,
+    source: String,
 }
 
 #[derive(Deserialize)]
@@ -312,6 +334,11 @@ pub struct Meters {
     /// The id of the level setting that sets how hard the Agent's transmit
     /// audio drives the radio, if the definition names one.
     pub drive: Option<String>,
+    /// The id of the level setting for the power the radio is set to.
+    pub power_setting: Option<String>,
+    /// How to ask whether the antenna tuner is tuning: the command, sent
+    /// bare, and the value its answer has while tuning.
+    pub tuner: Option<(Vec<u8>, u8)>,
 }
 
 /// Points along a meter's scale: the level the radio sends, and what it
@@ -658,6 +685,11 @@ fn summarize(file: &File, check: &Check) -> Definition {
             swr: Scale(m.swr.clone()),
             alc: Scale(m.alc.clone()),
             drive: m.drive.clone(),
+            power_setting: m.power_setting.clone(),
+            tuner: m
+                .tuner
+                .as_ref()
+                .and_then(|t| bytes(&t.command).ok().map(|command| (command, t.tuning))),
         }),
     }
 }
@@ -709,6 +741,27 @@ impl Check {
                 None => self.problem(format!(
                     "meters.drive: setting {drive:?} is not one of the file's settings"
                 )),
+            }
+        }
+        if let Some(power) = &meters.power_setting {
+            match settings.get(power.as_str()) {
+                Some(setting) if setting.range.is_some() => {}
+                Some(_) => self.problem(format!(
+                    "meters.power_setting: setting {power:?} must be a level (a range)"
+                )),
+                None => self.problem(format!(
+                    "meters.power_setting: setting {power:?} is not one of the file's settings"
+                )),
+            }
+        }
+        if let Some(tuner) = &meters.tuner {
+            self.source("meters.tuner", &tuner.source);
+            if bytes(&tuner.command).ok().as_deref() != Some(TUNER_STATUS) {
+                self.problem(format!(
+                    "meters.tuner.command is {:?}: the only tuner question the Agent sends is 1C 01, \
+                     which only asks when sent bare",
+                    tuner.command
+                ));
             }
         }
         for (name, points) in [
@@ -1741,6 +1794,23 @@ explain = "Data mode audio must come from USB."
         };
         refused_for(&drive("data_mod"), "must be a level");
         refused_for(&drive("usb_mod"), "not one of the file's settings");
+        let tuner = |command: &str| {
+            with_meters("[[0, 0], [213, 100]]").replacen(
+                "alc = [[0, 0], [120, 100]]",
+                &format!(
+                    "alc = [[0, 0], [120, 100]]\ntuner = {{ command = \"{command}\", tuning = 2, \
+                     source = \"manual\" }}"
+                ),
+                1,
+            )
+        };
+        let read = parse(&tuner("1C 01")).unwrap_or_else(|problems| unreachable!("{problems:?}"));
+        assert_eq!(
+            read.meters.and_then(|m| m.tuner),
+            Some((vec![0x1C, 0x01], 0x02))
+        );
+        refused_for(&tuner("1C 01 02"), "only asks when sent bare");
+        refused_for(&tuner("07 B0"), "only asks when sent bare");
     }
 
     #[test]

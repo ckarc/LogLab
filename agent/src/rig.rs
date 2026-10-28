@@ -241,4 +241,9 @@ pub struct TxMeters {
     pub swr_tenths: u16,
     /// ALC, in percent of its scale.
     pub alc: u16,
+    /// Whether the radio's own antenna tuner was tuning: its carrier, not
+    /// a program's audio, made the readings.
+    pub tuning: bool,
+    /// How many readings the peaks come from; 0 for a single reading.
+    pub readings: u16,
 }
