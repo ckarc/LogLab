@@ -558,8 +558,9 @@ Each step is its own pull request, with tests and a demonstration
    audio latency work. *Keying for Winlink Express is done, without a COM
    port: the Agent stands between VARA and its client and keys on VARA's
    `PTT ON`. The Kenwood TS-2000 personality is built (`station --kenwood
-   PORT`), for Winlink Express to tune through a com0com pair; installing
-   com0com and the pair is next.*
+   PORT`), for Winlink Express to tune through a com0com pair, and the
+   Agent finds the pair itself where Winlink Express is installed, and
+   installs com0com with one pair when there is none.*
 9. **N3FJP** through its API.
 10. **IC-9700 and FTDX10** definitions (the FTDX10 adds the Yaesu CAT driver).
 11. **N1MM Logger+** through the CAT-over-TCP personality.

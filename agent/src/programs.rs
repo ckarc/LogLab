@@ -23,9 +23,9 @@ use crate::vara::as_vara_names_it;
 use crate::{fldigi, mmsstv, qt_settings, winlink};
 
 /// Sets up every program found, for the radio at `radio` and the audio
-/// `station` carries; `kenwood` when programs tune the radio through the
-/// Agent's virtual Kenwood.
-pub fn set_up(station: &Station, radio: SocketAddr, kenwood: bool) {
+/// `station` carries; `tuning` says whether Winlink Express tunes the
+/// radio through the Agent's virtual Kenwood.
+pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>) {
     let (recording, playing) = device_names();
     for (app, image) in [("WSJT-X", "wsjtx.exe"), ("JS8Call", "js8call.exe")] {
         let Some(path) = qt_settings::find(app) else {
@@ -64,7 +64,7 @@ pub fn set_up(station: &Station, radio: SocketAddr, kenwood: bool) {
     if let Some(path) = winlink::find()
         && closed("Winlink Express", winlink::IMAGE)
     {
-        say("Winlink Express", &path, winlink::set(&path, kenwood));
+        say("Winlink Express", &path, winlink::set(&path, tuning));
     }
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
