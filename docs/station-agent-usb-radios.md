@@ -228,10 +228,20 @@ What each program supports, briefly:
   the rig model and the rigctld personality must handle.
 - **VarAC** speaks rigctld.
 - **Winlink Express** controls the radio through its own built-in drivers over
-  a COM port only, and keys PTT itself. It gets a virtual COM port.
+  a COM port only. It will get a virtual COM port for tuning. Until then the
+  Agent keys for it (below), and the operator sets the dial frequency.
 - **VARA** never tunes the radio; its client (Winlink Express or VarAC) does.
-  VARA's own PTT is turned off so only the client keys, through the Agent.
-  Only one client connects to VARA at a time.
+  VARA doesn't key the radio either: it sends `PTT ON` and `PTT OFF` to its
+  client on its TCP command port, and the client keys (Pat's VARA modem,
+  github.com/n8jja/Pat-Vara, `vara.go`). So the Agent moves VARA's command
+  port to 8310 in `VARA.ini` (`[Setup]` `TCP Command Port`; the data port is
+  always one more, per varanny's README) and listens on the ports VARA's
+  clients already use, 8300 and 8301, passing every byte through. When VARA
+  says `PTT ON`, the Agent keys the radio through its own rigctld server, as
+  one more program under the same rules. A client that already has its own
+  connection to the rigctld server, such as VarAC, keys for itself, and the
+  Agent leaves it to. Nothing changes in Winlink Express's or VarAC's
+  settings. Only one client connects to VARA at a time.
 - **N1MM Logger+** can reach a radio over TCP when told it is a particular
   radio model, so it needs no virtual COM port.
 - **N3FJP** is fed through its API, so it never touches the radio at all.
@@ -475,7 +485,9 @@ Each step is its own pull request, with tests and a demonstration
    one. *Receiving is done (`rx-audio`): the radio's audio into a VB-Audio
    cable, with clock-drift correction. Sending comes with transmitting.*
 8. **VARA with Winlink Express and VarAC**: the virtual COM port and the
-   audio latency work.
+   audio latency work. *Keying for Winlink Express is done, without a COM
+   port: the Agent stands between VARA and its client and keys on VARA's
+   `PTT ON`. Tuning from Winlink Express still needs the virtual COM port.*
 9. **N3FJP** through its API.
 10. **IC-9700 and FTDX10** definitions (the FTDX10 adds the Yaesu CAT driver).
 11. **N1MM Logger+** through the CAT-over-TCP personality.

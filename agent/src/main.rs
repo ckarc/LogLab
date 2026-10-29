@@ -37,6 +37,8 @@ mod journal;
 #[cfg(any(windows, test))]
 mod mmsstv;
 mod pairing;
+#[cfg(any(windows, test))]
+mod peer_program;
 mod pretend;
 #[cfg(windows)]
 mod programs;
@@ -56,6 +58,8 @@ mod tray;
 mod tray_windows;
 #[cfg(any(windows, test))]
 mod vara;
+#[cfg(any(windows, test))]
+mod vara_proxy;
 mod write_check;
 mod wsjtx;
 
