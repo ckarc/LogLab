@@ -1593,22 +1593,36 @@ pub fn run(
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     let typing = start_typing(Arc::clone(&running));
-    let uplink = engine
-        .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
-        .transpose()?;
-    if pretend {
-        let found = Found {
-            radio: crate::civ_pretend_radio().map_err(|error| error.to_string())?,
-            port: "the pretend port".to_owned(),
-            serial: Some(PRETEND_SERIAL.to_owned()),
+    // A radio unplugged, turned off or swapped for another is looked for
+    // again, so any radio can be moved to this computer while the Agent runs.
+    loop {
+        let uplink = engine
+            .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
+            .transpose()?;
+        let ended = if pretend {
+            let found = Found {
+                radio: crate::civ_pretend_radio().map_err(|error| error.to_string())?,
+                port: "the pretend port".to_owned(),
+                serial: Some(PRETEND_SERIAL.to_owned()),
+            };
+            run_found(found, listen, limit, uplink, &running, &typing)?
+        } else {
+            let Some(found) = wait_for_radio(port, &running) else {
+                break;
+            };
+            run_found(found, listen, limit, uplink, &running, &typing)?
         };
-        return run_found(found, listen, limit, uplink, &running, &typing);
+        if ended == Ended::Stopped {
+            break;
+        }
+        crate::print_event(&format!(
+            "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
+             -> The Agent looks for a radio again; plug in any radio it knows.",
+            LOST_AFTER.as_secs()
+        ));
     }
-    let Some(found) = wait_for_radio(port, &running) else {
-        println!("stopped");
-        return Ok(());
-    };
-    run_found(found, listen, limit, uplink, &running, &typing)
+    println!("stopped");
+    Ok(())
 }
 
 /// The serial number the pretend radio's settings are kept under.
@@ -1622,7 +1636,7 @@ fn run_found<P: Port + Send + 'static>(
     uplink: Option<Uplink>,
     running: &AtomicBool,
     typing: &Typing,
-) -> Result<(), String> {
+) -> Result<Ended, String> {
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -1666,67 +1680,157 @@ fn run_found<P: Port + Send + 'static>(
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
-    let mut hint: Option<&'static str> = None;
-    #[cfg(windows)]
-    let mut last = std::time::Instant::now();
-    #[cfg(windows)]
-    let mut was_on_air = false;
-    #[cfg(windows)]
-    let mut open = ProgramsOpen::now();
-    crate::show_until_stopped(shared.as_ref(), &heard, running, || {
+    let mut watching = Watching::new();
+    let serving = AtomicBool::new(true);
+    let mut lost = Lost::default();
+    crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
         offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
-            // A program open when the Agent started keeps its settings
-            // while it runs and writes them as it closes, so the Agent sets
-            // it up right after it closes, ready for its next start.
-            if let Some(closed) = open.closed_since() {
-                crate::print_event(&format!(
-                    "{closed} closed, so the Agent sets up the programs that are closed now."
-                ));
-                vara(station);
-                crate::programs::set_up(station, server.address());
-            }
-            for error in station.errors.try_iter() {
-                crate::print_event(&format!("sound device error: {error}"));
-            }
-            // How loud a program's transmit audio was, each time the radio
-            // is unkeyed: silence means the program isn't playing into the
-            // transmit cable.
-            if let (Some(transmit), Some(cable)) = (&station.transmit, &station.transmit_cable) {
-                let on_air_now = on_air.load(Ordering::SeqCst);
-                if on_air_now && !was_on_air {
-                    let _ = transmit.take_peak_dbfs();
-                }
-                if was_on_air && !on_air_now {
-                    crate::print_event(&match transmit.take_peak_dbfs() {
-                        Some(db) => format!("transmit audio: {db:.0} dBFS peak"),
-                        None => format!(
-                            "transmit audio: silent\n-> The program's sound output should be \"{cable}\"."
-                        ),
-                    });
-                }
-                was_on_air = on_air_now;
-            }
-            // The receive level, said only when what to do about it changes.
-            if last.elapsed() >= Duration::from_secs(5) {
-                last = std::time::Instant::now();
-                let now = station.receive_hint();
-                if now != hint {
-                    crate::print_event(&match now {
-                        Some(what) => format!("receive audio: {what}"),
-                        None => "receive audio: level good".to_owned(),
-                    });
-                    hint = now;
-                }
-            }
+            watching.watch(station, &on_air, server.address());
+        }
+        if !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+            serving.store(false, Ordering::SeqCst);
         }
     });
     drop(server);
     #[cfg(windows)]
     drop(station);
-    println!("stopped");
-    Ok(())
+    // The console lets go of the radio, so it can be found again.
+    if let Ok(mut slot) = typing.to_console.lock() {
+        *slot = None;
+    }
+    Ok(if running.load(Ordering::SeqCst) {
+        Ended::Lost
+    } else {
+        Ended::Stopped
+    })
+}
+
+/// How a station run ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    /// Asked to stop.
+    Stopped,
+    /// The radio stopped answering: unplugged, turned off, or swapped.
+    Lost,
+}
+
+/// How long the radio may go unread before the Agent counts it gone and
+/// looks for a radio again.
+const LOST_AFTER: Duration = Duration::from_secs(15);
+
+/// How often the Agent checks that the radio still answers.
+const LOOK_FOR_LOST: Duration = Duration::from_secs(2);
+
+/// Whether the radio has stopped answering for `after` ([`LOST_AFTER`]),
+/// looked at every `every` ([`LOOK_FOR_LOST`]).
+struct Lost {
+    after: Duration,
+    every: Duration,
+    looked: Option<std::time::Instant>,
+    failing_since: Option<std::time::Instant>,
+}
+
+impl Default for Lost {
+    fn default() -> Self {
+        Self {
+            after: LOST_AFTER,
+            every: LOOK_FOR_LOST,
+            looked: None,
+            failing_since: None,
+        }
+    }
+}
+
+impl Lost {
+    fn now(&mut self, radio: &dyn Source) -> bool {
+        if self.looked.is_some_and(|at| at.elapsed() < self.every) {
+            return false;
+        }
+        self.looked = Some(std::time::Instant::now());
+        if radio.reading().is_ok() {
+            self.failing_since = None;
+            return false;
+        }
+        self.failing_since
+            .get_or_insert_with(std::time::Instant::now)
+            .elapsed()
+            >= self.after
+    }
+}
+
+/// What the station watches on Windows while it runs: sound device errors,
+/// the transmit and receive audio levels, and programs closing.
+#[cfg(windows)]
+struct Watching {
+    hint: Option<&'static str>,
+    last: std::time::Instant,
+    was_on_air: bool,
+    open: ProgramsOpen,
+}
+
+#[cfg(windows)]
+impl Watching {
+    fn new() -> Self {
+        Self {
+            hint: None,
+            last: std::time::Instant::now(),
+            was_on_air: false,
+            open: ProgramsOpen::now(),
+        }
+    }
+
+    fn watch(
+        &mut self,
+        station: &crate::audio_windows::Station,
+        on_air: &AtomicBool,
+        radio: SocketAddr,
+    ) {
+        // A program open when the Agent started keeps its settings while it
+        // runs and writes them as it closes, so the Agent sets it up right
+        // after it closes, ready for its next start.
+        if let Some(closed) = self.open.closed_since() {
+            crate::print_event(&format!(
+                "{closed} closed, so the Agent sets up the programs that are closed now."
+            ));
+            vara(station);
+            crate::programs::set_up(station, radio);
+        }
+        for error in station.errors.try_iter() {
+            crate::print_event(&format!("sound device error: {error}"));
+        }
+        // How loud a program's transmit audio was, each time the radio is
+        // unkeyed: silence means the program isn't playing into the
+        // transmit cable.
+        if let (Some(transmit), Some(cable)) = (&station.transmit, &station.transmit_cable) {
+            let on_air_now = on_air.load(Ordering::SeqCst);
+            if on_air_now && !self.was_on_air {
+                let _ = transmit.take_peak_dbfs();
+            }
+            if self.was_on_air && !on_air_now {
+                crate::print_event(&match transmit.take_peak_dbfs() {
+                    Some(db) => format!("transmit audio: {db:.0} dBFS peak"),
+                    None => format!(
+                        "transmit audio: silent\n-> The program's sound output should be \"{cable}\"."
+                    ),
+                });
+            }
+            self.was_on_air = on_air_now;
+        }
+        // The receive level, said only when what to do about it changes.
+        if self.last.elapsed() >= Duration::from_secs(5) {
+            self.last = std::time::Instant::now();
+            let now = station.receive_hint();
+            if now != self.hint {
+                crate::print_event(&match now {
+                    Some(what) => format!("receive audio: {what}"),
+                    None => "receive audio: level good".to_owned(),
+                });
+                self.hint = now;
+            }
+        }
+    }
 }
 
 /// `check-writes`: finds the radio, and once the operator says yes, writes
@@ -1895,7 +1999,7 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        DRIVE_ASK, Desk, DriveTried, LabRadio, Programs, Typed, compared, compared_all,
+        DRIVE_ASK, Desk, DriveTried, LabRadio, Lost, Programs, Typed, compared, compared_all,
         drive_offer, lab_locked, lab_plan, open_programs, restore_plan, startup_command, typed,
     };
     use crate::civ_pretend::PretendCiv;
@@ -2009,6 +2113,48 @@ mod tests {
         assert!(note_with("Lab profile").contains("couldn't tell which program"));
         assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("30"));
         let _ = std::fs::remove_dir_all(&records);
+    }
+
+    /// A radio that answers or doesn't, as the test says.
+    struct Fickle(AtomicBool, crate::rig::RadioIdentity);
+
+    impl Source for Fickle {
+        fn identity(&self) -> crate::rig::RadioIdentity {
+            self.1.clone()
+        }
+
+        fn reading(&self) -> Result<crate::rig::Reading, String> {
+            if self.0.load(Ordering::SeqCst) {
+                return Err("unplugged".to_owned());
+            }
+            Ok(crate::rig::Reading {
+                frequency_hz: 14_074_000,
+                mode: None,
+                passband_hz: None,
+                ptt: None,
+                vfo: None,
+            })
+        }
+    }
+
+    #[test]
+    fn counts_the_radio_lost_only_after_it_stops_answering_for_a_while() {
+        let radio = Fickle(AtomicBool::new(false), transmitted([0, 0, 0]).0.identity());
+        let mut lost = Lost {
+            after: Duration::from_millis(50),
+            every: Duration::ZERO,
+            looked: None,
+            failing_since: None,
+        };
+        assert!(!lost.now(&radio), "it answers");
+        radio.0.store(true, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "one miss isn't lost");
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(lost.now(&radio), "still not answering: lost");
+        radio.0.store(false, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "answering again");
+        radio.0.store(true, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "the clock starts again");
     }
 
     #[test]
