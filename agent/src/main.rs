@@ -36,6 +36,7 @@ mod filter_widths;
 mod fldigi;
 mod flex;
 mod flex_pretend;
+mod flex_settings;
 mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
@@ -119,7 +120,8 @@ Usage:
                                        definition lists; keep the first
                                        reading as its as-received record,
                                        and compare later ones against it
-                                       (--civ or --civ-pretend only)
+                                       (--civ, --cat, --flex, or their
+                                       -pretend, only)
   loglab-agent serve RADIO [--listen 127.0.0.1:4532] [--allow-tuning]
                     [--allow-transmit [--tx-limit SECONDS]]
                                        be a virtual radio for programs like
@@ -129,7 +131,8 @@ Usage:
                                        lets a program key the radio, one at
                                        a time, for at most 60 seconds at
                                        once (--tx-limit, up to 600); both
-                                       --civ or --civ-pretend only
+                                       --civ, --cat, --flex, or their
+                                       -pretend, only
   loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS]
                     [--engine URL --key-file FILE [--station NAME]]
@@ -152,7 +155,7 @@ Usage:
                                        at station, and a Yes/No box asks
                                        before the radio is changed
                                        (Windows only)
-  loglab-agent check-writes [--civ PORT]
+  loglab-agent check-writes [--civ PORT | --flex ADDRESS]
                                        find out which of the radio's
                                        settings the Agent can set: writes
                                        each one's own value back and reads
@@ -282,6 +285,8 @@ enum Command {
     /// Write each changeable setting's own value back, on this port or
     /// whichever the radio is on.
     CheckWrites(Option<String>),
+    /// `check-writes --flex ADDRESS`.
+    CheckWritesFlex(String),
     Run {
         engine: String,
         key_file: String,
@@ -504,10 +509,15 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
 fn station_tool_command(verb: &str, rest: &[String]) -> Result<Command, String> {
     match (verb, rest) {
         ("check-writes", []) => Ok(Command::CheckWrites(None)),
+        ("check-writes", [flag, address]) if flag == "--flex" => {
+            Ok(Command::CheckWritesFlex(address.clone()))
+        }
         ("check-writes", [flag, port]) if flag == "--civ" => {
             Ok(Command::CheckWrites(Some(port.clone())))
         }
-        ("check-writes", _) => Err("check-writes takes only --civ PORT".to_owned()),
+        ("check-writes", _) => {
+            Err("check-writes takes only --civ PORT or --flex ADDRESS".to_owned())
+        }
         ("startup", [what]) if matches!(what.as_str(), "on" | "off" | "status") => {
             Ok(Command::Startup(what.clone(), Vec::new()))
         }
@@ -573,7 +583,7 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.tx_limit.is_some() && allowed != Allowed::Transmitting {
         return Err("--tx-limit goes with --allow-transmit".to_owned());
     }
-    if allowed != Allowed::Reading && !radio.can_tune() {
+    if allowed != Allowed::Reading && !radio.is_own_driver() {
         return Err(format!(
             "{} works only with the Agent's own drivers (--civ PORT, --cat PORT, --flex ADDRESS, or their -pretend) for now",
             allowed.flag()
@@ -733,18 +743,18 @@ fn cat_serial_radio(port: &str) -> Result<CatRadio<civ_serial::SerialPort>, rig:
 
 impl RadioChoice {
     /// Whether the radio is reached through one of the Agent's own drivers,
-    /// the only ones that can tune or key a radio or read its settings.
+    /// the only ones that can tune or key a radio or read its settings: its
+    /// serial drivers, and the FlexRadio's.
     fn is_own_driver(&self) -> bool {
         matches!(
             self,
-            Self::Civ(_) | Self::CivPretend | Self::Cat(_) | Self::CatPretend
+            Self::Civ(_)
+                | Self::CivPretend
+                | Self::Cat(_)
+                | Self::CatPretend
+                | Self::Flex(_)
+                | Self::FlexPretend
         )
-    }
-
-    /// Whether the Agent can tune and key the radio: through its own
-    /// serial drivers, or a FlexRadio's API.
-    fn can_tune(&self) -> bool {
-        self.is_own_driver() || matches!(self, Self::Flex(_) | Self::FlexPretend)
     }
 }
 
@@ -764,23 +774,20 @@ fn serial_radio(
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
         RadioChoice::Cat(port) => Box::new(cat_serial_radio(port)?),
         RadioChoice::CatPretend => Box::new(cat_pretend_radio()?),
+        RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
+        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
         _ => {
             return Err(rig::RadioError(
-                "only the Agent's own drivers (CI-V and CAT) can tune or key a radio or read its settings"
+                "only the Agent's own drivers (CI-V, CAT and FlexRadio) can tune or key a radio or read its settings"
                     .to_owned(),
             ));
         }
     })
 }
 
-/// The drivers that can tune or key a radio: the Agent's own serial
-/// drivers and the FlexRadio's.
+/// The Agent's own drivers, the only ones that can tune or key a radio.
 fn keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
-    Ok(match choice {
-        RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
-        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
-        _ => serial_radio(choice)?,
-    })
+    Ok(serial_radio(choice)?)
 }
 
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> {
@@ -1395,6 +1402,9 @@ fn main() -> ExitCode {
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
         Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
+        Ok(Command::CheckWritesFlex(address)) => FlexRadio::open(&address)
+            .map_err(|error| error.to_string())
+            .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None)),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1719,6 +1729,11 @@ mod tests {
             Ok(Command::CheckWrites(Some("COM5".to_owned())))
         );
         assert!(parse(&args("check-writes --pretend")).is_err());
+        assert_eq!(
+            parse(&args("check-writes --flex 192.168.1.20")),
+            Ok(Command::CheckWritesFlex("192.168.1.20".to_owned()))
+        );
+        assert!(parse(&args("check-writes --flex")).is_err());
         assert!(parse(&args("startup maybe")).is_err());
         for refused in [
             "station --tx-limit 0",

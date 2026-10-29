@@ -2023,7 +2023,26 @@ impl Watching {
 /// The radio isn't found, or the console can't be read.
 pub fn check_writes(port: Option<&str>) -> Result<(), String> {
     let running = AtomicBool::new(true);
-    let mut found = find(port, &running)?;
+    let found = find(port, &running)?;
+    check_writes_on(found.radio, &found.port, found.serial.as_deref())
+}
+
+/// `check-writes` on a radio already found: on `port` (or a FlexRadio's
+/// address), with its USB serial number if known.
+///
+/// # Errors
+///
+/// The console can't be read.
+pub fn check_writes_on(
+    radio: Box<dyn SerialRadio>,
+    port: &str,
+    serial: Option<&str>,
+) -> Result<(), String> {
+    let mut found = Found {
+        radio,
+        port: port.to_owned(),
+        serial: serial.map(str::to_owned),
+    };
     let definition = found.radio.definition().clone();
     let changeable = definition.settings.iter().filter(|s| s.write).count();
     println!(
