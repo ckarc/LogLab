@@ -306,7 +306,7 @@ pub fn fixes(now: &Record, definition: &Definition) -> Plan {
 }
 
 /// Bytes written as hex pairs, `00 20`.
-fn parse_hex(text: &str) -> Option<Vec<u8>> {
+pub(crate) fn parse_hex(text: &str) -> Option<Vec<u8>> {
     let bytes: Option<Vec<u8>> = text
         .split(' ')
         .map(|pair| {

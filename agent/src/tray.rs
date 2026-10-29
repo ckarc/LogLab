@@ -184,6 +184,7 @@ impl Said {
             Self::Program(text) | Self::Other(text) => {
                 text.lines().any(|line| line.trim_start().starts_with("->"))
                     || text.contains("Auto mode:")
+                    || text.starts_with("Lab profile:")
             }
             _ => false,
         }
@@ -277,6 +278,8 @@ pub enum Choice {
     Compare,
     /// Turn auto mode on or off.
     Auto(bool),
+    /// Enroll the radio in lab settings control, or leave it out.
+    Enroll(bool),
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -302,6 +305,7 @@ impl Choice {
             Self::Restore(name) => format!("restore {name}"),
             Self::Compare => "compare".to_owned(),
             Self::Auto(on) => format!("auto {}", if *on { "on" } else { "off" }),
+            Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -497,6 +501,9 @@ mod tests {
         assert!(!classify("a program connected (127.0.0.1:57447)").needs_a_look());
         assert!(classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").needs_a_look());
         assert!(!classify("Setups: kept on this computer.").needs_a_look());
+        assert!(
+            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").needs_a_look()
+        );
     }
 
     #[test]
@@ -504,6 +511,7 @@ mod tests {
         assert_eq!(Choice::Keep("VARA").typed(), "keep VARA");
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
+        assert_eq!(Choice::Enroll(false).typed(), "enroll off");
         assert_eq!(
             Choice::Answer {
                 number: 3,

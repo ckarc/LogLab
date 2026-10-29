@@ -189,27 +189,32 @@ recorded settings back. The Agent then restores only after the operator
 confirms it, and records the restore like any other change it makes to a
 radio. (Principle X, amended in constitution 3.0.0.)
 
-**Setups per program, applied by themselves.** A radio can also have a setup
-kept for each program: one for WSJT-X, one for VARA, one for MMSSTV. When a
-program starts using the radio's audio through the Agent, the Agent puts that
-program's setup back on the radio without asking, shows what it changed, and
-records it. It does this once, as the program starts; while the program
-runs, the operator's changes on the radio stand. When the program stops, the
-Agent keeps the radio's settings as that program's setup again, so the next
-session starts where this one left off. (Principle X, amended in constitution
-5.0.0.)
+**Setups per program, applied by themselves.** The lab keeps one known-good
+profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV), in
+`agent/profiles/` and built into the Agent, so it is locked: only a new build
+replaces it, and the Agent never saves a radio's settings over it (decided by
+brian, 2026-10-28). When a program connects to the virtual radio, the Agent
+tells which program it is from the process that owns the connection
+(Windows' `GetExtendedTcpTable` and the process's executable; `VarAC.exe`
+means VARA, since VarAC is the program that drives the radio for VARA) and,
+on an enrolled radio, puts that program's profile on without asking, shows
+what it changed, and records it. It does this once per program start; while
+the program runs, the operator's changes on the radio stand. When two
+programs share a radio, the first keeps it. Operators may still keep their
+own named setups and put one back by choice (`restore`, after a yes).
+(Principle X, second exception, constitution 5.0.0.)
 
-- **Only radios with a setup for that program.** A radio gets setups when
-  someone keeps one (`keep`), or when an administrator marks it a station
-  radio on the Engine, which gives it LabLog's starting setup for each program
-  its model has one for. A starting setup is a rig definition's suggested
-  settings for a program, each with the source it came from. A radio with
-  no setup for the program, such as a visitor's, is never changed this way.
+- **Only enrolled radios.** The first time the Agent sees a radio of a model
+  the lab has profiles for, it asks once whether this is a FieldLab radio.
+  Yes enrolls it in lab settings control; no leaves it alone for good, as for
+  a visitor's radio. `enroll on` or `enroll off` (or the tray's Lab radio
+  menu) changes it later. Kept per radio serial number in `records`.
 - **Only verified settings.** As with any restore, the Agent writes only
-  settings its rig definition marks writable and verified on a real radio,
+  settings its rig definition marks writable and checked on a real radio,
   and reads each one back afterward.
-- **Never mid-transmission.** A setup is applied before the program first
-  keys the radio, never while it is transmitting.
+- **Never mid-transmission.** The program's first transmission waits until
+  its profile is on (up to 15 seconds), and nothing is written while a
+  program has the radio keyed.
 
 ## Virtual radios (personalities)
 

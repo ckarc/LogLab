@@ -255,6 +255,9 @@ struct Face {
     restore: Vec<nwg::MenuItem>,
     compare: nwg::MenuItem,
     auto: nwg::MenuItem,
+    lab_menu: nwg::Menu,
+    enroll: nwg::MenuItem,
+    leave_out: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -347,6 +350,22 @@ impl Face {
         item("Compare with kept setups", &face.menu, &mut face.compare)?;
         face.separator()?;
         item("Auto mode", &face.menu, &mut face.auto)?;
+        built(
+            nwg::Menu::builder()
+                .text("Lab radio")
+                .parent(&face.menu)
+                .build(&mut face.lab_menu),
+        )?;
+        item(
+            "Enroll: put the lab's profiles on as programs start",
+            &face.lab_menu,
+            &mut face.enroll,
+        )?;
+        item(
+            "Leave out: never change it on its own",
+            &face.lab_menu,
+            &mut face.leave_out,
+        )?;
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
@@ -390,6 +409,12 @@ impl Face {
         }
         if handle == self.auto.handle {
             return Some(Choice::Auto(!auto_on));
+        }
+        if handle == self.enroll.handle {
+            return Some(Choice::Enroll(true));
+        }
+        if handle == self.leave_out.handle {
+            return Some(Choice::Enroll(false));
         }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
