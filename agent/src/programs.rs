@@ -52,8 +52,8 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
         && closed("fldigi", "fldigi.exe")
     {
         let wanted = fldigi::Wanted {
-            input: Some(RECEIVE_CABLE_OUT.to_owned()),
-            output: station.transmit_cable.clone(),
+            input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
+            output: station.transmit_cable.as_deref().map(fldigi::mme_name),
             radio,
         };
         say("fldigi", &path, fldigi::set(&path, &wanted));
