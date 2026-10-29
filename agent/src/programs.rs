@@ -8,8 +8,8 @@
 //! `station`).
 //!
 //! A program that is running is left alone, because each writes its own
-//! settings when it closes and would undo the change; the Agent says to
-//! close it and start the Agent again. A program that isn't installed, or
+//! settings when it closes and would undo the change; `station` sets it
+//! up as soon as it closes, ready for its next start. A program that isn't installed, or
 //! has never been started (so has no settings file yet), is skipped.
 
 use std::net::SocketAddr;
@@ -76,7 +76,7 @@ fn closed(app: &str, image: &str) -> bool {
         Ok(true) => {
             println!(
                 "{app}: running, so its settings were left alone (it writes them when it \
-                 closes).\n  -> Close {app}, then start the Agent again."
+                 closes).\n  -> Close {app}: the Agent sets it up as soon as it closes."
             );
             false
         }
