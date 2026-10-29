@@ -35,6 +35,10 @@
 //!   that name first when it has one. `HAMRIGDEVICE` is passed to Hamlib as
 //!   the rig's path, which for NET rigctl is the server's address.
 //! - `HAMLIBCMDPTT` 1 keys through Hamlib.
+//! - `MYCALL` is the station's call and `MYLOC` its Maidenhead locator
+//!   (`configuration.h`, Operator), which fldigi's `<MYCALL>` and `<MYLOC>`
+//!   macros send (`src/misc/macros.cxx`). They are written only where the
+//!   Agent knows them (see `sends_as`).
 //!
 //! The maintainer decided (2026-10-27) the Agent sets these up itself (see
 //! `qt_settings` for the same decision about WSJT-X and `JS8Call`). Nothing
@@ -80,6 +84,10 @@ pub struct Wanted {
     pub output: Option<String>,
     /// The Agent's virtual radio.
     pub radio: SocketAddr,
+    /// The station's call, or `None` to leave it alone.
+    pub call: Option<String>,
+    /// The station's grid square, or `None` to leave it alone.
+    pub grid: Option<String>,
 }
 
 /// `value` escaped as fldigi escapes a string setting.
@@ -155,6 +163,12 @@ pub fn with_station(text: &str, wanted: &Wanted) -> (String, Vec<Change>) {
         ("HAMRIGDEVICE", escape(&wanted.radio.to_string())),
         ("HAMLIBCMDPTT", "1".to_owned()),
     ]);
+    if let Some(call) = &wanted.call {
+        lines.push(("MYCALL", escape(call)));
+    }
+    if let Some(grid) = &wanted.grid {
+        lines.push(("MYLOC", escape(grid)));
+    }
     let mut changed = text.to_owned();
     let mut diffs = Vec::new();
     for (tag, raw) in lines {
@@ -205,7 +219,28 @@ mod tests {
             input: Some("CABLE Output (VB-Audio Virtual Cable)".to_owned()),
             output: Some("CABLE-A Input (VB-Audio Cable A)".to_owned()),
             radio: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+            call: None,
+            grid: None,
         }
+    }
+
+    #[test]
+    fn sets_the_call_and_locator_only_when_known() {
+        let mut here = wanted();
+        here.call = Some("W0CY".to_owned());
+        here.grid = Some("EM18CT".to_owned());
+        let file = XML.replace("</FLDIGI_DEFS>", "<MYLOC>EN52wa</MYLOC>\n\n</FLDIGI_DEFS>");
+        let (changed, diffs) = with_station(&file, &here);
+        assert_eq!(value(&changed, "MYCALL").as_deref(), Some("W0CY"));
+        assert_eq!(value(&changed, "MYLOC").as_deref(), Some("EM18CT"));
+        let locator = diffs.iter().find(|change| change.key == "MYLOC");
+        assert_eq!(
+            locator.and_then(|change| change.before.as_deref()),
+            Some("EN52wa")
+        );
+        let (kept, _) = with_station(&file, &wanted());
+        assert_eq!(value(&kept, "MYLOC").as_deref(), Some("EN52wa"));
+        assert_eq!(value(&kept, "MYCALL"), None);
     }
 
     #[test]

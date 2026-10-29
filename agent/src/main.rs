@@ -48,6 +48,7 @@ mod kenwood_cat;
 mod lab_stock;
 #[cfg(any(windows, test))]
 mod mmsstv;
+mod mqtt;
 mod pairing;
 mod pretend;
 mod profiles;
@@ -61,6 +62,7 @@ mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;
+mod sends_as;
 mod serial_radio;
 #[cfg(any(windows, test))]
 mod settings_file;
@@ -144,6 +146,7 @@ Usage:
   loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS]
                     [--engine URL --key-file FILE [--station NAME]]
+                    [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]
                                        everything programs on this computer
                                        need to use the radio: finds it and
                                        its port, checks its settings, carries
@@ -155,6 +158,13 @@ Usage:
                                        with --engine, keeps the radio's
                                        settings there for every computer:
                                        type keep NAME to keep a setup;
+                                       sets the call and grid square
+                                       WSJT-X, JS8Call and fldigi send:
+                                       the grid from FieldLab's GPS on its
+                                       MQTT broker (--mqtt, or
+                                       $LABLOG_MQTT), else --grid, else
+                                       LabLog's; the call from LabLog,
+                                       else --call;
                                        quit, or its input closing, stops it
   loglab-agent tray [station's options]
                                        station in the background, with an
@@ -288,6 +298,9 @@ enum Command {
         /// Express: one end of a com0com pair. Without it, where Winlink
         /// Express is installed, the Agent finds a com0com pair itself.
         kenwood: Option<String>,
+        /// FieldLab's bus, and the call and grid the programs send where
+        /// nothing better is known (see `sends_as`).
+        stated: sends_as::Stated,
     },
     /// `on`, `off` or `status`, and for `on`, the `station` options the
     /// tray runs it with.
@@ -462,7 +475,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
     command(verb, options, radio)
 }
 
-/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS] [--kenwood PORT]`.
+/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS] [--kenwood PORT]
+/// [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]`.
 fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
     let mut pretend = false;
@@ -472,6 +486,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut key_file = None;
     let mut station = None;
     let mut kenwood = None;
+    let mut stated = sends_as::Stated::default();
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
         if flag == "--civ-pretend" {
@@ -494,6 +509,20 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             "--key-file" => key_file = Some(value),
             "--station" => station = Some(value),
             "--kenwood" => kenwood = Some(value),
+            "--mqtt" => stated.mqtt = Some(sends_as::broker(&value)?),
+            "--grid" => {
+                stated.grid = Some(sends_as::checked_grid(&value).ok_or_else(|| {
+                    format!(
+                        "--grid needs a 4- or 6-character grid square like EM18ct, not {value:?}"
+                    )
+                })?);
+            }
+            "--call" => {
+                stated.call = Some(
+                    sends_as::checked_call(&value)
+                        .ok_or_else(|| format!("--call needs a call like W0CY, not {value:?}"))?,
+                );
+            }
             _ => return Err(format!("unknown option {flag:?} for station")),
         }
     }
@@ -517,6 +546,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
         limit,
         engine,
         kenwood,
+        stated,
     })
 }
 
@@ -1406,6 +1436,7 @@ fn main() -> ExitCode {
             limit,
             engine,
             kenwood,
+            stated,
         }) => station::run(
             port.as_deref(),
             pretend,
@@ -1415,6 +1446,7 @@ fn main() -> ExitCode {
                 (engine.as_str(), key_file.as_str(), station.as_deref())
             }),
             kenwood.as_deref(),
+            &stated,
         ),
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
@@ -1456,6 +1488,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{Command, HamlibChoice, RadioChoice, VERSION, Wsjtx, banner, parse};
+    use crate::sends_as;
     use std::time::Duration;
 
     use crate::hamlib::Launch;
@@ -1673,6 +1706,21 @@ mod tests {
     }
 
     #[test]
+    fn reads_where_the_station_is() {
+        assert!(matches!(
+            parse(&args("station --mqtt 10.73.10.10 --grid em18ct --call w0cy")),
+            Ok(Command::Station { stated, .. }) if stated == sends_as::Stated {
+                mqtt: Some(("10.73.10.10".to_owned(), 1883)),
+                call: Some("W0CY".to_owned()),
+                grid: Some("EM18CT".to_owned()),
+            }
+        ));
+        assert!(parse(&args("station --grid EM1")).is_err());
+        assert!(parse(&args("station --call 12")).is_err());
+        assert!(parse(&args("station --mqtt kiosk:x")).is_err());
+    }
+
+    #[test]
     fn reads_station() {
         assert_eq!(
             parse(&args("station")),
@@ -1683,6 +1731,7 @@ mod tests {
                 limit: Duration::from_mins(1),
                 engine: None,
                 kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(
@@ -1696,6 +1745,7 @@ mod tests {
                 limit: Duration::from_secs(30),
                 engine: None,
                 kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(
@@ -1713,6 +1763,7 @@ mod tests {
                     None
                 )),
                 kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(

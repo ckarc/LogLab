@@ -1920,12 +1920,22 @@ pub fn run(
     limit: Duration,
     engine: Option<(&str, &str, Option<&str>)>,
     kenwood: Option<&str>,
+    stated: &crate::sends_as::Stated,
 ) -> Result<(), String> {
     let running = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     let typing = start_typing(Arc::clone(&running));
+    let mut stated = stated.clone();
+    if stated.mqtt.is_none() {
+        // FieldLab's broker, as the Engine takes it.
+        stated.mqtt = std::env::var("LABLOG_MQTT")
+            .ok()
+            .filter(|broker| !broker.trim().is_empty())
+            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok());
+    }
+    let _whereabouts = crate::sends_as::Whereabouts::start(stated, records_folder());
     // A radio unplugged, turned off or swapped for another is looked for
     // again, so any radio can be moved to this computer while the Agent runs.
     loop {
@@ -2171,6 +2181,9 @@ impl Watching {
                 "{closed} closed, so the Agent sets up the programs that are closed now."
             ));
             vara(station);
+            crate::programs::set_up(station, radio, kenwood_tuning(self.kenwood.as_ref()));
+        } else if crate::sends_as::take_changed() {
+            // The call or grid changed (see `sends_as`, which says so).
             crate::programs::set_up(station, radio, kenwood_tuning(self.kenwood.as_ref()));
         }
         for error in station.errors.try_iter() {
