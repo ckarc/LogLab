@@ -46,19 +46,19 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::auto_mode;
-use crate::civ_radio::{CivRadio, Port};
-use crate::civ_serial::{self, SerialPort};
+use crate::civ_serial;
 use crate::engine::{KeptRadio, KeptReading, Uplink};
-use crate::rig::{Radio, RadioError, RadioIdentity, Reading, Tuning};
+use crate::rig::{RadioIdentity, Reading, Tuning};
 use crate::rigctld_server::{self, Shared, Source};
 use crate::rigdef::{Definition, SettingSummary};
+use crate::serial_radio::{self, SerialRadio};
 use crate::settings_record::Record;
 use crate::setups::Setups;
 use crate::{enrollment, profiles, program_id, rigdef, settings_record};
 
 /// The radio, found and checked.
-struct Found<P: Port> {
-    radio: CivRadio<P>,
+struct Found {
+    radio: Box<dyn SerialRadio>,
     port: String,
     serial: Option<String>,
 }
@@ -67,11 +67,10 @@ struct Found<P: Port> {
 /// looks like a known radio's and answers as one. On Windows, a radio
 /// plugged in with no driver for its USB serial bridge gets one first (see
 /// `driver`).
-fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found<SerialPort>, String> {
+fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     let definitions = rigdef::built_in()?;
     if let Some(port) = port {
-        let opened = SerialPort::open(port)?;
-        let radio = CivRadio::find(opened, &definitions).map_err(|e| e.to_string())?;
+        let radio = serial_radio::find(port, serial_radio::usb_ids(port), &definitions)?;
         return Ok(Found {
             radio,
             port: port.to_owned(),
@@ -97,9 +96,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found<SerialPort>, S
     }
     let mut tried = Vec::new();
     for candidate in candidates {
-        let answered = SerialPort::open(&candidate.port).and_then(|opened| {
-            CivRadio::find(opened, &definitions).map_err(|error: RadioError| error.to_string())
-        });
+        let answered = serial_radio::find(&candidate.port, Some(candidate.ids), &definitions);
         match answered {
             Ok(radio) => {
                 return Ok(Found {
@@ -126,7 +123,7 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found<SerialPort>> {
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
         match find(port, running) {
@@ -160,7 +157,7 @@ pub(crate) fn records_folder() -> std::path::PathBuf {
 /// Reads the radio's settings, keeps the first reading of this radio as its
 /// as-received record, and says what changed since and what in them stops
 /// digital modes working. Returns the reading.
-fn check_settings<P: Port>(radio: &mut CivRadio<P>, serial: Option<&str>) -> Record {
+fn check_settings(radio: &mut dyn SerialRadio, serial: Option<&str>) -> Record {
     let definition = radio.definition().clone();
     let record = settings_record::read(
         radio,
@@ -1605,7 +1602,7 @@ pub fn run(
             .transpose()?;
         let ended = if pretend {
             let found = Found {
-                radio: crate::civ_pretend_radio().map_err(|error| error.to_string())?,
+                radio: Box::new(crate::civ_pretend_radio().map_err(|error| error.to_string())?),
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
             };
@@ -1649,8 +1646,8 @@ fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate:
 const PRETEND_SERIAL: &str = "PRETEND";
 
 /// Runs the station with the radio found, until stopped.
-fn run_found<P: Port + Send + 'static>(
-    mut found: Found<P>,
+fn run_found(
+    mut found: Found,
     listen: SocketAddr,
     limit: Duration,
     uplink: Option<Uplink>,
@@ -1670,14 +1667,14 @@ fn run_found<P: Port + Send + 'static>(
             .unwrap_or_default(),
         found.radio.baud()
     );
-    let record = check_settings(&mut found.radio, found.serial.as_deref());
+    let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = found.radio.definition().clone();
     if let Some(uplink) = &uplink {
         sync(uplink, &record, &definition);
     }
     let sound = definition.usb_audio.clone();
     let (notes, heard) = mpsc::channel();
-    let shared = Arc::new(Shared::with_transmit(Box::new(found.radio), limit).with_notes(notes));
+    let shared = Arc::new(Shared::with_transmit(found.radio, limit).with_notes(notes));
     let on_air = shared.on_air();
     #[cfg(windows)]
     let station = audio(sound.as_deref(), Arc::clone(&on_air));
@@ -1892,7 +1889,7 @@ pub fn check_writes(port: Option<&str>) -> Result<(), String> {
         return Ok(());
     }
     let report = crate::write_check::check(
-        &mut found.radio,
+        found.radio.as_mut(),
         found.serial.as_deref(),
         std::time::SystemTime::now(),
         &settings_record::computer_name(),
