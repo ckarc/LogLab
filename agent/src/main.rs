@@ -28,6 +28,7 @@ mod civ_serial;
 #[cfg(any(windows, test))]
 mod driver;
 mod engine;
+mod enrollment;
 #[cfg(any(windows, test))]
 mod fldigi;
 mod flex;
@@ -39,6 +40,8 @@ mod journal;
 mod mmsstv;
 mod pairing;
 mod pretend;
+mod profiles;
+mod program_id;
 #[cfg(windows)]
 mod programs;
 mod qso_logs;

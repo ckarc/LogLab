@@ -184,10 +184,33 @@ pub fn read(
     now: SystemTime,
     computer: &str,
 ) -> Record {
+    read_where(radio, |_| true, serial, now, computer)
+}
+
+/// Reads only the settings whose ids are in `ids`, in the definition's
+/// order: enough to plan putting a few settings back, quickly.
+pub fn read_these(
+    radio: &mut dyn Exposes,
+    ids: &[&str],
+    serial: Option<&str>,
+    now: SystemTime,
+    computer: &str,
+) -> Record {
+    read_where(radio, |id| ids.contains(&id), serial, now, computer)
+}
+
+fn read_where(
+    radio: &mut dyn Exposes,
+    wanted: impl Fn(&str) -> bool,
+    serial: Option<&str>,
+    now: SystemTime,
+    computer: &str,
+) -> Record {
     let definition = radio.definition().clone();
     let settings = definition
         .settings
         .iter()
+        .filter(|setting| wanted(&setting.id))
         .map(|setting| {
             let (value, bytes) = match radio.read_exposed(setting) {
                 Ok(bytes) => (decode(setting, &bytes), Some(civ::hex(&bytes))),

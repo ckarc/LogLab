@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use native_windows_gui as nwg;
 
-use crate::tray::{self, Choice, Grouper, Light, SETUPS, Said};
+use crate::tray::{self, Choice, Grouper, Light, MY_SETUPS, Said};
 
 /// Microsoft Learn, "Process Creation Flags": the process is a console
 /// application that is being run without a console window.
@@ -255,6 +255,9 @@ struct Face {
     restore: Vec<nwg::MenuItem>,
     compare: nwg::MenuItem,
     auto: nwg::MenuItem,
+    lab_menu: nwg::Menu,
+    enroll: nwg::MenuItem,
+    leave_out: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -326,7 +329,7 @@ impl Face {
         item("Fix radio settings", &face.menu, &mut face.fix)?;
         built(
             nwg::Menu::builder()
-                .text("Keep setup")
+                .text("Keep as my setup")
                 .parent(&face.menu)
                 .build(&mut face.keep_menu),
         )?;
@@ -336,17 +339,35 @@ impl Face {
                 .parent(&face.menu)
                 .build(&mut face.restore_menu),
         )?;
-        for name in SETUPS {
+        for name in MY_SETUPS {
             let mut keep = nwg::MenuItem::default();
             item(name, &face.keep_menu, &mut keep)?;
             face.keep.push(keep);
+        }
+        for (shown, _) in tray::restore_menu() {
             let mut restore = nwg::MenuItem::default();
-            item(name, &face.restore_menu, &mut restore)?;
+            item(&shown, &face.restore_menu, &mut restore)?;
             face.restore.push(restore);
         }
         item("Compare with kept setups", &face.menu, &mut face.compare)?;
         face.separator()?;
         item("Auto mode", &face.menu, &mut face.auto)?;
+        built(
+            nwg::Menu::builder()
+                .text("Lab radio")
+                .parent(&face.menu)
+                .build(&mut face.lab_menu),
+        )?;
+        item(
+            "Enroll: put the lab's profiles on as programs start",
+            &face.lab_menu,
+            &mut face.enroll,
+        )?;
+        item(
+            "Leave out: never change it on its own",
+            &face.lab_menu,
+            &mut face.leave_out,
+        )?;
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
@@ -391,10 +412,16 @@ impl Face {
         if handle == self.auto.handle {
             return Some(Choice::Auto(!auto_on));
         }
+        if handle == self.enroll.handle {
+            return Some(Choice::Enroll(true));
+        }
+        if handle == self.leave_out.handle {
+            return Some(Choice::Enroll(false));
+        }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
         }
-        for (index, name) in SETUPS.iter().enumerate() {
+        for (index, name) in MY_SETUPS.iter().enumerate() {
             if self
                 .keep
                 .get(index)
@@ -402,11 +429,9 @@ impl Face {
             {
                 return Some(Choice::Keep(name));
             }
-            if self
-                .restore
-                .get(index)
-                .is_some_and(|item| item.handle == handle)
-            {
+        }
+        for ((_, name), item) in tray::restore_menu().into_iter().zip(&self.restore) {
+            if item.handle == handle {
                 return Some(Choice::Restore(name));
             }
         }
