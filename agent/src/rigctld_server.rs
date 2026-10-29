@@ -229,10 +229,13 @@ const SWR_HIGHEST: u16 = 20;
 
 /// The transmit meters' peaks, in words, and what to do if one is too high.
 fn meter_note(peak: TxMeters) -> String {
+    let alc = peak
+        .alc
+        .map(|alc| format!(", ALC {alc}% of its scale"))
+        .unwrap_or_default();
     let mut note = format!(
-        "; peak Po {}%, ALC {}% of its scale, SWR {}.{}",
+        "; peak Po {}%{alc}, SWR {}.{}",
         peak.power,
-        peak.alc,
         peak.swr_tenths / 10,
         peak.swr_tenths % 10
     );
@@ -240,7 +243,7 @@ fn meter_note(peak: TxMeters) -> String {
         note.push_str(" (the radio's tuner was tuning, so they say nothing about the drive)");
         return note;
     }
-    if peak.alc > ALC_HIGHEST {
+    if peak.alc.is_some_and(|alc| alc > ALC_HIGHEST) {
         note.push_str(
             "\n-> ALC went over a third of its scale: lower the radio's USB MOD Level, or the \
              program's drive level, until it stays under.",
@@ -1800,7 +1803,7 @@ mod tests {
             bench.meters = Some(TxMeters {
                 power: 100,
                 swr_tenths: 13,
-                alc: 50,
+                alc: Some(50),
                 ..TxMeters::default()
             });
         });
@@ -1833,7 +1836,7 @@ mod tests {
         let fine = TxMeters {
             power: 50,
             swr_tenths: 20,
-            alc: 33,
+            alc: Some(33),
             ..TxMeters::default()
         };
         assert_eq!(
@@ -1842,13 +1845,13 @@ mod tests {
         );
         let note = meter_note(TxMeters {
             swr_tenths: 21,
-            alc: 34,
+            alc: Some(34),
             ..fine
         });
         assert!(note.contains("ALC went over a third"), "{note}");
         assert!(note.contains("SWR went over 2.0"), "{note}");
         let note = meter_note(TxMeters {
-            alc: 65,
+            alc: Some(65),
             tuning: true,
             ..fine
         });
