@@ -36,10 +36,13 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
+use crate::civ_radio::WriteBack;
+use crate::flex_settings::{self, FlexSetting};
 use crate::rig::{
-    ControlPath, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading,
-    Tunable, Tuning, TxMeters,
+    ControlPath, Exposes, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity,
+    Reading, Tunable, Tuning, TxMeters,
 };
+use crate::rigdef::SettingSummary;
 
 /// The port a FlexRadio's API listens on.
 pub const PORT: u16 = 4992;
@@ -68,6 +71,9 @@ const METER_CLASS: u16 = 0x8002;
 /// A FLEX-6000 or -8000 series radio's full power, in watts.
 const FLEX_FULL_WATTS: f64 = 100.0;
 
+/// How long a setting may take to show its new value in the radio's
+/// status lines.
+const SETTLE: Duration = Duration::from_millis(500);
 /// How long the transmit interlock may take to say the radio keyed or
 /// unkeyed, after it took the order.
 const KEY_WAIT: Duration = Duration::from_secs(3);
@@ -111,7 +117,7 @@ impl Ask {
 }
 
 /// Everything the Agent may ask the radio to change.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Order {
     /// Tune a slice, in hertz.
     Tune {
@@ -130,6 +136,16 @@ pub enum Order {
     /// Key the transmitter, or unkey it, through the radio's transmit
     /// interlock. The slice that transmits is the one marked `tx`.
     Transmit(bool),
+    /// Put one of [`flex_settings::SETTINGS`] to a value, on a slice
+    /// (only for a restore the operator asked for, or `check-writes`).
+    Setting {
+        /// The setting.
+        setting: &'static FlexSetting,
+        /// The slice's number.
+        slice: u8,
+        /// The value, as [`flex_settings::to_text`] gives it.
+        text: String,
+    },
 }
 
 impl Order {
@@ -137,7 +153,7 @@ impl Order {
     /// `FlexLib`'s (`slice tune`, `slice set`); the API's wiki also gives
     /// them shortened (`slice t`, `slice s`).
     #[must_use]
-    pub fn command(self) -> String {
+    pub fn command(&self) -> String {
         match self {
             Self::Tune { slice, hz } => format!(
                 "slice tune {slice} {}.{:06}",
@@ -145,7 +161,12 @@ impl Order {
                 hz % 1_000_000
             ),
             Self::Mode { slice, mode } => format!("slice set {slice} mode={mode}"),
-            Self::Transmit(on) => format!("xmit {}", u8::from(on)),
+            Self::Transmit(on) => format!("xmit {}", u8::from(*on)),
+            Self::Setting {
+                setting,
+                slice,
+                text,
+            } => flex_settings::set_command(setting, *slice, text),
         }
     }
 }
@@ -209,6 +230,24 @@ pub fn classify(line: &str) -> Line<'_> {
 fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
     text.split([' ', ','])
         .filter_map(|word| word.split_once('='))
+}
+
+/// The most `key=value`s kept for one slice or the transmitter.
+const MAX_VALUES: usize = 256;
+/// The longest key or value kept.
+const MAX_VALUE: usize = 64;
+
+/// Keeps one `key=value` from a status line, if it is plain enough and
+/// there is room.
+fn keep(values: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    let plain = |text: &str| text.len() <= MAX_VALUE && text.bytes().all(|b| b.is_ascii_graphic());
+    if key.is_empty() || !plain(key) || !plain(value) {
+        return;
+    }
+    if values.len() >= MAX_VALUES && !values.contains_key(key) {
+        return;
+    }
+    values.insert(key.to_owned(), value.to_owned());
 }
 
 /// A frequency in megahertz as the radio writes it ("14.074000"), in hertz.
@@ -287,6 +326,8 @@ struct Slice {
     letter: Option<String>,
     transmit: bool,
     active: bool,
+    /// Every other `key=value` it reported, for its settings.
+    values: BTreeMap<String, String>,
 }
 
 /// The radio's live state, built up from its status lines.
@@ -301,6 +342,8 @@ pub struct Board {
     swr_meter: Option<u16>,
     /// How many meters the radio has described.
     meters_seen: BTreeSet<u16>,
+    /// The transmitter's `key=value`s, for its settings.
+    transmit: BTreeMap<String, String>,
 }
 
 impl Board {
@@ -319,6 +362,13 @@ impl Board {
                 };
                 let rest = status.splitn(3, ' ').nth(2).unwrap_or_default();
                 self.take_slice(index, rest)
+            }
+            // "transmit band ..." lines are per-band settings, not these.
+            Some("transmit") if words.next() != Some("band") => {
+                for (key, value) in pairs(status) {
+                    keep(&mut self.transmit, key, value);
+                }
+                Ok(())
             }
             Some("meter") => {
                 self.take_meters(status.get("meter ".len()..).unwrap_or_default());
@@ -369,6 +419,7 @@ impl Board {
                 "active" => slice.active = value == "1",
                 _ => {}
             }
+            keep(&mut slice.values, key, value);
         }
         Ok(())
     }
@@ -406,6 +457,23 @@ impl Board {
                 ("FWDPWR", "dbm") => self.forward_meter = Some(number),
                 ("SWR", "swr") => self.swr_meter = Some(number),
                 _ => {}
+            }
+        }
+    }
+
+    /// The value the radio last reported for `setting`, as text.
+    fn value(&self, setting: &FlexSetting) -> Option<String> {
+        let slice = || self.chosen().map(|(_, slice)| &slice.values);
+        match setting.object {
+            flex_settings::Object::Transmit => self.transmit.get(setting.status).cloned(),
+            flex_settings::Object::Slice => slice()?.get(setting.status).cloned(),
+            flex_settings::Object::Filter => {
+                let values = slice()?;
+                Some(format!(
+                    "{} {}",
+                    values.get("filter_lo")?,
+                    values.get("filter_hi")?
+                ))
             }
         }
     }
@@ -564,6 +632,8 @@ pub struct FlexRadio {
     /// The last forward power and SWR readings, raw, and when.
     forward: Option<(i16, Instant)>,
     swr: Option<(i16, Instant)>,
+    /// Its settings, as the record and restore code takes them.
+    definition: crate::rigdef::Definition,
 }
 
 impl FlexRadio {
@@ -602,6 +672,7 @@ impl FlexRadio {
             radio_ip: target.ip(),
             forward: None,
             swr: None,
+            definition: flex_settings::definition("FlexRadio"),
         };
         let info = radio.send(Ask::Info)?;
         let slices = radio.send(Ask::Slices)?;
@@ -642,6 +713,7 @@ impl FlexRadio {
                 "the radio at that address did not say it is a FlexRadio".to_owned(),
             ));
         }
+        radio.definition = flex_settings::definition(&radio.identity.model);
         Ok(radio)
     }
 
@@ -652,7 +724,7 @@ impl FlexRadio {
 
     /// Send one order and wait for the radio to take it or refuse it,
     /// following its status lines meanwhile.
-    fn order(&mut self, order: Order) -> Result<(), RadioError> {
+    fn order(&mut self, order: &Order) -> Result<(), RadioError> {
         self.command(&order.command())
     }
 
@@ -791,6 +863,10 @@ impl Radio for FlexRadio {
         &self.identity
     }
 
+    fn exposes(&mut self) -> Option<&mut dyn Exposes> {
+        Some(self)
+    }
+
     fn read(&mut self) -> Result<Reading, RadioError> {
         // Take in everything that has arrived since the last read.
         self.take_in()?;
@@ -836,7 +912,7 @@ impl Tunable for FlexRadio {
                 ));
             }
         };
-        self.order(order)
+        self.order(&order)
     }
 }
 
@@ -852,7 +928,7 @@ impl Keyable for FlexRadio {
             self.meters_asked = true;
             let _ = self.ask_for_meters();
         }
-        self.order(Order::Transmit(on))?;
+        self.order(&Order::Transmit(on))?;
         let deadline = Instant::now() + KEY_WAIT;
         loop {
             match self.board.interlock.as_deref() {
@@ -908,6 +984,97 @@ impl Keyable for FlexRadio {
     }
 }
 
+impl FlexRadio {
+    /// Reads one setting from what the radio last reported.
+    fn read_setting(&mut self, summary: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        let setting = known(summary)?;
+        self.take_in()?;
+        let text = self.board.value(setting).ok_or_else(|| {
+            RadioError(format!("the FlexRadio hasn't reported {}", setting.label))
+        })?;
+        flex_settings::to_bytes(setting, &text).map_err(RadioError)
+    }
+
+    /// Puts one setting to `bytes`, then follows the radio's status lines
+    /// for a moment so a read straight after sees what it reports.
+    fn write_setting(&mut self, summary: &SettingSummary, bytes: &[u8]) -> Result<(), RadioError> {
+        let setting = known(summary)?;
+        let text = flex_settings::to_text(setting, bytes).map_err(RadioError)?;
+        self.take_in()?;
+        let slice = self.board.chosen().map_or(0, |(index, _)| *index);
+        self.order(&Order::Setting {
+            setting,
+            slice,
+            text: text.clone(),
+        })?;
+        let deadline = Instant::now() + SETTLE;
+        while Instant::now() < deadline && self.board.value(setting).as_deref() != Some(&text) {
+            if let Some(line) = self.next_line()?
+                && let Line::Status(status) = classify(&line)
+            {
+                self.board.take(status)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads one setting, writes exactly what it read back to it, and reads
+    /// it again (`check-writes`).
+    ///
+    /// # Errors
+    ///
+    /// The setting is one the Agent never changes, or couldn't be read
+    /// before the write.
+    pub fn write_back(&mut self, summary: &SettingSummary) -> Result<WriteBack, RadioError> {
+        if !summary.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                summary.label
+            )));
+        }
+        let before = self.read_setting(summary)?;
+        let written = self.write_setting(summary, &before);
+        let after = self.read_setting(summary);
+        Ok(WriteBack {
+            before,
+            written: written.map_err(|error| error.to_string()),
+            after: after.map_err(|error| error.to_string()),
+        })
+    }
+}
+
+/// The FlexRadio setting a summary names.
+fn known(summary: &SettingSummary) -> Result<&'static FlexSetting, RadioError> {
+    flex_settings::find(&summary.id)
+        .ok_or_else(|| RadioError(format!("a FlexRadio has no setting {:?}", summary.id)))
+}
+
+impl Exposes for FlexRadio {
+    fn definition(&self) -> &crate::rigdef::Definition {
+        &self.definition
+    }
+
+    fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        self.read_setting(setting)
+    }
+
+    fn write_exposed(&mut self, setting: &SettingSummary, bytes: &[u8]) -> Result<(), RadioError> {
+        if !setting.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                setting.label
+            )));
+        }
+        if !setting.write_checked {
+            return Err(RadioError(format!(
+                "{} isn't checked on a real radio yet, so the Agent doesn't write it",
+                setting.label
+            )));
+        }
+        self.write_setting(setting, bytes)
+    }
+}
+
 /// The radio's address: a host name or IP address, with port 4992 unless
 /// another is given.
 fn resolve(address: &str) -> Result<SocketAddr, RadioError> {
@@ -937,7 +1104,7 @@ mod tests {
         model_from_info, parse_mhz, power_percent, swr_tenths,
     };
     use crate::flex_pretend::PretendFlex;
-    use crate::rig::{Keyable, Mode, Radio, Reading, Tunable, Tuning, TxMeters, Vfo};
+    use crate::rig::{Exposes, Keyable, Mode, Radio, Reading, Tunable, Tuning, TxMeters, Vfo};
 
     #[test]
     fn sorts_lines() {
@@ -1338,6 +1505,92 @@ mod tests {
             Ok(())
         );
         assert_eq!((board.forward_meter, board.swr_meter), (Some(15), Some(17)));
+    }
+
+    #[test]
+    fn records_every_setting_and_writes_none_until_checked() {
+        let Some((_pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        let record = crate::settings_record::read(
+            &mut radio,
+            None,
+            std::time::SystemTime::UNIX_EPOCH,
+            "TEST",
+        );
+        assert_eq!(record.model, "FLEX-6600");
+        let unread: Vec<&str> = record
+            .settings
+            .iter()
+            .filter(|e| matches!(e.value, crate::settings_record::Value::Unread { .. }))
+            .map(|e| e.id.as_str())
+            .collect();
+        assert!(unread.is_empty(), "{unread:?}");
+        let definition = radio.definition().clone();
+        // Its own words are shown as words.
+        let lines = crate::settings_record::report(&record, &[], None, &definition);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Slice mode") && l.ends_with(" DIGU")),
+            "{lines:?}"
+        );
+        let setting = |id: &str| {
+            definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .unwrap_or_else(|| unreachable!("{id}"))
+        };
+        assert_eq!(
+            radio.read_exposed(&setting("rf_power")),
+            Ok(vec![0x00, 0x50])
+        );
+        assert_eq!(radio.read_exposed(&setting("mode")), Ok(b"DIGU".to_vec()));
+        assert_eq!(
+            radio.read_exposed(&setting("filter")),
+            Ok(b"100 3100".to_vec())
+        );
+        let refused = radio.write_exposed(&setting("rf_power"), &[0x00, 0x20]);
+        assert!(refused.is_err_and(|e| e.0.contains("isn't checked on a real radio")));
+        assert_eq!(
+            radio.read_exposed(&setting("rf_power")),
+            Ok(vec![0x00, 0x50])
+        );
+    }
+
+    #[test]
+    fn checks_its_writes_by_writing_each_value_back() {
+        let Some((pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        let report = crate::write_check::check(
+            &mut radio,
+            None,
+            std::time::SystemTime::UNIX_EPOCH,
+            "TEST",
+            |_, _| {},
+        );
+        let failed: Vec<(&str, &str)> = report
+            .settings
+            .iter()
+            .filter(|c| c.outcome != "works")
+            .map(|c| (c.id.as_str(), c.outcome))
+            .collect();
+        assert!(failed.is_empty(), "{failed:?}");
+        let heard = pretend.heard();
+        for sent in [
+            "transmit set miclevel=50",
+            "slice set 0 agc_mode=med",
+            "slice set 0 rf_gain=10",
+            "filt 0 100 3100",
+            "slice set 0 mode=DIGU",
+        ] {
+            assert!(heard.iter().any(|h| h == sent), "{sent} in {heard:?}");
+        }
+        // Nothing was keyed.
+        assert!(!heard.iter().any(|h| h.starts_with("xmit")));
     }
 
     #[test]

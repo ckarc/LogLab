@@ -12,6 +12,7 @@
 //! UDP port it was given, as VITA-49 packets laid out as the API's
 //! Metering Protocol page describes.
 
+use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::io::{self, BufRead, BufReader, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream, UdpSocket};
@@ -20,6 +21,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::flex::parse_mhz;
+use crate::flex_settings::{self, Kind, Object};
 
 /// The status handle the pretend radio gives itself.
 const HANDLE: &str = "2A3B4C5D";
@@ -49,6 +51,9 @@ struct State {
     heard: Vec<String>,
     /// Where on this computer to send meter packets.
     meter_port: Option<u16>,
+    /// The slice's and the transmitter's settings, by status name.
+    slice: BTreeMap<String, String>,
+    transmit: BTreeMap<String, String>,
 }
 
 /// The pretend radio, listening on 127.0.0.1.
@@ -79,6 +84,8 @@ impl PretendFlex {
             transmitting: false,
             heard: Vec::new(),
             meter_port: None,
+            slice: starting(Object::Slice),
+            transmit: starting(Object::Transmit),
         }));
         let shared = Arc::clone(&state);
         thread::spawn(move || {
@@ -165,7 +172,24 @@ impl State {
                 &format!("model=\"{}\",name=\"Pretend\",callsign=\"\"", self.model),
             ),
             ["sub", "slice", "all"] => status(self.slice_status()) + &answer(0, ""),
-            ["sub", "tx", "all"] => status(self.interlock_status()) + &answer(0, ""),
+            ["sub", "tx", "all"] => {
+                status(self.interlock_status())
+                    + &status(format!("transmit {}", joined(&self.transmit)))
+                    + &answer(0, "")
+            }
+            ["transmit", "set", setting] => match self.set(Object::Transmit, setting) {
+                Some(changed) => status(format!("transmit {changed}")) + &answer(0, ""),
+                None => answer(0x5000_002D, ""),
+            },
+            ["filt", "0", low, high] => match (low.parse::<i32>(), high.parse::<i32>()) {
+                (Ok(low), Ok(high)) if low < high => {
+                    self.slice.insert("filter_lo".to_owned(), low.to_string());
+                    self.slice.insert("filter_hi".to_owned(), high.to_string());
+                    status(format!("slice 0 filter_lo={low} filter_hi={high}")) + &answer(0, "")
+                }
+                _ => answer(0x5000_0033, ""),
+            },
+            ["filt", _, _, _] => answer(0x5000_000D, ""),
             ["sub", "radio", "all"] | ["ping"] => answer(0, ""),
             ["client", "udpport", port] => match port.parse() {
                 Ok(port) => {
@@ -198,7 +222,10 @@ impl State {
                     status(format!("slice 0 mode={mode}")) + &answer(0, "")
                 }
                 ("0", Some(("mode", _))) => answer(0x5000_0032, ""),
-                ("0", _) => answer(0x5000_002D, ""),
+                ("0", _) => match self.set(Object::Slice, setting) {
+                    Some(changed) => status(format!("slice 0 {changed}")) + &answer(0, ""),
+                    None => answer(0x5000_002D, ""),
+                },
                 _ => answer(0x5000_000D, ""),
             },
             ["xmit", on @ ("0" | "1")] if self.can_transmit => {
@@ -220,11 +247,28 @@ impl State {
 
     fn slice_status(&self) -> String {
         format!(
-            "slice 0 in_use=1 RF_frequency={} mode={} filter_lo=100 filter_hi=3100 \
-             index_letter=A tx=1 active=1",
+            "slice 0 in_use=1 RF_frequency={} mode={} index_letter=A tx=1 active=1 {}",
             mhz(self.hz),
-            self.mode
+            self.mode,
+            joined(&self.slice)
         )
+    }
+
+    /// Takes `name=value` for one of the settings it has, by its set name:
+    /// the `status=value` it now reports, or `None` if it has no such
+    /// setting or the value isn't one of its.
+    fn set(&mut self, object: Object, setting: &str) -> Option<String> {
+        let (name, value) = setting.split_once('=')?;
+        let known = flex_settings::SETTINGS
+            .iter()
+            .find(|s| s.object == object && s.set == name)?;
+        flex_settings::to_bytes(known, value).ok()?;
+        let values = match object {
+            Object::Transmit => &mut self.transmit,
+            _ => &mut self.slice,
+        };
+        values.insert(known.status.to_owned(), value.to_owned());
+        Some(format!("{}={value}", known.status))
     }
 
     fn interlock_status(&self) -> String {
@@ -253,6 +297,45 @@ fn meter_packet() -> Vec<u8> {
         packet.extend_from_slice(&value.to_be_bytes());
     }
     packet
+}
+
+/// What it starts with for `object`'s settings, by status name.
+fn starting(object: Object) -> BTreeMap<String, String> {
+    let mut values: BTreeMap<String, String> = flex_settings::SETTINGS
+        .iter()
+        .filter(|s| s.object == object)
+        .map(|s| {
+            let value = match (s.kind, s.status) {
+                (Kind::Level(high), _) => (u16::from(high) / 2).to_string(),
+                (Kind::Words(words), _) => words.get(2).unwrap_or(&"off").to_string(),
+                (Kind::Raw, "rxant" | "txant") => "ANT1".to_owned(),
+                (Kind::Raw, "rfgain") => "10".to_owned(),
+                (Kind::Raw, "digu_offset") => "1500".to_owned(),
+                (Kind::Raw, "digl_offset") => "2210".to_owned(),
+                (Kind::Raw, "mic_selection") => "MIC".to_owned(),
+                (Kind::Raw, "lo") => "100".to_owned(),
+                (Kind::Raw, "hi") => "2900".to_owned(),
+                (Kind::Switch | Kind::Raw, _) => "0".to_owned(),
+            };
+            (s.status.to_owned(), value)
+        })
+        .collect();
+    // The mode is its own field.
+    values.remove("mode");
+    if object == Object::Slice {
+        values.insert("filter_lo".to_owned(), "100".to_owned());
+        values.insert("filter_hi".to_owned(), "3100".to_owned());
+    }
+    values
+}
+
+/// `key=value`s as a status line has them.
+fn joined(values: &BTreeMap<String, String>) -> String {
+    values
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Hertz in megahertz as the radio writes it: "14.074000".
