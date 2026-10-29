@@ -41,6 +41,8 @@ mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
 mod journal;
+#[cfg(any(windows, test))]
+mod kenwood_cat;
 mod lab_stock;
 #[cfg(any(windows, test))]
 mod mmsstv;
@@ -280,6 +282,9 @@ enum Command {
         /// ask to join as if it has no key, to keep the radio's settings
         /// there.
         engine: Option<(String, String, Option<String>)>,
+        /// A COM port to answer on as a Kenwood TS-2000, for Winlink
+        /// Express: one end of a com0com pair.
+        kenwood: Option<String>,
     },
     /// `on`, `off` or `status`, and for `on`, the `station` options the
     /// tray runs it with.
@@ -454,7 +459,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
     command(verb, options, radio)
 }
 
-/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS]`.
+/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS] [--kenwood PORT]`.
 fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
     let mut pretend = false;
@@ -463,6 +468,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut engine = None;
     let mut key_file = None;
     let mut station = None;
+    let mut kenwood = None;
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
         if flag == "--civ-pretend" {
@@ -484,6 +490,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             "--engine" => engine = Some(value),
             "--key-file" => key_file = Some(value),
             "--station" => station = Some(value),
+            "--kenwood" => kenwood = Some(value),
             _ => return Err(format!("unknown option {flag:?} for station")),
         }
     }
@@ -506,6 +513,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
         listen,
         limit,
         engine,
+        kenwood,
     })
 }
 
@@ -1394,6 +1402,7 @@ fn main() -> ExitCode {
             listen,
             limit,
             engine,
+            kenwood,
         }) => station::run(
             port.as_deref(),
             pretend,
@@ -1402,6 +1411,7 @@ fn main() -> ExitCode {
             engine.as_ref().map(|(engine, key_file, station)| {
                 (engine.as_str(), key_file.as_str(), station.as_deref())
             }),
+            kenwood.as_deref(),
         ),
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
@@ -1669,6 +1679,7 @@ mod tests {
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
                 engine: None,
+                kenwood: None,
             })
         );
         assert_eq!(
@@ -1681,6 +1692,7 @@ mod tests {
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
                 engine: None,
+                kenwood: None,
             })
         );
         assert_eq!(
@@ -1697,6 +1709,7 @@ mod tests {
                     "station.key".to_owned(),
                     None
                 )),
+                kenwood: None,
             })
         );
         assert_eq!(
@@ -1726,6 +1739,10 @@ mod tests {
             })
         ));
         assert!(parse(&args("station --civ-pretend --civ COM5")).is_err());
+        assert!(matches!(
+            parse(&args("station --civ COM5 --kenwood CNCB0")),
+            Ok(Command::Station { kenwood: Some(port), .. }) if port == "CNCB0"
+        ));
         assert!(parse(&args("startup")).is_err());
         assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
         assert_eq!(
