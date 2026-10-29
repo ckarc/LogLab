@@ -176,7 +176,7 @@ mod tests {
     fn the_ic_7300_vara_profile_is_data_usb_fil1_at_2_3_khz_and_40_percent() {
         assert!(any_for("Icom", "IC-7300"));
         assert!(!any_for("Icom", "IC-705"));
-        assert_eq!(find("Icom", "IC-7300", "FT8"), None);
+        assert_eq!(find("Icom", "IC-7300", "SSTV"), None);
         let vara = find("Icom", "IC-7300", "VARA");
         let bytes: Vec<(String, String)> = vara
             .map(|vara| vara.settings.into_iter().map(|s| (s.id, s.bytes)).collect())
@@ -195,5 +195,36 @@ mod tests {
                 .map(|(id, b)| ((*id).to_owned(), (*b).to_owned()))
                 .collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn the_ic_7300_ft8_and_js8_profiles_are_data_usb_fil1_at_3_khz() {
+        for program in ["FT8", "JS8"] {
+            let profile = find("Icom", "IC-7300", program);
+            let bytes: Vec<(String, String)> = profile
+                .map(|profile| {
+                    profile
+                        .settings
+                        .into_iter()
+                        .map(|s| (s.id, s.bytes))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let wanted = [
+                ("mode_and_filter", "01 01"),
+                ("data_mode_and_filter", "01 01"),
+                ("filter_width", "34"),
+                ("usb_mod_level", "01 02"),
+                ("data_mod", "03"),
+            ];
+            assert_eq!(
+                bytes,
+                wanted
+                    .iter()
+                    .map(|(id, b)| ((*id).to_owned(), (*b).to_owned()))
+                    .collect::<Vec<_>>(),
+                "{program}"
+            );
+        }
     }
 }

@@ -46,3 +46,65 @@ bytes = "01 02"
 [[profiles.settings]]
 id = "data_mod"
 bytes = "03"
+
+[[profiles]]
+name = "FT8"
+source = "LabLog, 2026-10-29: the VARA profile's audio path (DATA-USB on FIL1, USB MOD Level 40%, DATA MOD USB) with FIL1 widened to 3.0 kHz, per WSJT-X's user guide (make-qso.adoc: radio filters set to widest available passband, up to 5 kHz). Chosen as the recommended option; brian asked for recommended choices to be taken."
+
+# USB (mode code 01) on FIL1, then DATA mode on (D1), FIL1: DATA-USB, as
+# the VARA profile does. WSJT-X also asks for it itself (Mode: Data/Pkt).
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1's width, step 34: 600 Hz + (34 - 10) x 100 Hz = 3.0 kHz. WSJT-X's
+# guide says to use the widest filter, up to about 5 kHz. This is the same
+# slot VARA uses; VARA's profile writes 2.3 kHz back when VarAC starts.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "34"
+
+# USB MOD Level 102 of 255 (40%) and DATA MOD on USB, as for VARA: the
+# computer's audio is what transmits.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "JS8"
+source = "LabLog, the same as FT8 (JS8Call is built on WSJT-X), 2026-10-29: the VARA profile's audio path (DATA-USB on FIL1, USB MOD Level 40%, DATA MOD USB) with FIL1 widened to 3.0 kHz, per WSJT-X's user guide (make-qso.adoc: radio filters set to widest available passband, up to 5 kHz). Chosen as the recommended option; brian asked for recommended choices to be taken."
+
+# USB (mode code 01) on FIL1, then DATA mode on (D1), FIL1: DATA-USB, as
+# the VARA profile does. WSJT-X also asks for it itself (Mode: Data/Pkt).
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1's width, step 34: 600 Hz + (34 - 10) x 100 Hz = 3.0 kHz. WSJT-X's
+# guide says to use the widest filter, up to about 5 kHz. This is the same
+# slot VARA uses; VARA's profile writes 2.3 kHz back when VarAC starts.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "34"
+
+# USB MOD Level 102 of 255 (40%) and DATA MOD on USB, as for VARA: the
+# computer's audio is what transmits.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
