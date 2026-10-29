@@ -735,6 +735,23 @@ mod tests {
     }
 
     #[test]
+    fn tells_an_ic_9700_from_an_ic_7300_by_its_address() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        for model in ["IC-7300", "IC-9700"] {
+            let definition = definitions
+                .iter()
+                .find(|d| d.model == model)
+                .unwrap_or_else(|| unreachable!("{model} is built in"));
+            let port = PretendPort::new(PretendCiv::new(definition), 115_200);
+            let mut radio =
+                CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+            assert_eq!(radio.identity().model, model);
+            let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+            assert_eq!(reading.mode, Some(Mode::DataUsb), "{model}");
+        }
+    }
+
+    #[test]
     fn says_when_no_radio_answers() {
         let definition = ic_7300();
         let port = PretendPort::new(PretendCiv::new(&definition), 1200);
