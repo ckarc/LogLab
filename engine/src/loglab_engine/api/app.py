@@ -110,6 +110,7 @@ from loglab_engine.reference import (
     ZoneKind,
     distance_km,
     grid_place,
+    place_grid,
     record_place,
     section_for,
     tally_sections,
@@ -1407,6 +1408,26 @@ class AgentQsoOut(BaseModel):
     message: str
 
 
+class AgentStationOut(BaseModel):
+    """Who a program at the Agent's station logs as, for setting the program up.
+
+    ``operator`` is who is signed in there now, if anyone. ``station_call`` is
+    the call QSOs logged there are made as: the operation's (or its GOTA
+    call) when the operator chose one, else the operator's own. ``grid`` is
+    where the station is: FieldLab's GPS fix (``gps``, measured) when a
+    recent one has been heard, else the operator's saved location
+    (``saved``: LoTW's station location, or the callbook's grid for their
+    call). Nothing is looked up to answer (Principle V).
+    """
+
+    station: str
+    operator: str | None
+    station_call: str | None
+    operation: str | None
+    grid: str | None
+    grid_source: Literal["gps", "saved"] | None
+
+
 class LotwCertificateIn(_Strict):
     """A LoTW callsign certificate: TrustedQSL's ``.p12`` file, in base64, and its password."""
 
@@ -1787,14 +1808,19 @@ def list_zones(
     )
 
 
-def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
-    """Where the operator's station is, when a QSO does not say."""
+def _saved_grid(conn: Conn, who: Actor) -> str | None:
+    """The operator's saved grid: LoTW's station location, else the callbook's."""
     account = LotwAccountStore(conn).get(who)
     grid = (account.location or {}).get("grid") if account is not None else None
     if not isinstance(grid, str):
         cached = CallbookStore(conn).cached(CALLBOOK_SOURCE, who.operator)
         grid = cached.entry.get("grid") if cached is not None and cached.found else None
-    return grid_place(grid) if isinstance(grid, str) else None
+    return grid if isinstance(grid, str) and grid_place(grid) is not None else None
+
+
+def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
+    """Where the operator's station is, when a QSO does not say."""
+    return grid_place(_saved_grid(conn, who))
 
 
 def _gps_fix(request: Request) -> GpsFix | None:
@@ -2512,6 +2538,54 @@ def radio_settings(
     return RadioSettingsOut(
         as_received=None if found is None else _reading_out(found),
         setups=tuple(_reading_out(r) for r in store.setups(radio)),
+    )
+
+
+@api.get("/agent/station")
+def agent_station(
+    station: AgentStation,
+    conn: Conn,
+    gps: Annotated[GpsFix | None, Depends(_gps_fix)],
+) -> AgentStationOut:
+    """Who programs at the Agent's station log as, and where the station is.
+
+    The Agent asks this so it can say who QSOs will be logged as, and so the
+    programs it sets up (WSJT-X, JS8Call, fldigi) send the right call and
+    grid. Nothing here is the operator's secret: their callsign, the
+    operation's name and call, and a 6-character grid (Principle XXI).
+    """
+    who = IdentityStore(conn).at_station(station)
+    grid = None if gps is None else place_grid(MapPlace(lat=gps.lat, lon=gps.lon))
+    source: Literal["gps", "saved"] | None = None if grid is None else "gps"
+    if who is None:
+        return AgentStationOut(
+            station=station,
+            operator=None,
+            station_call=None,
+            operation=None,
+            grid=grid,
+            grid_source=source,
+        )
+    if grid is None:
+        grid = _saved_grid(conn, who)
+        source = None if grid is None else "saved"
+    call, name = who.operator, None
+    ref = _chosen_operation(conn, who)
+    if ref is not None:
+        try:
+            op = OperationStore(conn).get(ref.id)
+        except OperationNotFoundError:
+            op = None
+        if op is not None and not op.over(datetime.now(UTC)):
+            name = op.name
+            call = op.gota_call if ref.gota and op.gota_call else op.station_call
+    return AgentStationOut(
+        station=station,
+        operator=who.operator,
+        station_call=call,
+        operation=name,
+        grid=grid,
+        grid_source=source,
     )
 
 
