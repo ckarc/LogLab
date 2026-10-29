@@ -136,10 +136,11 @@ pub enum Change {
     Frequency([u8; 5]),
     /// Tune the unselected VFO (`25 01`), to these BCD bytes.
     OtherFrequency([u8; 5]),
-    /// Change the selected VFO's mode (`06`), to this mode code.
-    Mode(u8),
-    /// Turn data mode on (with FIL1) or off (`1A 06`).
-    DataMode(bool),
+    /// Change the selected VFO's mode (`06`), to this mode code, on this
+    /// filter (FIL1 to FIL3).
+    Mode(u8, u8),
+    /// Turn data mode on, on this filter, or off (`1A 06`; off takes 00).
+    DataMode(bool, u8),
     /// Select VFO A (`07 00`) or B (`07 01`).
     Select(Vfo),
     /// Turn split off (`0F 00`) or on (`0F 01`).
@@ -153,9 +154,9 @@ impl Change {
         match self {
             Self::Frequency(bcd) => [&[0x05][..], &bcd].concat(),
             Self::OtherFrequency(bcd) => [&[0x25, 0x01][..], &bcd].concat(),
-            Self::Mode(code) => vec![0x06, code],
-            Self::DataMode(true) => vec![0x1A, 0x06, 0x01, 0x01],
-            Self::DataMode(false) => vec![0x1A, 0x06, 0x00, 0x00],
+            Self::Mode(code, filter) => vec![0x06, code, filter],
+            Self::DataMode(true, filter) => vec![0x1A, 0x06, 0x01, filter],
+            Self::DataMode(false, _) => vec![0x1A, 0x06, 0x00, 0x00],
             Self::Select(Vfo::A) => vec![0x07, 0x00],
             Self::Select(Vfo::B) => vec![0x07, 0x01],
             Self::Split(on) => vec![0x0F, u8::from(on)],
@@ -444,9 +445,15 @@ impl<P: Port> CivRadio<P> {
             .get(voice)
             .copied()
             .ok_or_else(|| RadioError(format!("the {} has no {voice}", self.identity.model)))?;
-        self.change(Change::Mode(code))?;
+        // The filter the operator has selected stays selected: a program
+        // asking for a mode doesn't choose the filter (Principle X).
+        let filter = match self.ask(Ask::Mode)?.as_slice() {
+            [0x04, _, filter @ 1..=3] => *filter,
+            _ => 1,
+        };
+        self.change(Change::Mode(code, filter))?;
         match data {
-            Some(on) => self.change(Change::DataMode(on)),
+            Some(on) => self.change(Change::DataMode(on, filter)),
             None => Ok(()),
         }
     }
@@ -816,9 +823,9 @@ mod tests {
         let changes = [
             Change::Frequency(bcd),
             Change::OtherFrequency(bcd),
-            Change::Mode(0x01),
-            Change::DataMode(true),
-            Change::DataMode(false),
+            Change::Mode(0x01, 2),
+            Change::DataMode(true, 2),
+            Change::DataMode(false, 2),
             Change::Select(Vfo::A),
             Change::Select(Vfo::B),
             Change::Split(true),
@@ -919,6 +926,35 @@ mod tests {
         assert!(radio.tune(Tuning::Mode(Mode::DataUsb)).is_ok());
         let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
         assert_eq!(reading.mode, Some(Mode::DataUsb));
+    }
+
+    #[test]
+    fn a_mode_change_keeps_the_selected_filter() {
+        let mut radio = found(115_200);
+        assert_eq!(
+            Change::Mode(0x01, 2).payload(),
+            [0x06, 0x01, 0x02],
+            "06 with the filter"
+        );
+        assert_eq!(
+            Change::DataMode(true, 2).payload(),
+            [0x1A, 0x06, 0x01, 0x02]
+        );
+        assert_eq!(
+            Change::DataMode(false, 2).payload(),
+            [0x1A, 0x06, 0x00, 0x00]
+        );
+        // The operator picks FIL2; a program then asks for LSB, then data USB.
+        assert!(radio.command(&[0x06, 0x01, 0x02]).is_ok());
+        assert!(radio.tune(Tuning::Mode(Mode::Lsb)).is_ok());
+        assert_eq!(radio.ask(Ask::Mode).ok(), Some(vec![0x04, 0x00, 0x02]));
+        assert!(radio.tune(Tuning::Mode(Mode::DataUsb)).is_ok());
+        assert_eq!(radio.ask(Ask::Mode).ok(), Some(vec![0x04, 0x01, 0x02]));
+        assert_eq!(
+            radio.ask(Ask::DataMode).ok(),
+            Some(vec![0x1A, 0x06, 0x01, 0x02]),
+            "still FIL2"
+        );
     }
 
     #[test]
