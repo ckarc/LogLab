@@ -143,6 +143,14 @@ from loglab_engine.store import (
 )
 from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
+from loglab_engine.store.lab_stock import (
+    DecidedError,
+    LabStockMovedError,
+    LabStockNotFoundError,
+    LabStockStore,
+    Proposal,
+    StockSetting,
+)
 from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
 from loglab_engine.store.lotw import BatchQso, LotwAccountStore, LotwBatch
 from loglab_engine.store.operation import (
@@ -321,6 +329,74 @@ class KeptReadingOut(BaseModel):
 
     created: bool
     reading: RadioReadingOut
+
+
+class LabStockSettingIn(_Strict):
+    """One Lab Stock setting: its id and label, its bytes, and its value in words."""
+
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
+    label: Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)]
+    bytes: Annotated[str, StringConstraints(pattern=r"^[0-9A-F]{2}( [0-9A-F]{2}){0,63}$")]
+    shown: (
+        Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)] | None
+    ) = None
+
+
+class LabStockProposalIn(_Strict):
+    """The settings an Agent read from a radio, proposed as its model's Lab Stock.
+
+    Only an administrator's approval makes it the Lab Stock.
+    """
+
+    maker: _RadioText
+    model: _RadioText
+    serial: _Serial
+    note: Annotated[str, StringConstraints(min_length=1, max_length=500, pattern=_PLAIN)] | None = (
+        None
+    )
+    settings: Annotated[list[LabStockSettingIn], Field(min_length=1, max_length=MAX_SETTINGS)]
+
+
+class LabStockDecisionIn(_Strict):
+    """An administrator's approval of a proposal.
+
+    ``against`` is the number of the Lab Stock it was compared with, or None
+    if the model had none: if that has changed, nothing is approved.
+    """
+
+    against: int | None
+
+
+class LabStockDecisionOut(BaseModel):
+    """An approval or refusal: which, by whom, and when."""
+
+    approved: bool
+    by: str
+    at: datetime
+
+
+class LabStockOut(BaseModel):
+    """A Lab Stock proposal and where it stands."""
+
+    id: int
+    maker: str
+    model: str
+    status: str
+    current: bool
+    settings: list[LabStockSettingIn]
+    note: str | None
+    station: str | None
+    serial: str | None
+    again_of: int | None
+    proposed_by: str | None
+    proposed_at: datetime
+    decision: LabStockDecisionOut | None
+
+
+class AgentLabStockOut(BaseModel):
+    """A model's Lab Stock now, if an administrator has approved one."""
+
+    lab_stock: LabStockOut | None
 
 
 class PairingAskIn(_Strict):
@@ -2543,6 +2619,102 @@ def radio_settings(
     )
 
 
+def _lab_stock_out(found: Proposal) -> LabStockOut:
+    decision = found.decision
+    return LabStockOut(
+        id=found.id,
+        maker=found.maker,
+        model=found.model,
+        status=found.status.value,
+        current=found.current,
+        settings=[
+            LabStockSettingIn(id=s.id, label=s.label, bytes=s.bytes, shown=s.shown)
+            for s in found.settings
+        ],
+        note=found.note,
+        station=found.station,
+        serial=found.serial,
+        again_of=found.again_of,
+        proposed_by=found.proposed_by,
+        proposed_at=found.proposed_at,
+        decision=None
+        if decision is None
+        else LabStockDecisionOut(approved=decision.approved, by=decision.by, at=decision.at),
+    )
+
+
+@api.post("/agent/lab-stock", status_code=status.HTTP_201_CREATED)
+def propose_lab_stock(body: LabStockProposalIn, station: AgentStation, conn: Conn) -> LabStockOut:
+    """Propose the settings an Agent read from its radio as that model's Lab Stock.
+
+    A proposal changes nothing: it becomes the Lab Stock only when an
+    administrator approves it in LabLog. A station key can never approve.
+    """
+    return _lab_stock_out(
+        LabStockStore(conn).propose(
+            station,
+            body.maker,
+            body.model,
+            body.serial,
+            tuple(StockSetting(s.id, s.label, s.bytes, s.shown) for s in body.settings),
+            note=body.note,
+        )
+    )
+
+
+@api.get("/agent/lab-stock")
+def agent_lab_stock(
+    maker: _RadioText, model: _RadioText, station: AgentStation, conn: Conn
+) -> AgentLabStockOut:
+    """A model's Lab Stock now: the proposal an administrator approved most recently.
+
+    The Agent puts it on a radio only when the operator there asks and
+    confirms (Principle X).
+    """
+    del station
+    found = LabStockStore(conn).current(maker, model)
+    return AgentLabStockOut(lab_stock=None if found is None else _lab_stock_out(found))
+
+
+@api.get("/lab-stock")
+def list_lab_stock(who: Signed, conn: Conn) -> list[LabStockOut]:
+    """Every Lab Stock proposal, newest first, with what became of each. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return [_lab_stock_out(p) for p in LabStockStore(conn).all()]
+
+
+@api.post("/lab-stock/{proposal_id}/approve")
+def approve_lab_stock(
+    proposal_id: int, body: LabStockDecisionIn, who: Signed, conn: Conn
+) -> LabStockOut:
+    """Approve a proposal, making it its model's Lab Stock. Administrators only.
+
+    Refused with 409 if it was already decided, or if the model's Lab Stock
+    is no longer the one it was compared ``against``.
+    """
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(
+        LabStockStore(conn).decide(who, proposal_id, approve=True, against=body.against)
+    )
+
+
+@api.post("/lab-stock/{proposal_id}/refuse")
+def refuse_lab_stock(proposal_id: int, who: Signed, conn: Conn) -> LabStockOut:
+    """Refuse a proposal: it is kept, and never becomes the Lab Stock. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(LabStockStore(conn).decide(who, proposal_id, approve=False))
+
+
+@api.post("/lab-stock/{proposal_id}/again", status_code=status.HTTP_201_CREATED)
+def propose_lab_stock_again(proposal_id: int, who: Signed, conn: Conn) -> LabStockOut:
+    """Propose an earlier proposal's settings again, to go back to them. Administrators only.
+
+    The new proposal still needs its own approval.
+    """
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(LabStockStore(conn).propose_again(who, proposal_id))
+
+
 @api.get("/agent/station")
 def agent_station(
     station: AgentStation,
@@ -3933,6 +4105,9 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
     (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
+    (LabStockNotFoundError, status.HTTP_404_NOT_FOUND),
+    (DecidedError, status.HTTP_409_CONFLICT),
+    (LabStockMovedError, status.HTTP_409_CONFLICT),
     (OperationNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
     (ArchivedError, status.HTTP_409_CONFLICT),

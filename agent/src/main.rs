@@ -31,6 +31,7 @@ mod civ_serial;
 mod driver;
 mod engine;
 mod enrollment;
+mod filter_widths;
 #[cfg(any(windows, test))]
 mod fldigi;
 mod flex;
@@ -38,6 +39,7 @@ mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
 mod journal;
+mod lab_stock;
 #[cfg(any(windows, test))]
 mod mmsstv;
 mod pairing;

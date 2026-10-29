@@ -280,6 +280,12 @@ pub enum Choice {
     Auto(bool),
     /// Enroll the radio in lab settings control, or leave it out.
     Enroll(bool),
+    /// Put the model's Lab Stock on (after a yes), or (`true`) send the
+    /// radio's settings as a Lab Stock proposal.
+    Stock {
+        /// Send a proposal instead.
+        save: bool,
+    },
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -321,6 +327,8 @@ impl Choice {
             Self::Compare => "compare".to_owned(),
             Self::Auto(on) => format!("auto {}", if *on { "on" } else { "off" }),
             Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
+            Self::Stock { save: false } => "stock".to_owned(),
+            Self::Stock { save: true } => "stock save".to_owned(),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -537,6 +545,8 @@ mod tests {
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
         assert_eq!(Choice::Enroll(false).typed(), "enroll off");
+        assert_eq!(Choice::Stock { save: false }.typed(), "stock");
+        assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(
             Choice::Answer {
                 number: 3,

@@ -258,6 +258,9 @@ struct Face {
     lab_menu: nwg::Menu,
     enroll: nwg::MenuItem,
     leave_out: nwg::MenuItem,
+    stock_menu: nwg::Menu,
+    stock_put: nwg::MenuItem,
+    stock_save: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -368,10 +371,40 @@ impl Face {
             &face.lab_menu,
             &mut face.leave_out,
         )?;
+        face.stock_items()?;
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
         Ok(face)
+    }
+
+    /// The Lab Stock menu: put the model's Lab Stock on, or send the
+    /// radio's settings as a proposal.
+    fn stock_items(&mut self) -> Result<(), String> {
+        built(
+            nwg::Menu::builder()
+                .text("Lab Stock")
+                .parent(&self.menu)
+                .build(&mut self.stock_menu),
+        )?;
+        for (text, item) in [
+            (
+                "Put Lab Stock on (shows what changes, then asks)",
+                &mut self.stock_put,
+            ),
+            (
+                "Send settings as a Lab Stock proposal",
+                &mut self.stock_save,
+            ),
+        ] {
+            built(
+                nwg::MenuItem::builder()
+                    .text(text)
+                    .parent(&self.stock_menu)
+                    .build(item),
+            )?;
+        }
+        Ok(())
     }
 
     fn separator(&mut self) -> Result<(), String> {
@@ -417,6 +450,12 @@ impl Face {
         }
         if handle == self.leave_out.handle {
             return Some(Choice::Enroll(false));
+        }
+        if handle == self.stock_put.handle {
+            return Some(Choice::Stock { save: false });
+        }
+        if handle == self.stock_save.handle {
+            return Some(Choice::Stock { save: true });
         }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
