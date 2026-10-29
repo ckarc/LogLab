@@ -36,8 +36,13 @@ program that asks (see "Sharing a radio" below).
   the network), and after each transmission it says the peak forward power
   (in percent of 100 W) and SWR. A FlexRadio's ALC meter is in dBFS, not a
   scale the Agent can judge, so ALC is not given. `--flex-pretend` tries all
-  of this against a pretend FLEX-6600 on this computer. Not yet tried on a
-  real FlexRadio.
+  of this against a pretend FLEX-6600 on this computer. `record --flex
+  ADDRESS` reads the radio's settings (44 of them: the slice's mode,
+  filter, AF and RF gain, AGC, noise blankers and reduction, DAX channel
+  and antennas; the transmitter's power, mic, DAX, filter, processor, VOX
+  and monitor) and keeps them as its as-received record, as for any other
+  radio. The Agent writes none of them until `check-writes --flex ADDRESS`
+  has run on a real FlexRadio. Not yet tried on a real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,

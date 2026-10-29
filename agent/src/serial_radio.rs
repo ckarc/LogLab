@@ -3,11 +3,13 @@
 
 //! A radio on a serial port, driven by one of the Agent's own drivers: Icom
 //! CI-V (`civ_radio`) or Yaesu CAT (`cat_radio`). Finding it, the station,
-//! the settings record and `check-writes` work the same for either.
+//! the settings record and `check-writes` work the same for either, and for
+//! a FlexRadio on the network (`flex`).
 
 use crate::cat_radio::CatRadio;
 use crate::civ_radio::{CivRadio, Port, WriteBack};
 use crate::civ_serial::SerialPort;
+use crate::flex::FlexRadio;
 use crate::rig::{Exposes, Keyable, RadioError};
 use crate::rigdef::{self, Definition, SettingSummary};
 
@@ -43,6 +45,19 @@ impl<P: Port + Send> SerialRadio for CatRadio<P> {
 
     fn write_back(&mut self, setting: &SettingSummary) -> Result<WriteBack, RadioError> {
         CatRadio::write_back(self, setting)
+    }
+}
+
+/// A FlexRadio is on the network, not a serial port, but the station, the
+/// settings record and `check-writes` take it the same way.
+impl SerialRadio for FlexRadio {
+    /// It has no speed: 0.
+    fn baud(&self) -> u32 {
+        0
+    }
+
+    fn write_back(&mut self, setting: &SettingSummary) -> Result<WriteBack, RadioError> {
+        FlexRadio::write_back(self, setting)
     }
 }
 
