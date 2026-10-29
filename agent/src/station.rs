@@ -1645,8 +1645,9 @@ impl Source for Programs {
 /// The programs whose settings the Agent sets up, by executable, and the
 /// names they are shown by.
 #[cfg(any(windows, test))]
-const SET_UP_PROGRAMS: [(&str, &str); 5] = [
+const SET_UP_PROGRAMS: [(&str, &str); 6] = [
     ("vara.exe", "VARA"),
+    ("rms express.exe", "Winlink Express"),
     ("wsjtx.exe", "WSJT-X"),
     ("js8call.exe", "JS8Call"),
     ("fldigi.exe", "fldigi"),
@@ -1719,6 +1720,76 @@ fn open_programs(list: &str) -> HashSet<&'static str> {
         .collect()
 }
 
+/// Stands between VARA and its client (Winlink Express) so the Agent keys
+/// the radio when VARA asks: moves VARA's command port to the Agent's, if
+/// VARA isn't running, and listens on the one VARA's clients use (see
+/// `vara_proxy`).
+#[cfg(windows)]
+fn vara_proxy(
+    rigctld: SocketAddr,
+    notes: mpsc::Sender<String>,
+) -> Option<crate::vara_proxy::Proxy> {
+    use crate::vara::{self, MOVED_COMMAND_PORT, Moved};
+    use crate::vara_proxy::{Ports, Proxy};
+    let path = vara::find()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let clients = vara::clients_port(&text, vara::original(&path).as_deref());
+    if vara::command_port(&text) != Some(MOVED_COMMAND_PORT) {
+        match vara::running() {
+            Ok(false) => match vara::set_command_port(&path, MOVED_COMMAND_PORT) {
+                Ok(Moved::Already) => {}
+                Ok(Moved::From(before)) => println!(
+                    "VARA: command port set to {MOVED_COMMAND_PORT} in {} (was {}), so the Agent \
+                     can stand between VARA and Winlink Express on {clients}.",
+                    path.display(),
+                    before.map_or_else(|| "not set".to_owned(), |port| port.to_string()),
+                ),
+                Err(why) => {
+                    println!(
+                        "VARA: its command port wasn't moved ({why}), so the Agent can't key \
+                         for Winlink Express."
+                    );
+                    return None;
+                }
+            },
+            Ok(true) => {
+                println!(
+                    "VARA: running on its own port, so the Agent can't key for Winlink Express \
+                     yet.\n  -> Close VARA, then start the Agent again."
+                );
+                return None;
+            }
+            Err(why) => {
+                println!("VARA: its command port was left alone ({why}).");
+                return None;
+            }
+        }
+    }
+    let ports = Ports {
+        clients,
+        vara: MOVED_COMMAND_PORT,
+        rigctld,
+    };
+    match Proxy::start(&ports, Arc::new(program_id::keys_itself), notes) {
+        Ok(proxy) => {
+            println!(
+                "VARA: the Agent passes VARA's clients through on 127.0.0.1:{clients} (and {}), \
+                 and keys the radio when VARA asks, for Winlink Express. VARA itself is on \
+                 {MOVED_COMMAND_PORT}.",
+                clients + 1
+            );
+            Some(proxy)
+        }
+        Err(why) => {
+            println!(
+                "VARA: the Agent can't stand between VARA and Winlink Express ({why}).\n  -> If \
+                 VARA is running, close it and start the Agent again."
+            );
+            None
+        }
+    }
+}
+
 /// Tells the operator how programs on this computer reach the radio.
 fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     println!(
@@ -1734,6 +1805,10 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     );
     println!(
         "  WSJT-X: Settings > Radio: Rig Hamlib NET rigctl, Network Server {address}, PTT Method CAT."
+    );
+    println!(
+        "  Winlink Express: VARA HF TNC at 127.0.0.1, ports as usual (8300, 8301); the Agent \
+         sets its Radio Setup to Manual, no control port, PTT External, and keys when VARA asks."
     );
 }
 
@@ -1836,6 +1911,8 @@ fn run_found(
     }
     let sound = definition.usb_audio.clone();
     let (notes, heard) = mpsc::channel();
+    #[cfg(windows)]
+    let vara_notes = notes.clone();
     let shared = Arc::new(Shared::with_transmit(found.radio, limit).with_notes(notes));
     let on_air = shared.on_air();
     #[cfg(windows)]
@@ -1852,6 +1929,8 @@ fn run_found(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
+    #[cfg(windows)]
+    let vara_proxy = vara_proxy(server.address(), vara_notes);
     let carrier = start_carrier(uplink.as_ref(), &shared);
     let desk = found
         .serial
@@ -1873,6 +1952,8 @@ fn run_found(
             serving.store(false, Ordering::SeqCst);
         }
     });
+    #[cfg(windows)]
+    drop(vara_proxy);
     drop(carrier);
     drop(server);
     #[cfg(windows)]

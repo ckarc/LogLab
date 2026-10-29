@@ -1,7 +1,8 @@
 // SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! Pointing VARA's sound devices at the Agent's virtual cables.
+//! Pointing VARA's sound devices at the Agent's virtual cables, and moving
+//! its command port so the Agent can key for its client.
 //!
 //! VARA has no command line or control-port command for its sound devices;
 //! they are kept in `VARA.ini`, next to `VARA.exe`, under `[Soundcard]` as
@@ -12,7 +13,10 @@
 //!
 //! The maintainer decided the Agent sets these two lines itself (2026-10-26),
 //! as an exception to the rule that the Agent never writes another program's
-//! settings. So the Agent changes nothing else in the file, keeps a copy of
+//! settings, and (2026-10-29) that the Agent sets up each program's settings
+//! file to work with it: so it also moves VARA's command port (`[Setup]`,
+//! `TCP Command Port=`, as varanny reads it) for `vara_proxy`. The Agent
+//! changes nothing else in the file, keeps a copy of
 //! the file as it first found it, and writes it whole and renames it into
 //! place (Principle XIV).
 
@@ -29,6 +33,18 @@ const INPUT: &str = "Input Device Name";
 const OUTPUT: &str = "Output Device Name";
 /// The copy of the file as the Agent first found it.
 const BACKUP: &str = "VARA.ini.lablog-original";
+/// The section VARA keeps its command port in, as `TCP Command Port=`; its
+/// data port is always one more (varanny, `vara_config.go` and README).
+const SETUP: &str = "Setup";
+/// VARA's command port.
+const COMMAND_PORT: &str = "TCP Command Port";
+/// VARA's command port when its file doesn't say: the port Winlink Express
+/// and Pat connect to by default (Tigertronics' Winlink Express setup, Pat's
+/// `vara.go`).
+pub const USUAL_COMMAND_PORT: u16 = 8300;
+/// Where the Agent moves VARA's command port to (and its data port to one
+/// more), so the Agent can listen on the port VARA's clients already use.
+pub const MOVED_COMMAND_PORT: u16 = 8310;
 
 /// Where VARA is usually installed, looked in, in order.
 #[cfg(windows)]
@@ -129,6 +145,24 @@ pub fn with_soundcard(text: &str, wanted: &Soundcard) -> String {
     joined
 }
 
+/// VARA's command port, as the settings file `text` names it.
+#[must_use]
+pub fn command_port(text: &str) -> Option<u16> {
+    crate::ini::value(text, SETUP, COMMAND_PORT).and_then(|port| port.parse().ok())
+}
+
+/// The command port VARA's clients connect to: the one VARA's settings file
+/// named before the Agent moved it. `text` is the file now, and `original`
+/// the file as the Agent first found it, if it kept a copy.
+#[must_use]
+pub fn clients_port(text: &str, original: Option<&str>) -> u16 {
+    let moved = |port: &u16| *port != MOVED_COMMAND_PORT;
+    command_port(text)
+        .filter(moved)
+        .or_else(|| original.and_then(command_port).filter(moved))
+        .unwrap_or(USUAL_COMMAND_PORT)
+}
+
 /// The name VARA would show for `device`: VARA's own file may hold device
 /// names cut short, so when the name it holds now is the start of `device`
 /// at some length, the same length is used again. Otherwise, the whole name.
@@ -187,18 +221,62 @@ pub fn set(path: &Path, wanted: &Soundcard) -> Result<Outcome, String> {
     if same(&wanted.input, &before.input) && same(&wanted.output, &before.output) {
         return Ok(Outcome::AlreadySet);
     }
+    write_whole(path, &bytes, &with_soundcard(&text, wanted))?;
+    Ok(Outcome::Changed(before))
+}
+
+/// Writes `changed` as the settings file at `path`, whose bytes are now
+/// `bytes`: keeps a copy of the file as the Agent first found it, then writes
+/// the new one whole and renames it into place (Principle XIV).
+fn write_whole(path: &Path, bytes: &[u8], changed: &str) -> Result<(), String> {
     let folder = path.parent().unwrap_or_else(|| Path::new("."));
     let backup = folder.join(BACKUP);
     if !backup.exists() {
-        fs::write(&backup, &bytes)
+        fs::write(&backup, bytes)
             .map_err(|error| format!("can't keep a copy at {}: {error}", backup.display()))?;
     }
-    let changed = with_soundcard(&text, wanted);
     let temporary = folder.join("VARA.ini.lablog-new");
     fs::write(&temporary, changed.as_bytes())
         .and_then(|()| fs::rename(&temporary, path))
-        .map_err(|error| format!("can't write {}: {error}", path.display()))?;
-    Ok(Outcome::Changed(before))
+        .map_err(|error| format!("can't write {}: {error}", path.display()))
+}
+
+/// The file VARA's settings were in when the Agent first changed them, next
+/// to the settings file at `path`, if the Agent kept one.
+#[must_use]
+pub fn original(path: &Path) -> Option<String> {
+    let folder = path.parent().unwrap_or_else(|| Path::new("."));
+    fs::read(folder.join(BACKUP))
+        .ok()
+        .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// What happened to VARA's command port.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Moved {
+    /// It was already `port`.
+    Already,
+    /// It is now `port`; it was this before (`None`: the file didn't say).
+    From(Option<u16>),
+}
+
+/// Sets VARA's command port in the settings file at `path` to `port`, every
+/// other line left as it was. VARA must not be running.
+///
+/// # Errors
+///
+/// The file can't be read or written.
+pub fn set_command_port(path: &Path, port: u16) -> Result<Moved, String> {
+    let bytes =
+        fs::read(path).map_err(|error| format!("can't read {}: {error}", path.display()))?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let before = command_port(&text);
+    if before == Some(port) {
+        return Ok(Moved::Already);
+    }
+    let changed = crate::ini::with_keys(&text, SETUP, &[(COMMAND_PORT, port.to_string())]);
+    write_whole(path, &bytes, &changed)?;
+    Ok(Moved::From(before))
 }
 
 /// Whether VARA is running, from Windows' list of running programs.
@@ -219,7 +297,10 @@ pub fn running() -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Outcome, Soundcard, as_vara_names_it, set, soundcard, with_soundcard};
+    use super::{
+        Moved, Outcome, Soundcard, as_vara_names_it, clients_port, command_port, original, set,
+        set_command_port, soundcard, with_soundcard,
+    };
 
     const INI: &str = "[Setup]\r\nTCP Command Port=8300\r\n\r\n[Soundcard]\r\nInput Device Name=Microphone (USB Audio CODEC )\r\nOutput Device Name=Speakers (USB Audio CODEC )\r\nDrive Level=-5\r\n[Monitor]\r\nOn=0\r\n";
 
@@ -308,6 +389,42 @@ mod tests {
         let original =
             std::fs::read_to_string(folder.join("VARA.ini.lablog-original")).unwrap_or_default();
         assert_eq!(original, INI);
+        let _ = std::fs::remove_dir_all(&folder);
+    }
+
+    #[test]
+    fn moves_the_command_port_and_remembers_where_clients_connect() {
+        assert_eq!(command_port(INI), Some(8300));
+        assert_eq!(command_port("[Soundcard]\nTCP Command Port=8300\n"), None);
+        // Clients connect where VARA was before the Agent moved it.
+        assert_eq!(clients_port(INI, None), 8300);
+        assert_eq!(clients_port("[Setup]\nTCP Command Port=8400\n", None), 8400);
+        assert_eq!(
+            clients_port("[Setup]\nTCP Command Port=8310\n", Some(INI)),
+            8300
+        );
+        assert_eq!(clients_port("[Setup]\nTCP Command Port=8310\n", None), 8300);
+        assert_eq!(clients_port("", None), 8300);
+
+        let folder = std::env::temp_dir().join(format!("lablog-vara-port-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(&folder).unwrap_or_else(|error| unreachable!("{error}"));
+        let path = folder.join("VARA.ini");
+        std::fs::write(&path, INI).unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(set_command_port(&path, 8310), Ok(Moved::From(Some(8300))));
+        assert_eq!(set_command_port(&path, 8310), Ok(Moved::Already));
+        let now = std::fs::read_to_string(&path).unwrap_or_default();
+        assert_eq!(
+            now,
+            INI.replace("Port=8300", "Port=8310"),
+            "only the port line changes"
+        );
+        assert_eq!(original(&path).as_deref(), Some(INI));
+        assert_eq!(clients_port(&now, original(&path).as_deref()), 8300);
+        // The sound devices still set the same way afterwards, and the copy
+        // is still the file as first found.
+        assert!(set(&path, &cables()).is_ok());
+        assert_eq!(original(&path).as_deref(), Some(INI));
         let _ = std::fs::remove_dir_all(&folder);
     }
 }

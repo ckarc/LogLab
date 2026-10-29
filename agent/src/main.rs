@@ -68,6 +68,10 @@ mod tray;
 mod tray_windows;
 #[cfg(any(windows, test))]
 mod vara;
+#[cfg(any(windows, test))]
+mod vara_proxy;
+#[cfg(any(windows, test))]
+mod winlink;
 mod write_check;
 mod wsjtx;
 

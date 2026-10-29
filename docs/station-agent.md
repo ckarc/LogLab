@@ -203,7 +203,22 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    rules (below). After each transmission it shows how loud the program's
    transmit audio was, or that it was silent and which device the program
    should play into.
-6. **Keeps the radio's settings on the Engine** (with `--engine` and
+6. **Keys the radio for Winlink Express** (Windows). VARA asks its client to
+   key the radio by sending `PTT ON` on its command port, and Winlink
+   Express keys only through a COM port. So the Agent moves VARA's command
+   port to 8310 in `VARA.ini` (if VARA isn't running) and listens on
+   `127.0.0.1:8300` and `8301`, where Winlink Express already connects. It
+   passes everything through unchanged, and keys the radio when VARA says
+   `PTT ON`, through its own server under the rules below. A program that
+   already keys through the Agent's server itself, like VarAC, keeps doing
+   so. In Winlink Express's `C:\RMS Express\RMS Express.ini`, the Agent
+   sets the VARA Radio Setup to no radio model (`Model=Manual`), no control
+   port (`Control Port=NONE`) and PTT "External" (`PTT Port=EXTERNAL`),
+   only while Winlink Express is closed, keeping the file as first found
+   as `RMS Express.ini.lablog-original`. Set the dial frequency on the radio.
+   The file as first found is kept as `VARA.ini.lablog-original`; copying it
+   back puts VARA on its own port again.
+7. **Keeps the radio's settings on the Engine** (with `--engine` and
    `--key-file`), so every computer the radio is plugged into knows them.
    See "Setups kept on the Engine" below.
 7. **Carries what programs and LabLog need from each other** (with

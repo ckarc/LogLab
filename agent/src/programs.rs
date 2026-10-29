@@ -4,7 +4,8 @@
 //! Setting up the programs on this computer that use the radio, so each
 //! works through the Agent with nothing typed in: WSJT-X and `JS8Call` (see
 //! `qt_settings`), fldigi (see `fldigi`), and MMSSTV's receive audio (see
-//! `mmsstv`). VARA is set up the same way (see `vara`, called from
+//! `mmsstv`), and Winlink Express's VARA radio setup (see `winlink`). VARA is
+//! set up the same way (see `vara`, called from
 //! `station`).
 //!
 //! A program that is running is left alone, because each writes its own
@@ -19,7 +20,7 @@ use crate::audio::RECEIVE_CABLE_OUT;
 use crate::audio_windows::{Station, device_names};
 use crate::settings_file::{self, Change, Outcome};
 use crate::vara::as_vara_names_it;
-use crate::{fldigi, mmsstv, qt_settings};
+use crate::{fldigi, mmsstv, qt_settings, winlink};
 
 /// Sets up every program found, for the radio at `radio` and the audio
 /// `station` carries.
@@ -57,6 +58,11 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
             radio,
         };
         say("fldigi", &path, fldigi::set(&path, &wanted));
+    }
+    if let Some(path) = winlink::find()
+        && closed("Winlink Express", winlink::IMAGE)
+    {
+        say("Winlink Express", &path, winlink::set(&path));
     }
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
