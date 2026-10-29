@@ -108,3 +108,54 @@ bytes = "01 02"
 [[profiles.settings]]
 id = "data_mod"
 bytes = "03"
+
+[[profiles]]
+name = "fldigi"
+source = "Claude for brian, 2026-10-29, a starting point for brian to confirm at FieldLab: the VARA profile above (DATA-USB FIL1 2.3 kHz, USB MOD Level 40%, DATA MOD USB, all set by brian at the radio), plus AGC FAST and NB, NR and both notches off, as K0PIR gives for PSK and RTTY on the IC-7300 (k0pir.us/icom-7300-receiver-settings, k0pir.us/transmitter-settings-digital-operation)."
+
+# USB (mode code 01) on FIL1, then DATA on: DATA-USB, as for VARA.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1 2.3 kHz (step 27), written once DATA-USB FIL1 is selected.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "27"
+
+# AGC FAST (01h). Written after the mode, so it lands on DATA-USB.
+[[profiles.settings]]
+id = "agc"
+bytes = "01"
+
+# Noise blanker, noise reduction, auto notch and manual notch all off
+# (00h), as K0PIR has them for digital modes.
+[[profiles.settings]]
+id = "noise_blanker"
+bytes = "00"
+
+[[profiles.settings]]
+id = "noise_reduction"
+bytes = "00"
+
+[[profiles.settings]]
+id = "auto_notch"
+bytes = "00"
+
+[[profiles.settings]]
+id = "manual_notch"
+bytes = "00"
+
+# USB MOD Level 102 of 255: 40%.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+# DATA MOD: USB (03h), the computer's audio.
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
