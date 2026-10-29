@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::engine::{KeptRadio, KeptReading, KeptSetting, Uplink};
+use crate::engine::{KeptRadio, KeptReading, KeptSetting, LabStock, StockSetting, Uplink};
 use crate::settings_record::{self, Record};
 
 /// Somewhere setups are kept.
@@ -32,7 +32,33 @@ pub trait Setups: Send {
 
     /// Where they are kept, to say so: `on the Engine`.
     fn place(&self) -> String;
+
+    /// The Lab Stock an administrator approved for the radio `maker`
+    /// `model`, if any. Lab Stock is kept only on the Engine.
+    ///
+    /// # Errors
+    ///
+    /// There is no Engine, or it couldn't be asked; says why.
+    fn lab_stock(&self, maker: &str, model: &str) -> Result<Option<LabStock>, String> {
+        let _ = (maker, model);
+        Err(NO_ENGINE.to_owned())
+    }
+
+    /// Propose `settings`, read from the radio of `record`, as its model's
+    /// Lab Stock; returns the proposal's number.
+    ///
+    /// # Errors
+    ///
+    /// There is no Engine, or it refused the proposal; says why.
+    fn propose_lab_stock(&self, record: &Record, settings: &[StockSetting]) -> Result<u64, String> {
+        let _ = (record, settings);
+        Err(NO_ENGINE.to_owned())
+    }
 }
+
+/// Why Lab Stock isn't there when the Agent runs with no Engine.
+const NO_ENGINE: &str = "Lab Stock is kept on the Engine, and this Agent runs with no Engine \
+                         (start it with --engine and --key-file)";
 
 impl Setups for Uplink {
     fn keep(&self, record: &Record, name: &str) -> Result<(), String> {
@@ -48,6 +74,14 @@ impl Setups for Uplink {
 
     fn place(&self) -> String {
         "on the Engine".to_owned()
+    }
+
+    fn lab_stock(&self, maker: &str, model: &str) -> Result<Option<LabStock>, String> {
+        Uplink::lab_stock(self, maker, model).map_err(|error| error.to_string())
+    }
+
+    fn propose_lab_stock(&self, record: &Record, settings: &[StockSetting]) -> Result<u64, String> {
+        Uplink::propose_lab_stock(self, record, settings).map_err(|error| error.to_string())
     }
 }
 

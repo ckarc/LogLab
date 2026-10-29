@@ -18,6 +18,7 @@ use std::time::SystemTime;
 use serde::Serialize;
 
 use crate::civ;
+use crate::filter_widths::{self, FilterWidth};
 use crate::rig::Exposes;
 use crate::rigdef::{Definition, SettingSummary};
 use crate::settings_record::{self, Record};
@@ -56,6 +57,10 @@ pub struct Plan {
     pub put: Vec<Put>,
     /// The settings that differ but would be left as they are.
     pub kept_back: Vec<KeptBack>,
+    /// Each filter's width to put on the mode it puts back, choosing each
+    /// filter in turn (a Lab Stock's FIL1, FIL2 and FIL3), with the width
+    /// in plain words.
+    pub filters: Vec<(FilterWidth, String)>,
 }
 
 impl Plan {
@@ -63,7 +68,7 @@ impl Plan {
     #[must_use]
     pub fn lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
-        if self.put.is_empty() && self.kept_back.is_empty() {
+        if self.put.is_empty() && self.kept_back.is_empty() && self.filters.is_empty() {
             lines.push(format!(
                 "the radio already matches setup {}; nothing to put back.",
                 self.setup
@@ -102,6 +107,18 @@ impl Plan {
                 self.kept_back
                     .iter()
                     .map(|kept| format!("  {}: {}", kept.label, kept.why)),
+            );
+        }
+        if !self.filters.is_empty() {
+            lines.push(format!(
+                "Each filter's width on {}'s mode (the Agent chooses each filter in turn to set \
+                 it, then goes back to the selected one):",
+                self.setup
+            ));
+            lines.extend(
+                self.filters
+                    .iter()
+                    .map(|(f, shown)| format!("  FIL{}: {shown}", f.filter)),
             );
         }
         lines
@@ -203,6 +220,7 @@ pub fn plan<'a>(
         fixes: false,
         put,
         kept_back,
+        filters: Vec::new(),
     }
 }
 
@@ -302,6 +320,7 @@ pub fn fixes(now: &Record, definition: &Definition) -> Plan {
         fixes: true,
         put,
         kept_back,
+        filters: Vec::new(),
     }
 }
 
@@ -451,6 +470,33 @@ pub fn apply(
     for (put, done) in plan.put.iter().zip(changes.iter_mut()) {
         if done.outcome == "differs" && !put.setting.selects {
             *done = second_try(radio, put, done.clone());
+        }
+    }
+    // Each filter's width goes on last, on the mode and filter just put
+    // back, and only if they went back.
+    if !plan.filters.is_empty() {
+        let selected = changes
+            .iter()
+            .zip(&plan.put)
+            .all(|(done, put)| !put.setting.selects || done.outcome == "put back");
+        let widths: Vec<FilterWidth> = plan.filters.iter().map(|(f, _)| f.clone()).collect();
+        if selected {
+            changes.extend(filter_widths::put(radio, &widths));
+        } else {
+            changes.extend(widths.iter().map(|w| {
+                Done {
+                    id: FilterWidth::id(w.filter),
+                    label: FilterWidth::label(w.filter),
+                    from: None,
+                    to: civ::hex(&w.width),
+                    after: None,
+                    outcome: "not written",
+                    why: Some(
+                        "the mode and filter didn't go back, so it would land on the wrong mode"
+                            .to_owned(),
+                    ),
+                }
+            }));
         }
     }
     Restore {
