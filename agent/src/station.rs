@@ -1808,7 +1808,8 @@ fn vara_proxy(
 /// Where the virtual Kenwood answers, and the program's end of its
 /// com0com pair when known: `--kenwood PORT` if given, else, where
 /// Winlink Express is installed, the first com0com pair a program can open
-/// by a `COMn` name (see `com0com`).
+/// by a `COMn` name, installing com0com with one if there is none (see
+/// `com0com`).
 #[cfg(windows)]
 fn kenwood_ports(asked: Option<&str>) -> Option<(String, Option<String>)> {
     let listing = crate::com0com::listed();
@@ -1820,12 +1821,25 @@ fn kenwood_ports(asked: Option<&str>) -> Option<(String, Option<String>)> {
         return Some((port.to_owned(), program));
     }
     crate::winlink::find()?;
-    let Some(pair) = crate::com0com::for_programs(&listing) else {
-        println!(
-            "Virtual Kenwood: not started, as no com0com pair named COMn was found. Winlink \
-             Express tunes the radio only through a COM port; it still keys through the Agent."
-        );
-        return None;
+    let pair = match crate::com0com::for_programs(&listing) {
+        Some(pair) => pair,
+        None => match crate::com0com::install() {
+            Ok(pair) => {
+                println!(
+                    "com0com: installed, with the pair {} <-> {}.",
+                    pair.program, pair.agent
+                );
+                pair
+            }
+            Err(why) => {
+                println!(
+                    "Virtual Kenwood: not started, as there is no com0com pair: {why}\n  \
+                     Winlink Express still keys through the Agent; it tunes the radio only \
+                     through a COM port."
+                );
+                return None;
+            }
+        },
     };
     Some((pair.agent, Some(pair.program)))
 }

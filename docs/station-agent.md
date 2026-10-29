@@ -220,10 +220,13 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    back puts VARA on its own port again.
 
    **Tuning from Winlink Express.** Winlink Express tunes a radio only
-   through its own drivers on a COM port. With a com0com virtual COM-port
-   pair installed (com0com 3.0.0.0 from com0com.sourceforge.net, a separate
-   install; it loads on Windows 11, checked on FL-1 on 2026-10-29), the
-   Agent finds the first pair whose ends are named `COMn` (from
+   through its own drivers on a COM port, so the Agent uses a com0com
+   virtual COM-port pair (com0com 3.0.0.0, signed; it loads on Windows 11,
+   checked on FL-1 on 2026-10-29). Where Winlink Express is installed and
+   there is no pair, the Agent installs com0com with one `COM# <-> COM#`
+   pair (Windows asks once to allow it), from `drivers` beside the Agent,
+   Downloads, or sourceforge.net, checking the package's SHA-256 first,
+   and keeps the package in `drivers` for the next computer. The Agent finds the first pair whose ends are named `COMn` (from
    `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`), answers as a Kenwood TS-2000 on
    its B end, and sets Winlink Express's `Control Port` to the A end while
    Winlink Express is closed (on FL-1: the Agent on COM6, Winlink Express
