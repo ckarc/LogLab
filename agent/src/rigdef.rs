@@ -164,6 +164,10 @@ struct UsbSerial {
     vid: u16,
     pid: u16,
     role: String,
+    /// The end of the USB serial number of the one port the Agent may
+    /// open, for a radio with more than one serial port behind its USB,
+    /// such as the IC-9700's USB (A) and USB (B).
+    number_ends_with: Option<String>,
     verified: bool,
     driver: Option<UsbDriver>,
 }
@@ -304,6 +308,10 @@ pub struct Definition {
     /// The vendor and product IDs of the radio's USB serial bridge, if it
     /// has one, so the Agent can find its port.
     pub usb_serial: Option<(u16, u16)>,
+    /// How the USB serial number of the radio's control port ends, when the
+    /// radio has other serial ports behind its USB that the Agent must
+    /// never open.
+    pub usb_serial_number_ends: Option<String>,
     /// Part of the name of the radio's USB sound device, if it has one.
     pub usb_audio: Option<String>,
     /// The Windows driver its USB serial bridge needs, if Windows has none.
@@ -514,10 +522,16 @@ impl std::error::Error for DefinitionError {}
 /// The Agent is one executable with nothing to install beside it, so the
 /// definitions travel inside it; a test fails if a file in `rigs/` is
 /// missing here.
-const BUILT_IN: [(&str, &str); 1] = [(
-    "icom/ic-7300.toml",
-    include_str!("../rigs/icom/ic-7300.toml"),
-)];
+const BUILT_IN: [(&str, &str); 2] = [
+    (
+        "icom/ic-7300.toml",
+        include_str!("../rigs/icom/ic-7300.toml"),
+    ),
+    (
+        "icom/ic-9700.toml",
+        include_str!("../rigs/icom/ic-9700.toml"),
+    ),
+];
 
 /// Every definition built into the Agent.
 ///
@@ -629,6 +643,11 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .as_ref()
             .and_then(|usb| usb.serial.as_ref())
             .map(|serial| (serial.vid, serial.pid)),
+        usb_serial_number_ends: file
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.serial.as_ref())
+            .and_then(|serial| serial.number_ends_with.clone()),
         usb_audio: file
             .usb
             .as_ref()
@@ -815,6 +834,15 @@ impl Check {
                 self.problem("usb.serial: vid and pid must not be 0".to_owned());
             }
             self.text("usb.serial.role", &serial.role);
+            if let Some(end) = &serial.number_ends_with
+                && (end.is_empty()
+                    || end.len() > 8
+                    || !end.chars().all(|c| c.is_ascii_alphanumeric()))
+            {
+                self.problem(format!(
+                    "usb.serial.number_ends_with must be 1 to 8 letters or digits, not {end:?}"
+                ));
+            }
             self.flag(serial.verified);
             if let Some(driver) = &serial.driver {
                 self.driver(driver);
@@ -1472,6 +1500,75 @@ explain = "Data mode audio must come from USB."
             definition.verified_values, 0,
             "nothing is checked on a radio yet"
         );
+    }
+
+    #[test]
+    fn reads_the_ic_9700() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("rigs/icom/ic-9700.toml");
+        let definition = load(&path).unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(definition.model, "IC-9700");
+        assert_eq!(definition.family, "icom-civ", "the IC-7300's driver");
+        assert_eq!(definition.default_address, 0xA2);
+        assert_eq!(definition.usb_serial, Some((0x10C4, 0xEA60)));
+        assert_eq!(definition.usb_serial_number_ends.as_deref(), Some("A"));
+        // Menu items 0001 to 0342, then the front-panel controls.
+        let numbers: Vec<u16> = definition
+            .settings
+            .iter()
+            .filter_map(super::SettingSummary::item)
+            .filter_map(|item| crate::civ::level_from_bcd(&item))
+            .collect();
+        assert_eq!(numbers, (1..=342).collect::<Vec<u16>>());
+        let read = |id: &str| {
+            definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| s.read.clone())
+        };
+        assert_eq!(read("usb_mod_level"), Some(vec![0x1A, 0x05, 0x01, 0x13]));
+        assert_eq!(read("data_mod"), Some(vec![0x1A, 0x05, 0x01, 0x16]));
+        assert_eq!(
+            read("usb_af_output_level"),
+            Some(vec![0x1A, 0x05, 0x01, 0x06])
+        );
+        assert_eq!(read("filter_width"), Some(vec![0x1A, 0x03]));
+        // Not checked on a real IC-9700: nothing may be written yet.
+        assert!(definition.settings.iter().all(|s| !s.write_checked));
+        assert_eq!(definition.verified_values, 0);
+        // The clock and the link are never written.
+        for id in [
+            "date",
+            "time",
+            "civ_transceive",
+            "civ_usb_echo_back",
+            "usb_send",
+            "dhcp",
+        ] {
+            assert!(
+                definition.settings.iter().any(|s| s.id == id && !s.write),
+                "{id}"
+            );
+        }
+        let meters = definition.meters.clone().unwrap_or_else(|| unreachable!());
+        assert_eq!(meters.drive.as_deref(), Some("usb_mod_level"));
+        assert_eq!(meters.tuner, None, "no antenna tuner");
+    }
+
+    #[test]
+    fn refuses_a_bad_usb_serial_number_end() {
+        let usb = |end: &str| {
+            changed(
+                "[link]",
+                &format!(
+                    "[usb.serial]\nvid = 0x10C4\npid = 0xEA60\nrole = \"civ\"\n\
+                     number_ends_with = {end:?}\nverified = false\n\n[link]"
+                ),
+            )
+        };
+        assert!(parse(&usb("A")).is_ok());
+        refused_for(&usb("A B"), "usb.serial.number_ends_with");
+        refused_for(&usb(""), "usb.serial.number_ends_with");
     }
 
     #[test]

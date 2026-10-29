@@ -143,11 +143,26 @@ pub fn radio_ports(definitions: &[Definition]) -> Result<Vec<Candidate>, String>
 /// devices share a serial bridge chip's IDs, so a port whose USB serial
 /// number names the radio's model (an IC-7300's is `IC-7300_` and a number)
 /// comes first. Only the radio's own answer to "who are you?" decides.
+///
+/// A radio with more than one serial port behind its USB (an IC-9700's
+/// USB (A) and USB (B)) has only its control port listed: the others may
+/// carry data the radio transmits, so the Agent never opens them.
 fn candidates(ports: &[serialport::SerialPortInfo], definitions: &[Definition]) -> Vec<Candidate> {
     let mut found: Vec<(bool, Candidate)> = ports
         .iter()
         .filter_map(|port| match &port.port_type {
             serialport::SerialPortType::UsbPort(usb) => {
+                let serial = usb.serial_number.as_deref().unwrap_or_default();
+                let other_port = definitions.iter().any(|d| {
+                    d.usb_serial == Some((usb.vid, usb.pid))
+                        && serial.contains(&d.model)
+                        && d.usb_serial_number_ends
+                            .as_deref()
+                            .is_some_and(|end| !ends_with_part(serial, end))
+                });
+                if other_port {
+                    return None;
+                }
                 let named = definitions
                     .iter()
                     .filter(|d| d.usb_serial == Some((usb.vid, usb.pid)))
@@ -171,6 +186,16 @@ fn candidates(ports: &[serialport::SerialPortInfo], definitions: &[Definition]) 
     // Named ones first; otherwise in the order the computer listed them.
     found.sort_by_key(|(named, _)| !*named);
     found.into_iter().map(|(_, candidate)| candidate).collect()
+}
+
+/// Whether a USB serial number's last part, after a space or an underscore
+/// (Windows writes `IC-9700 13001202 A` as `IC-9700_13001202_A`), is `end`.
+fn ends_with_part(serial: &str, end: &str) -> bool {
+    serial
+        .trim_end()
+        .rsplit([' ', '_'])
+        .next()
+        .is_some_and(|last| last.eq_ignore_ascii_case(end))
 }
 
 #[cfg(test)]
@@ -217,6 +242,23 @@ mod tests {
             ]
         );
         assert!(candidates(&ports[..1], &definitions).is_empty());
+    }
+
+    #[test]
+    fn opens_only_an_ic_9700s_usb_a_port() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let ports = [
+            usb("COM7", 0x10C4, 0xEA60, Some("IC-9700 13001202 B")),
+            usb("COM8", 0x10C4, 0xEA60, Some("IC-9700_13001202_B")),
+            usb("COM9", 0x10C4, 0xEA60, Some("IC-9700_13001202_A")),
+            usb("COM10", 0x10C4, 0xEA60, Some("IC-9700 13001202 A")),
+            usb("COM5", 0x10C4, 0xEA60, Some("IC-7300_02065962")),
+        ];
+        let ports: Vec<String> = candidates(&ports, &definitions)
+            .into_iter()
+            .map(|candidate| candidate.port)
+            .collect();
+        assert_eq!(ports, ["COM9", "COM10", "COM5"], "USB (B) is never opened");
     }
 
     #[test]

@@ -1,0 +1,3766 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Rig definition: Icom IC-9700.
+#
+# The IC-9700 speaks the same CI-V protocol as the IC-7300 (Icom's IC-9700
+# CI-V reference guide), so it uses the same driver; this file says where
+# it differs: its address (A2h), its menu (342 items, numbered differently
+# from the IC-7300's), and its two USB serial ports. The format is described
+# in docs/station-agent-usb-radios.md ("Rig definition files").
+#
+# Nothing here has been checked on a real IC-9700 yet. Every value is
+# `verified = false`, and no setting has `write_checked`, so the Agent reads
+# and records this radio's settings but never writes one until
+# `loglab-agent check-writes` has been run on a real IC-9700 and its
+# evidence added here, as was done for the IC-7300.
+#
+# Front-panel commands act on the band the radio has selected, MAIN or SUB
+# (07 D0 / 07 D1). The Agent leaves that choice to the operator.
+#
+# All bytes are written in hexadecimal, as the CI-V documents write them.
+
+[definition]
+schema = 1
+maker = "Icom"
+model = "IC-9700"
+family = "icom-civ"
+status = "draft"
+
+[[definition.sources]]
+id = "civ_guide"
+title = "Icom IC-9700 CI-V reference guide (second edition), as hosted at rigpix.com/icom/ic9700_civ_v2.pdf"
+note = """
+The command table (03 to 26), the 1A 05 menu items 0001 to 0342, the mode
+and filter codes (04/06), 1A 03 filter widths, 1A 06 data mode, and the 15 11,
+15 12 and 15 13 meter scales were read from a text copy of this guide,
+2026-10-29. Item numbers 0029, 0100, 0105, 0106, 0110, 0127, 0152, 0167,
+0179, 0180, 0184, 0192, 0227 and 0330 agree with Hamlib's
+rigs/icom/ic7300.c (ic9700_extcmds, ic9700_clock_cmds), read the same day
+only to cross-check the numbering; nothing was copied from it (Principle
+XVI). Menu items are kept raw (compared and put back as the bytes the radio
+sends) except where the meanings matter to the Agent's jobs.
+"""
+
+[[definition.sources]]
+id = "satpc32_guide"
+title = "AMSAT, SatPC32 and IC-9700 setup (amsat.org/wordpress/wp-content/uploads/2020/01/SatPC32-IC9700-Setup-1.pdf)"
+note = """
+On Windows the radio's USB brings up two Silicon Labs CP210x USB to UART
+Bridge ports, the lower-numbered one for control; the radio's default CI-V
+address is A2h; CI-V USB Baud Rate 115200.
+"""
+
+[[definition.sources]]
+id = "usb_serial_strings"
+title = "IC-9700 USB serial numbers in udev rules posted on cqrlog.com/node/2278 and forum.wfview.org (topic 2805)"
+note = """
+Both of the radio's USB serial ports are Silicon Labs CP2102N bridges at
+10C4:EA60, with USB serial numbers "IC-9700 <number> A" and
+"IC-9700 <number> B". The guide's USB SEND item names them USB (A) and
+USB (B); CI-V is on USB (A). How Windows spells the number (spaces or
+underscores) is not verified.
+"""
+
+[[definition.sources]]
+id = "silabs_driver"
+title = "Silicon Labs, CP210x Universal Windows Driver release notes (11.6.0, 2026-09-15), silabs.com/documents/public/release-notes/CP210x_Universal_Windows_Driver_ReleaseNotes.txt"
+note = "Lists the CP2102N among the devices it supports: the same driver as the IC-7300's."
+
+# ---------------------------------------------------------------------------
+# How the radio appears on USB.
+# ---------------------------------------------------------------------------
+[usb]
+audio = { name_contains = "USB Audio CODEC", verified = false }
+
+# Two CP2102N bridges at 10C4:EA60. Only USB (A) carries CI-V. USB (B)
+# carries DV data, GPS or RTTY decode (menu item 0132), and in DV mode with
+# DV Data TX on Auto (item 0076) the radio transmits what arrives there, so
+# the Agent must never write to it: it opens only the port whose USB serial
+# number ends in A.
+[usb.serial]
+vid = 0x10C4
+pid = 0xEA60
+role = "civ"
+number_ends_with = "A"
+verified = false
+
+[usb.serial.driver]
+name = "Silicon Labs CP210x"
+download = "https://www.silabs.com/documents/public/software/CP210x_Universal_Windows_Driver.zip"
+page = "https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers"
+file = "CP210x_Universal_Windows_Driver.zip"
+inf = "silabser.inf"
+source = "silabs_driver"
+verified = false
+
+# ---------------------------------------------------------------------------
+# The CI-V link.
+# ---------------------------------------------------------------------------
+[link]
+default_address = 0xA2
+controller_address = 0xE0
+baud_rates = [115200, 19200, 9600, 38400, 57600, 4800]
+# Whether the radio echoes each command back depends on item 0130; the
+# driver detects echo on the wire either way.
+echo = "detect"
+verified = false
+
+[identity]
+# Read the transceiver ID. The radio answers with its CI-V address.
+query = "19 00"
+source = "civ_guide"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Modes (04, 06, 26). The guide also lists DV (17) and DD (22), which the rig
+# model has no name for yet, so the Agent reports them as unknown.
+# ---------------------------------------------------------------------------
+[modes]
+source = "civ_guide"
+verified = false
+
+[modes.codes]
+LSB = 0x00
+USB = 0x01
+AM = 0x02
+CW = 0x03
+RTTY = 0x04
+FM = 0x05
+CW-R = 0x07
+RTTY-R = 0x08
+
+[data_mode]
+# 1A 06: data mode off (00) or on (01), then the filter (01, 02, 03; 00 when off).
+command = "1A 06"
+data_modes = { DATA-USB = "USB", DATA-LSB = "LSB", DATA-FM = "FM" }
+source = "civ_guide"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Commands the driver uses for rig-model operations. In satellite mode
+# 07 01 (VFO B) is refused, and 25 / 26 reach the MAIN band only (guide).
+# ---------------------------------------------------------------------------
+[commands]
+read_frequency = { command = "03", source = "civ_guide", verified = false }
+read_mode = { command = "04", source = "civ_guide", verified = false }
+set_frequency = { command = "05", source = "civ_guide", verified = false }
+set_mode = { command = "06", source = "civ_guide", verified = false }
+vfo_frequency = { command = "25", source = "civ_guide", verified = false }
+vfo_mode = { command = "26", source = "civ_guide", verified = false }
+select_vfo_a = { command = "07 00", source = "civ_guide", verified = false }
+select_vfo_b = { command = "07 01", source = "civ_guide", verified = false }
+split = { command = "0F", off = 0x00, on = 0x01, source = "civ_guide", verified = false }
+# 1C 00: transmit status. 00 = receive, 01 = transmit.
+# Writing this keys the radio: only the Agent's transmit path may use it
+# (Principle XI).
+ptt = { command = "1C 00", off = 0x00, on = 0x01, source = "civ_guide", verified = false }
+
+# ---------------------------------------------------------------------------
+# Every setting the radio exposes over CI-V: the menu items (1A 05 0001 to
+# 0342), then the front-panel controls. `write = false`: the CI-V, USB keying
+# and network settings (changing one could cut the Agent off) and the clock.
+# ---------------------------------------------------------------------------
+[[settings]]
+id = "ssb_rx_hpf_lpf"
+item = "00 01"
+label = "SSB RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_rx_tone_bass"
+item = "00 02"
+label = "SSB RX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_rx_tone_treble"
+item = "00 03"
+label = "SSB RX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "am_rx_hpf_lpf"
+item = "00 04"
+label = "AM RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "am_rx_tone_bass"
+item = "00 05"
+label = "AM RX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "am_rx_tone_treble"
+item = "00 06"
+label = "AM RX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_rx_hpf_lpf"
+item = "00 07"
+label = "FM RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_rx_tone_bass"
+item = "00 08"
+label = "FM RX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_rx_tone_treble"
+item = "00 09"
+label = "FM RX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_rx_hpf_lpf"
+item = "00 10"
+label = "DV RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_rx_tone_bass"
+item = "00 11"
+label = "DV RX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_rx_tone_treble"
+item = "00 12"
+label = "DV RX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_rx_hpf_lpf"
+item = "00 13"
+label = "CW RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_rx_hpf_lpf"
+item = "00 14"
+label = "RTTY RX HPF/LPF"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_tone_bass"
+item = "00 15"
+label = "SSB TX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_tone_treble"
+item = "00 16"
+label = "SSB TX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_wide"
+item = "00 17"
+label = "SSB TX Bandwidth for WIDE"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_mid"
+item = "00 18"
+label = "SSB TX Bandwidth for MID"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth_for_nar"
+item = "00 19"
+label = "SSB TX Bandwidth for NAR"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_d_tx_bandwidth"
+item = "00 20"
+label = "SSB-D TX Bandwidth"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "am_tx_tone_bass"
+item = "00 21"
+label = "AM TX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "am_tx_tone_treble"
+item = "00 22"
+label = "AM TX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_tx_tone_bass"
+item = "00 23"
+label = "FM TX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_tx_tone_treble"
+item = "00 24"
+label = "FM TX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_tx_tone_bass"
+item = "00 25"
+label = "DV TX Tone (Bass)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_tx_tone_treble"
+item = "00 26"
+label = "DV TX Tone (Treble)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "beep_level"
+item = "00 27"
+label = "Beep Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "beep_level_limit"
+item = "00 28"
+label = "Beep Level Limit"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "beep_confirmation"
+item = "00 29"
+label = "Beep (Confirmation)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "band_edge_beep"
+item = "00 30"
+label = "Band Edge Beep"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "beep_sound_main"
+item = "00 31"
+label = "Beep Sound (MAIN)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "beep_sound_sub"
+item = "00 32"
+label = "Beep Sound (SUB)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "sub_band_mute_tx_speaker_phones"
+item = "00 33"
+label = "Sub Band Mute (TX), Speaker/Phones"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "sub_band_mute_tx_usb"
+item = "00 34"
+label = "Sub Band Mute (TX), USB"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "sub_band_mute_tx_lan"
+item = "00 35"
+label = "Sub Band Mute (TX), LAN"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rf_sql_control"
+item = "00 36"
+label = "RF/SQL Control"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_dv_center_error"
+item = "00 37"
+label = "FM/DV Center Error"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_delay_144m"
+item = "00 38"
+label = "TX Delay (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_delay_430m"
+item = "00 39"
+label = "TX Delay (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_delay_1200m"
+item = "00 40"
+label = "TX Delay (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "time_out_timer"
+item = "00 41"
+label = "Time-Out Timer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ptt_lock"
+item = "00 42"
+label = "PTT Lock"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "quick_split"
+item = "00 43"
+label = "Quick SPLIT"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "fm_split_offset"
+item = "00 44"
+label = "FM SPLIT Offset"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "split_lock"
+item = "00 45"
+label = "SPLIT LOCK"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "auto_repeater"
+item = "00 46"
+label = "Auto Repeater"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_mark_frequency"
+item = "00 47"
+label = "RTTY Mark Frequency"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_shift_width"
+item = "00 48"
+label = "RTTY Shift Width"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_keying_polarity"
+item = "00 49"
+label = "RTTY Keying Polarity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "speech_language"
+item = "00 50"
+label = "SPEECH Language"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "speech_alphabet"
+item = "00 51"
+label = "SPEECH Alphabet"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "speech_speed"
+item = "00 52"
+label = "SPEECH Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_call_sign_speech"
+item = "00 53"
+label = "RX Call Sign SPEECH"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_cs_speech"
+item = "00 54"
+label = "RX>CS SPEECH"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "s_level_speech"
+item = "00 55"
+label = "S-Level SPEECH"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "mode_speech"
+item = "00 56"
+label = "MODE SPEECH"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "speech_level"
+item = "00 57"
+label = "SPEECH Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "speech_lock_switch"
+item = "00 58"
+label = "[SPEECH/LOCK] Switch"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "lock_function"
+item = "00 59"
+label = "Lock Function"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "memo_pad_quantity"
+item = "00 60"
+label = "Memo Pad Quantity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "main_dial_auto_ts"
+item = "00 61"
+label = "MAIN DIAL Auto TS"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "mic_up_down_speed"
+item = "00 62"
+label = "MIC Up/Down Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "afc_limit"
+item = "00 63"
+label = "AFC Limit"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "notch_switch_ssb"
+item = "00 64"
+label = "[NOTCH] Switch (SSB)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "notch_switch_am"
+item = "00 65"
+label = "[NOTCH] Switch (AM)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_cw_synchronous_tuning"
+item = "00 66"
+label = "SSB/CW Synchronous Tuning"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_normal_side"
+item = "00 67"
+label = "CW Normal Side"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "screen_keyboard_type"
+item = "00 68"
+label = "Screen Keyboard Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "screen_full_keyboard_layout"
+item = "00 69"
+label = "Screen Full Keyboard Layout"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "screen_capture_power_switch"
+item = "00 70"
+label = "Screen Capture [POWER] Switch"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "screen_capture_file_type"
+item = "00 71"
+label = "Screen Capture File Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ref_adjust"
+item = "00 72"
+label = "REF Adjust"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ref_adjust_fine"
+item = "00 73"
+label = "REF Adjust (FINE)"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_standby_beep"
+item = "00 74"
+label = "DV Standby Beep"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_auto_reply"
+item = "00 75"
+label = "DV Auto Reply"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_data_tx"
+item = "00 76"
+label = "DV Data TX"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+note = "DV Data TX: on Auto the radio transmits whatever reaches its USB (B) port in DV mode. The Agent never opens USB (B) (see [usb.serial])."
+
+[[settings]]
+id = "dv_fast_data"
+item = "00 77"
+label = "DV Fast Data"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_fast_data_gps_data_speed"
+item = "00 78"
+label = "DV Fast Data, GPS Data Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_fast_data_tx_delay_ptt"
+item = "00 79"
+label = "DV Fast Data, TX Delay (PTT)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "digital_monitor"
+item = "00 80"
+label = "Digital Monitor"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "digital_repeater_set"
+item = "00 81"
+label = "Digital Repeater Set"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_auto_detect"
+item = "00 82"
+label = "DV Auto Detect"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_record_rpt"
+item = "00 83"
+label = "RX Record (RPT)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "bk"
+item = "00 84"
+label = "BK"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "emr"
+item = "00 85"
+label = "EMR"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "emr_af_level"
+item = "00 86"
+label = "EMR AF Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dd_tx_inhibit_power_on"
+item = "00 87"
+label = "DD TX Inhibit (Power ON)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dd_packet_output"
+item = "00 88"
+label = "DD Packet Output"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_log"
+item = "00 89"
+label = "QSO Log"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_history_log"
+item = "00 90"
+label = "RX History Log"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "log_csv_separator_decimal"
+item = "00 91"
+label = "Log CSV Separator/Decimal"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "log_csv_date"
+item = "00 92"
+label = "Log CSV Date"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_p_amp_144m"
+item = "00 93"
+label = "External P.AMP (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_p_amp_430m"
+item = "00 94"
+label = "External P.AMP (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_p_amp_1200m"
+item = "00 95"
+label = "External P.AMP (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_speaker_separate"
+item = "00 96"
+label = "External Speaker Separate"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "phones_level"
+item = "00 97"
+label = "Phones Level"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "phones_l_r_mix"
+item = "00 98"
+label = "Phones L/R Mix"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_af_sql_output_select"
+item = "00 99"
+label = "ACC AF/SQL Output Select"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_output_select"
+item = "01 00"
+label = "ACC Output Select"
+values = { AF = 0x00, IF = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_af_output_level"
+item = "01 01"
+label = "ACC AF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_af_sql"
+item = "01 02"
+label = "ACC AF SQL"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_af_beep_speech_output"
+item = "01 03"
+label = "ACC AF Beep/Speech Output"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_if_output_level"
+item = "01 04"
+label = "ACC IF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_af_if_output"
+item = "01 05"
+label = "USB Output Select"
+values = { AF = 0x00, IF = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_af_output_level"
+item = "01 06"
+label = "USB AF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_af_sql"
+item = "01 07"
+label = "USB AF SQL"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_af_beep_speech_output"
+item = "01 08"
+label = "USB AF Beep/Speech Output"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_if_output_level"
+item = "01 09"
+label = "USB IF Output Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "lan_output_select"
+item = "01 10"
+label = "LAN Output Select"
+values = { AF = 0x00, IF = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "lan_af_sql"
+item = "01 11"
+label = "LAN AF SQL"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_mod_level"
+item = "01 12"
+label = "ACC MOD Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_mod_level"
+item = "01 13"
+label = "USB MOD Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "lan_mod_level"
+item = "01 14"
+label = "LAN MOD Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "data_off_mod"
+item = "01 15"
+label = "DATA OFF MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04, LAN = 0x05 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "data_mod"
+item = "01 16"
+label = "DATA MOD"
+values = { MIC = 0x00, ACC = 0x01, "MIC,ACC" = 0x02, USB = 0x03, "MIC,USB" = 0x04, LAN = 0x05 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_send_output_144m"
+item = "01 17"
+label = "ACC SEND Output (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_send_output_430m"
+item = "01 18"
+label = "ACC SEND Output (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "acc_send_output_1200m"
+item = "01 19"
+label = "ACC SEND Output (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_send"
+item = "01 20"
+label = "USB SEND"
+values = { OFF = 0x00, "USB(A) DTR" = 0x01, "USB(A) RTS" = 0x02, "USB(B) DTR" = 0x03, "USB(B) RTS" = 0x04 }
+write = false
+source = "civ_guide"
+verified = false
+note = "The Agent keys with CAT (1C 00), not a control line, so this is recorded but not needed."
+
+[[settings]]
+id = "usb_keying_cw"
+item = "01 21"
+label = "USB Keying (CW)"
+values = { OFF = 0x00, "USB(A) DTR" = 0x01, "USB(A) RTS" = 0x02, "USB(B) DTR" = 0x03, "USB(B) RTS" = 0x04 }
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_keying_rtty"
+item = "01 22"
+label = "USB Keying (RTTY)"
+values = { OFF = 0x00, "USB(A) DTR" = 0x01, "USB(A) RTS" = 0x02, "USB(B) DTR" = 0x03, "USB(B) RTS" = 0x04 }
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "inhibit_timer_at_usb_connection"
+item = "01 23"
+label = "Inhibit Timer at USB Connection"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_keypad_voice"
+item = "01 24"
+label = "External Keypad, VOICE"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_keypad_keyer"
+item = "01 25"
+label = "External Keypad, KEYER"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "external_keypad_rtty"
+item = "01 26"
+label = "External Keypad, RTTY"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "civ_transceive"
+item = "01 27"
+label = "CI-V Transceive"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "civ_guide"
+verified = false
+note = "When ON the radio reports changes on its own; the Agent uses that, and asks on a schedule when it's OFF."
+
+[[settings]]
+id = "civ_usb_to_remote_address"
+item = "01 28"
+label = "CI-V USB/LAN to REMOTE Transceive Address"
+range = [0x00, 0xDF]
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "civ_usb_port"
+item = "01 29"
+label = "CI-V USB Port"
+values = { "Link to [REMOTE]" = 0x00, "Unlink from [REMOTE]" = 0x01 }
+write = false
+source = "civ_guide"
+verified = false
+note = "Read only (the guide marks it *1)."
+
+[[settings]]
+id = "civ_usb_echo_back"
+item = "01 30"
+label = "CI-V USB Echo Back"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ci_v_data_echo_back"
+item = "01 31"
+label = "CI-V DATA Echo Back"
+values = { OFF = 0x00, ON = 0x01 }
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "usb_b_function"
+item = "01 32"
+label = "USB (B) Function"
+values = { OFF = 0x00, "RTTY Decode" = 0x01, "DV Data" = 0x02 }
+write = false
+source = "civ_guide"
+verified = false
+note = "USB (B) is the radio's second USB serial port. The Agent talks CI-V on USB (A) only."
+
+[[settings]]
+id = "data_function"
+item = "01 33"
+label = "DATA Function"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_out"
+item = "01 34"
+label = "GPS Out"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dv_data_gps_out_baud_rate"
+item = "01 35"
+label = "DV Data/GPS Out Baud Rate"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_baud_rate"
+item = "01 36"
+label = "RTTY Decode Baud Rate"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dhcp"
+item = "01 37"
+label = "DHCP"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ip_address"
+item = "01 38"
+label = "IP Address"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ip_address_set_by_dhcp"
+item = "01 39"
+label = "IP Address set by DHCP"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+note = "Read only (the guide marks it *1)."
+
+[[settings]]
+id = "subnet_mask"
+item = "01 40"
+label = "Subnet Mask"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "default_gateway"
+item = "01 41"
+label = "Default Gateway"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "primary_dns_server"
+item = "01 42"
+label = "Primary DNS Server"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "item_2nd_dns_server"
+item = "01 43"
+label = "2nd DNS Server"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "network_name"
+item = "01 44"
+label = "Network Name"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "network_control"
+item = "01 45"
+label = "Network Control"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "power_off_setting_for_remote_control"
+item = "01 46"
+label = "Power OFF Setting (for Remote Control)"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "control_port_udp"
+item = "01 47"
+label = "Control Port (UDP)"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "serial_port_udp"
+item = "01 48"
+label = "Serial Port (UDP)"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "audio_port_udp"
+item = "01 49"
+label = "Audio Port (UDP)"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "internet_access_line"
+item = "01 50"
+label = "Internet Access Line"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "network_radio_name"
+item = "01 51"
+label = "Network Radio Name"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "lcd_backlight"
+item = "01 52"
+label = "LCD Backlight"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_type"
+item = "01 53"
+label = "Display Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_font"
+item = "01 54"
+label = "Display Font"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "meter_peak_hold"
+item = "01 55"
+label = "Meter Peak Hold"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "memory_name"
+item = "01 56"
+label = "Memory Name"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "mn_q_popup"
+item = "01 57"
+label = "MN-Q Popup"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "bw_popup_pbt"
+item = "01 58"
+label = "BW Popup (PBT)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "bw_popup_fil"
+item = "01 59"
+label = "BW Popup (FIL)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_call_sign_display"
+item = "01 60"
+label = "RX Call Sign Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_position_indicator"
+item = "01 61"
+label = "RX Position Indicator"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_position_display"
+item = "01 62"
+label = "RX Position Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_position_display_timer"
+item = "01 63"
+label = "RX Position Display Timer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "reply_position_display"
+item = "01 64"
+label = "Reply Position Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_call_sign_display"
+item = "01 65"
+label = "TX Call Sign Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scroll_speed"
+item = "01 66"
+label = "Scroll Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "screen_saver"
+item = "01 67"
+label = "Screen Saver"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "opening_message"
+item = "01 68"
+label = "Opening Message"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "power_on_check"
+item = "01 69"
+label = "Power ON Check"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_latitude_longitude"
+item = "01 70"
+label = "Display Unit, Latitude/Longitude"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_altitude_distance"
+item = "01 71"
+label = "Display Unit, Altitude/Distance"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_speed"
+item = "01 72"
+label = "Display Unit, Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_temperature"
+item = "01 73"
+label = "Display Unit, Temperature"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_barometric"
+item = "01 74"
+label = "Display Unit, Barometric"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_rainfall"
+item = "01 75"
+label = "Display Unit, Rainfall"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_unit_wind_speed"
+item = "01 76"
+label = "Display Unit, Wind Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "display_language"
+item = "01 77"
+label = "Display Language"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "system_language"
+item = "01 78"
+label = "System Language"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "date"
+item = "01 79"
+label = "Date"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+moves = true
+note = "The radio's clock. Never put back: an old time is a wrong time."
+
+[[settings]]
+id = "time"
+item = "01 80"
+label = "Time"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+moves = true
+note = "The radio's clock. Never put back: an old time is a wrong time."
+
+[[settings]]
+id = "ntp_function"
+item = "01 81"
+label = "NTP Function"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ntp_server_address"
+item = "01 82"
+label = "NTP Server Address"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_time_correct"
+item = "01 83"
+label = "GPS Time Correct"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "utc_offset"
+item = "01 84"
+label = "UTC Offset"
+raw = true
+write = false
+source = "civ_guide"
+verified = false
+note = "The radio's clock. Never put back: an old time is a wrong time."
+
+[[settings]]
+id = "sd_card_csv_separator_decimal"
+item = "01 85"
+label = "SD Card CSV Separator/Decimal"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "sd_card_csv_date"
+item = "01 86"
+label = "SD Card CSV Date"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_during_tx"
+item = "01 87"
+label = "Scope During TX"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_max_hold"
+item = "01 88"
+label = "Scope Max Hold"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_center_type_display"
+item = "01 89"
+label = "Scope Center Type Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_marker_position"
+item = "01 90"
+label = "Scope Marker Position"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_vbw"
+item = "01 91"
+label = "Scope VBW"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_averaging"
+item = "01 92"
+label = "Scope Averaging"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_waveform_type"
+item = "01 93"
+label = "Scope Waveform Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_waveform_color_current"
+item = "01 94"
+label = "Scope Waveform Color (Current)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_waveform_color_line"
+item = "01 95"
+label = "Scope Waveform Color (Line)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_waveform_color_max_hold"
+item = "01 96"
+label = "Scope Waveform Color (Max Hold)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "waterfall_display"
+item = "01 97"
+label = "Waterfall Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "waterfall_speed"
+item = "01 98"
+label = "Waterfall Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "waterfall_size_expand_screen"
+item = "01 99"
+label = "Waterfall Size (Expand Screen)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "waterfall_peak_color_level"
+item = "02 00"
+label = "Waterfall Peak Color Level"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "waterfall_marker_auto_hide"
+item = "02 01"
+label = "Waterfall Marker Auto-hide"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_144m_no_1"
+item = "02 02"
+label = "Scope Fixed Edges 144M No.1"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_144m_no_2"
+item = "02 03"
+label = "Scope Fixed Edges 144M No.2"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_144m_no_3"
+item = "02 04"
+label = "Scope Fixed Edges 144M No.3"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_430m_no_1"
+item = "02 05"
+label = "Scope Fixed Edges 430M No.1"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_430m_no_2"
+item = "02 06"
+label = "Scope Fixed Edges 430M No.2"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_430m_no_3"
+item = "02 07"
+label = "Scope Fixed Edges 430M No.3"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_1200m_no_1"
+item = "02 08"
+label = "Scope Fixed Edges 1200M No.1"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_1200m_no_2"
+item = "02 09"
+label = "Scope Fixed Edges 1200M No.2"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scope_fixed_edges_1200m_no_3"
+item = "02 10"
+label = "Scope Fixed Edges 1200M No.3"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "audio_fft_scope_waveform_type"
+item = "02 11"
+label = "Audio FFT Scope Waveform Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "audio_fft_scope_waveform_color"
+item = "02 12"
+label = "Audio FFT Scope Waveform Color"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "audio_fft_scope_waterfall_display"
+item = "02 13"
+label = "Audio FFT Scope Waterfall Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "audio_oscilloscope_waveform_color"
+item = "02 14"
+label = "Audio Oscilloscope Waveform Color"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "voice_tx_level"
+item = "02 15"
+label = "Voice TX Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "voice_tx_auto_monitor"
+item = "02 16"
+label = "Voice TX Auto Monitor"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "voice_tx_repeat_time"
+item = "02 17"
+label = "Voice TX Repeat Time"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "keyer_number_style"
+item = "02 18"
+label = "Keyer Number Style"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "keyer_count_up_trigger"
+item = "02 19"
+label = "Keyer Count Up Trigger"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "keyer_present_number"
+item = "02 20"
+label = "Keyer Present Number"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_side_tone_level"
+item = "02 21"
+label = "CW Side Tone Level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_side_tone_level_limit"
+item = "02 22"
+label = "CW Side Tone Level Limit"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_keyer_repeat_time"
+item = "02 23"
+label = "CW Keyer Repeat Time"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_dot_dash_ratio"
+item = "02 24"
+label = "CW Dot/Dash Ratio"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_rise_time"
+item = "02 25"
+label = "CW Rise Time"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_paddle_polarity"
+item = "02 26"
+label = "CW Paddle Polarity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "cw_key_type"
+item = "02 27"
+label = "CW Key Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "mic_up_down_keyer"
+item = "02 28"
+label = "MIC Up/Down Keyer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_fft_scope_averaging"
+item = "02 29"
+label = "RTTY Decode FFT Scope Averaging"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_fft_scope_waveform_color"
+item = "02 30"
+label = "RTTY Decode FFT Scope Waveform Color"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_usos"
+item = "02 31"
+label = "RTTY Decode USOS"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_new_line_code"
+item = "02 32"
+label = "RTTY Decode New Line Code"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_tx_usos"
+item = "02 33"
+label = "RTTY TX USOS"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_characters_during_tx"
+item = "02 34"
+label = "RTTY Decode Characters During TX"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_font_color_receive"
+item = "02 35"
+label = "RTTY Decode Font Color (Receive)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_font_color_transmit"
+item = "02 36"
+label = "RTTY Decode Font Color (Transmit)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_log"
+item = "02 37"
+label = "RTTY Decode Log"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_log_file_type"
+item = "02 38"
+label = "RTTY Decode Log File Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_log_time_stamp"
+item = "02 39"
+label = "RTTY Decode Log Time Stamp"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_log_time_stamp_time"
+item = "02 40"
+label = "RTTY Decode Log Time Stamp (Time)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rtty_decode_log_time_stamp_frequency"
+item = "02 41"
+label = "RTTY Decode Log Time Stamp (Frequency)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_tx_rec_audio"
+item = "02 42"
+label = "QSO Recorder TX REC Audio"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_rx_rec_condition"
+item = "02 43"
+label = "QSO Recorder RX REC Condition"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_file_split"
+item = "02 44"
+label = "QSO Recorder File Split"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_rec_operation"
+item = "02 45"
+label = "QSO Recorder REC Operation"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_ptt_auto_rec"
+item = "02 46"
+label = "QSO Recorder PTT Auto REC"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_recorder_pre_rec_for_ptt_auto_rec"
+item = "02 47"
+label = "QSO Recorder Pre-REC for PTT Auto REC"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "qso_player_skip_time"
+item = "02 48"
+label = "QSO Player Skip Time"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scan_speed"
+item = "02 49"
+label = "Scan Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scan_resume"
+item = "02 50"
+label = "Scan Resume"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scan_pause_timer"
+item = "02 51"
+label = "Scan Pause Timer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scan_resume_timer"
+item = "02 52"
+label = "Scan Resume Timer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "scan_temporary_skip_timer"
+item = "02 53"
+label = "Scan Temporary Skip Timer"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "main_dial_operation_scan"
+item = "02 54"
+label = "MAIN DIAL Operation (Scan)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_select"
+item = "02 55"
+label = "GPS Select"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_receiver_baud_rate"
+item = "02 56"
+label = "GPS Receiver Baud Rate"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_manual_position"
+item = "02 57"
+label = "GPS Manual Position"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_tx_mode"
+item = "02 58"
+label = "GPS TX Mode"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_unproto_address"
+item = "02 59"
+label = "D-PRS Unproto Address"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_tx_format"
+item = "02 60"
+label = "D-PRS TX Format"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_symbol"
+item = "02 61"
+label = "D-PRS Position Symbol"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_symbol_no_1"
+item = "02 62"
+label = "D-PRS Position Symbol No.1"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_symbol_no_2"
+item = "02 63"
+label = "D-PRS Position Symbol No.2"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_symbol_no_3"
+item = "02 64"
+label = "D-PRS Position Symbol No.3"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_symbol_no_4"
+item = "02 65"
+label = "D-PRS Position Symbol No.4"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_ssid"
+item = "02 66"
+label = "D-PRS Position SSID"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_comment_select"
+item = "02 67"
+label = "D-PRS Position Comment Select"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_comment_1"
+item = "02 68"
+label = "D-PRS Position Comment 1"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_comment_2"
+item = "02 69"
+label = "D-PRS Position Comment 2"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_comment_3"
+item = "02 70"
+label = "D-PRS Position Comment 3"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_comment_4"
+item = "02 71"
+label = "D-PRS Position Comment 4"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_time_stamp"
+item = "02 72"
+label = "D-PRS Position Time Stamp"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_altitude"
+item = "02 73"
+label = "D-PRS Position Altitude"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_data_extension"
+item = "02 74"
+label = "D-PRS Position Data Extension"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_power"
+item = "02 75"
+label = "D-PRS Position Power"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_height"
+item = "02 76"
+label = "D-PRS Position Height"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_gain"
+item = "02 77"
+label = "D-PRS Position Gain"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_position_directivity"
+item = "02 78"
+label = "D-PRS Position Directivity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_name"
+item = "02 79"
+label = "D-PRS Object Name"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_data_type"
+item = "02 80"
+label = "D-PRS Object Data Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_symbol"
+item = "02 81"
+label = "D-PRS Object Symbol"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_comment"
+item = "02 82"
+label = "D-PRS Object Comment"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_position"
+item = "02 83"
+label = "D-PRS Object Position"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_data_extension"
+item = "02 84"
+label = "D-PRS Object Data Extension"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_course"
+item = "02 85"
+label = "D-PRS Object Course"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_speed"
+item = "02 86"
+label = "D-PRS Object Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_power"
+item = "02 87"
+label = "D-PRS Object Power"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_height"
+item = "02 88"
+label = "D-PRS Object Height"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_gain"
+item = "02 89"
+label = "D-PRS Object Gain"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_directivity"
+item = "02 90"
+label = "D-PRS Object Directivity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_ssid"
+item = "02 91"
+label = "D-PRS Object SSID"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_object_time_stamp"
+item = "02 92"
+label = "D-PRS Object Time Stamp"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_name"
+item = "02 93"
+label = "D-PRS Item Name"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_data_type"
+item = "02 94"
+label = "D-PRS Item Data Type"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_symbol"
+item = "02 95"
+label = "D-PRS Item Symbol"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_comment"
+item = "02 96"
+label = "D-PRS Item Comment"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_position"
+item = "02 97"
+label = "D-PRS Item Position"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_data_extension"
+item = "02 98"
+label = "D-PRS Item Data Extension"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_course"
+item = "02 99"
+label = "D-PRS Item Course"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_speed"
+item = "03 00"
+label = "D-PRS Item Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_power"
+item = "03 01"
+label = "D-PRS Item Power"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_height"
+item = "03 02"
+label = "D-PRS Item Height"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_gain"
+item = "03 03"
+label = "D-PRS Item Gain"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_directivity"
+item = "03 04"
+label = "D-PRS Item Directivity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_item_ssid"
+item = "03 05"
+label = "D-PRS Item SSID"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_weather_symbol"
+item = "03 06"
+label = "D-PRS Weather Symbol"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_weather_ssid"
+item = "03 07"
+label = "D-PRS Weather SSID"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_weather_comment"
+item = "03 08"
+label = "D-PRS Weather Comment"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "d_prs_weather_time_stamp"
+item = "03 09"
+label = "D-PRS Weather Time Stamp"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_rmc"
+item = "03 10"
+label = "NMEA Sentence RMC"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_gga"
+item = "03 11"
+label = "NMEA Sentence GGA"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_gll"
+item = "03 12"
+label = "NMEA Sentence GLL"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_gsa"
+item = "03 13"
+label = "NMEA Sentence GSA"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_vtg"
+item = "03 14"
+label = "NMEA Sentence VTG"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_sentence_gsv"
+item = "03 15"
+label = "NMEA Sentence GSV"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nmea_gps_message"
+item = "03 16"
+label = "NMEA GPS Message"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_alarm_area_group"
+item = "03 17"
+label = "GPS Alarm Area (Group)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_alarm_area_rx_memory"
+item = "03 18"
+label = "GPS Alarm Area (RX/Memory)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "gps_auto_tx"
+item = "03 19"
+label = "GPS Auto TX"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dtmf_speed"
+item = "03 20"
+label = "DTMF Speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_level_144m"
+item = "03 21"
+label = "NB Level (144M)"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_depth_144m"
+item = "03 22"
+label = "NB Depth (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_width_144m"
+item = "03 23"
+label = "NB Width (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_level_430m"
+item = "03 24"
+label = "NB Level (430M)"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_depth_430m"
+item = "03 25"
+label = "NB Depth (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_width_430m"
+item = "03 26"
+label = "NB Width (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_level_1200m"
+item = "03 27"
+label = "NB Level (1200M)"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_depth_1200m"
+item = "03 28"
+label = "NB Depth (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_width_1200m"
+item = "03 29"
+label = "NB Width (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "vox_delay"
+item = "03 30"
+label = "VOX Delay"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "vox_voice_delay"
+item = "03 31"
+label = "VOX Voice Delay"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_144m_on_off"
+item = "03 32"
+label = "TX Power Limit (144M) on/off"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_144m"
+item = "03 33"
+label = "TX Power Limit (144M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_430m_on_off"
+item = "03 34"
+label = "TX Power Limit (430M) on/off"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_430m"
+item = "03 35"
+label = "TX Power Limit (430M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_1200m_on_off"
+item = "03 36"
+label = "TX Power Limit (1200M) on/off"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tx_power_limit_1200m"
+item = "03 37"
+label = "TX Power Limit (1200M)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "received_call_sign_display"
+item = "03 38"
+label = "Received Call Sign Display"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "compass_direction"
+item = "03 39"
+label = "Compass Direction"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "home_ch_beep"
+item = "03 40"
+label = "Home CH Beep"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ptt_port_function"
+item = "03 41"
+label = "PTT Port Function"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rx_picture_indicator"
+item = "03 42"
+label = "RX Picture Indicator"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+# Front-panel controls (guide, command table).
+
+[[settings]]
+id = "attenuator"
+command = "11"
+label = "Attenuator (ATT)"
+values = { OFF = 0x00, "10dB" = 0x10 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "af_gain"
+command = "14 01"
+label = "AF gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rf_gain"
+command = "14 02"
+label = "RF gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "squelch"
+command = "14 03"
+label = "Squelch"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nr_level"
+command = "14 06"
+label = "NR level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "pbt_inner"
+command = "14 07"
+label = "Twin PBT inside"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "pbt_outer"
+command = "14 08"
+label = "Twin PBT outside"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "cw_pitch"
+command = "14 09"
+label = "CW pitch"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rf_power"
+command = "14 0A"
+label = "RF power"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "mic_gain"
+command = "14 0B"
+label = "MIC gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "key_speed"
+command = "14 0C"
+label = "Key speed"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "notch_position"
+command = "14 0D"
+label = "Manual notch position"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "comp_level"
+command = "14 0E"
+label = "Speech compressor level"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "break_in_delay"
+command = "14 0F"
+label = "Break-in delay"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "nb_level"
+command = "14 12"
+label = "NB level"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "monitor_gain"
+command = "14 15"
+label = "Monitor gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "vox_gain"
+command = "14 16"
+label = "VOX gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "anti_vox_gain"
+command = "14 17"
+label = "Anti-VOX gain"
+range = [0, 255]
+percent = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "preamp"
+command = "16 02"
+label = "Preamp"
+values = { OFF = 0x00, "P.AMP" = 0x01, "EXT-P.AMP" = 0x02, "P.AMP+EXT-P.AMP" = 0x03 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "agc"
+command = "16 12"
+label = "AGC"
+values = { FAST = 0x01, MID = 0x02, SLOW = 0x03 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "noise_blanker"
+command = "16 22"
+label = "Noise blanker (NB)"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "noise_reduction"
+command = "16 40"
+label = "Noise reduction (NR)"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "auto_notch"
+command = "16 41"
+label = "Auto notch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "repeater_tone"
+command = "16 42"
+label = "Repeater tone"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tone_squelch"
+command = "16 43"
+label = "Tone squelch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "compressor"
+command = "16 44"
+label = "Speech compressor"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "monitor"
+command = "16 45"
+label = "Monitor"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "vox"
+command = "16 46"
+label = "VOX"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "break_in"
+command = "16 47"
+label = "Break-in"
+values = { OFF = 0x00, SEMI = 0x01, FULL = 0x02 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "manual_notch"
+command = "16 48"
+label = "Manual notch"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "afc"
+command = "16 4A"
+label = "AFC"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dtcs"
+command = "16 4B"
+label = "DTCS"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "twin_peak_filter"
+command = "16 4F"
+label = "Twin peak filter"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dial_lock"
+command = "16 50"
+label = "Dial lock"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "filter_shape"
+command = "16 56"
+label = "IF filter shape"
+values = { SHARP = 0x00, SOFT = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "manual_notch_width"
+command = "16 57"
+label = "Manual notch width"
+values = { WIDE = 0x00, MID = 0x01, NAR = 0x02 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bandwidth"
+command = "16 58"
+label = "SSB TX bandwidth (selected)"
+values = { WIDE = 0x00, MID = 0x01, NAR = 0x02 }
+write = true
+source = "civ_guide"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "dualwatch"
+command = "16 59"
+label = "Sub band (Dualwatch)"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "satellite_mode"
+command = "16 5A"
+label = "Satellite mode"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "ip_plus"
+command = "16 65"
+label = "IP+"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "filter_width"
+command = "1A 03"
+label = "IF filter width (selected filter)"
+range = [0, 49]
+write = true
+source = "civ_guide"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "agc_time_constant"
+command = "1A 04"
+label = "AGC time constant (selected)"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "mode_and_filter"
+command = "04"
+label = "Operating mode and filter"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+selects = true
+note = "Read with 04 and set with 06: the mode code, then 01, 02 or 03 for FIL1 to FIL3."
+
+[[settings]]
+id = "data_mode_and_filter"
+command = "1A 06"
+label = "Data mode and filter"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+selects = true
+
+[[settings]]
+id = "repeater_tone_frequency"
+command = "1B 00"
+label = "Repeater tone frequency"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "tsql_frequency"
+command = "1B 01"
+label = "Tone squelch frequency"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "dtcs_code"
+command = "1B 02"
+label = "DTCS code and polarity"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rit_frequency"
+command = "21 00"
+label = "RIT frequency"
+raw = true
+write = true
+source = "civ_guide"
+verified = false
+
+[[settings]]
+id = "rit"
+command = "21 01"
+label = "RIT"
+values = { OFF = 0x00, ON = 0x01 }
+write = true
+source = "civ_guide"
+verified = false
+
+# ---------------------------------------------------------------------------
+# What the transmit meters (15 11 Po, 15 12 SWR, 15 13 ALC) mean: the same
+# scale points as the IC-7300's (guide). The IC-9700 has no antenna tuner,
+# so there is no tuner question.
+# ---------------------------------------------------------------------------
+[meters]
+source = "civ_guide"
+# 00 00 = 0%, 01 43 = 50%, 02 13 = 100%.
+power = [[0, 0], [143, 50], [213, 100]]
+# 00 00 = SWR 1.0, 00 48 = 1.5, 00 80 = 2.0, 01 20 = 3.0; in tenths.
+swr = [[0, 10], [48, 15], [80, 20], [120, 30]]
+# 00 00 = minimum, 01 20 = maximum; as percent of the scale.
+alc = [[0, 0], [120, 100]]
+drive = "usb_mod_level"
+power_setting = "rf_power"
+
+# ---------------------------------------------------------------------------
+# Requirements: settings a job can't work without.
+# ---------------------------------------------------------------------------
+[[requirements]]
+job = "digital_modes"
+setting = "data_mod"
+accept = ["USB", "MIC,USB"]
+offer = "USB"
+explain = "In data mode the radio takes transmit audio from somewhere other than USB, so programs like WSJT-X and VARA would transmit silence."
+
+[[requirements]]
+job = "computer_voice"
+setting = "data_off_mod"
+accept = ["USB", "MIC,USB"]
+offer = "MIC,USB"
+explain = "Outside data mode the radio doesn't take transmit audio from USB, so a program's voice keyer would transmit silence. MIC,USB keeps the microphone working too."

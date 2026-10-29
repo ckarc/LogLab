@@ -450,6 +450,10 @@ Each file says:
 - **Identity**: maker, model, protocol family, and how the radio identifies
   itself (for Icom, its default CI-V address).
 - **USB layout**: which serial ports and sound device the radio presents.
+  A radio with more than one serial port behind its USB names its control
+  port by how its USB serial number ends (`number_ends_with = "A"` for the
+  IC-9700's USB (A)); the Agent never opens the others, which may carry data
+  the radio transmits.
 - **Link**: the baud rates to try, the default address, echo behavior.
 - **Modes**: the radio's mode codes, mapped to the rig model's modes.
 - **Commands**: the protocol commands the driver uses for each rig-model
@@ -485,6 +489,10 @@ the Agent, so there is one source of truth.
 
 [`agent/rigs/icom/ic-7300.toml`](../agent/rigs/icom/ic-7300.toml) is the first
 definition and the model for the rest.
+[`agent/rigs/icom/ic-9700.toml`](../agent/rigs/icom/ic-9700.toml) uses the same
+CI-V driver at address A2h; nothing in it is checked on a real IC-9700 yet,
+so the Agent records its settings but writes none until `check-writes` has
+been run on one.
 
 ## Working with no internet
 
