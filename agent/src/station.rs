@@ -460,6 +460,33 @@ fn restore_plan(
     ))
 }
 
+/// What putting the lab's profile `name` on would change, if the lab has
+/// one by that name for this radio's model: `restore VARA` puts the lab's
+/// VARA profile on, after a yes.
+fn lab_plan(now: &Record, name: &str, definition: &Definition) -> Option<crate::restore::Plan> {
+    let profile = profiles::find(&now.maker, &now.model, name)?;
+    Some(crate::restore::plan(
+        &format!("{} lab profile", profile.name),
+        profile.kept(definition),
+        now,
+        definition,
+    ))
+}
+
+/// Why `keep NAME` is refused, when NAME is one of the lab's profiles for
+/// this radio's model: those are locked, and only a new build of the Agent
+/// changes them (brian's decision, 2026-10-28).
+fn lab_locked(shared: &Shared, name: &str) -> Option<String> {
+    let identity = shared.identity();
+    let profile = profiles::find(&identity.maker, &identity.model, name)?;
+    Some(format!(
+        "setup {name} not kept: {} is the lab's locked profile for the {}, and only an \
+         administrator changes it, with a new build of the Agent.\n-> Keep your own under \
+         another name, like keep My {}; restore My {} puts it back.",
+        profile.name, identity.model, profile.name, profile.name
+    ))
+}
+
 /// Puts a confirmed plan back on the radio and records it beside the
 /// settings records (Principle X).
 fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String {
@@ -1014,10 +1041,11 @@ fn console(
             Ok(Typed::Nothing | Typed::Quit) => continue,
             Ok(Typed::Yes(_) | Typed::No) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
-                match read().and_then(|now| {
-                    setups
+                match read().and_then(|now| match lab_plan(&now, &name, definition) {
+                    Some(plan) => Ok(Ok(plan)),
+                    None => setups
                         .kept(&now.maker, &now.model, serial)
-                        .map(|kept| restore_plan(&now, &kept, &name, definition))
+                        .map(|kept| restore_plan(&now, &kept, &name, definition)),
                 }) {
                     Ok(Ok(plan)) => {
                         let mut lines = plan.lines();
@@ -1063,6 +1091,9 @@ fn console(
                 Err(why) => format!("not checked: {why}"),
             },
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
+            Ok(Typed::Keep(name)) if lab_locked(shared, &name).is_some() => {
+                lab_locked(shared, &name).unwrap_or_default()
+            }
             Ok(Typed::Keep(name)) => match read() {
                 Ok(record) => match setups.keep(&record, &name) {
                     Ok(()) => format!(
@@ -1770,7 +1801,7 @@ mod tests {
 
     use super::{
         DRIVE_ASK, Desk, DriveTried, LabRadio, Programs, Typed, compared, compared_all,
-        drive_offer, restore_plan, startup_command, typed,
+        drive_offer, lab_locked, lab_plan, restore_plan, startup_command, typed,
     };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
@@ -1883,6 +1914,30 @@ mod tests {
         assert!(note_with("Lab profile").contains("couldn't tell which program"));
         assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("30"));
         let _ = std::fs::remove_dir_all(&records);
+    }
+
+    #[test]
+    fn the_labs_profiles_are_locked_and_restore_puts_one_on() {
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let locked = lab_locked(&shared, "vara").unwrap_or_default();
+        assert!(
+            locked.contains("the lab's locked profile for the IC-7300"),
+            "{locked}"
+        );
+        assert!(locked.contains("keep My VARA"));
+        assert_eq!(lab_locked(&shared, "My VARA"), None);
+        assert_eq!(lab_locked(&shared, "Field Day"), None);
+        let now = shared
+            .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "test"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        let plan = lab_plan(&now, "VARA", &definition);
+        let put: Vec<String> = plan
+            .iter()
+            .flat_map(|plan| plan.put.iter().map(|put| put.setting.id.clone()))
+            .collect();
+        assert!(put.contains(&"filter_width".to_owned()), "{put:?}");
+        assert!(put.contains(&"usb_mod_level".to_owned()), "{put:?}");
+        assert!(lab_plan(&now, "My VARA", &definition).is_none());
     }
 
     /// The pretend IC-7300, shared for transmitting, after one transmission

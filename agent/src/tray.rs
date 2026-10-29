@@ -291,9 +291,24 @@ pub enum Choice {
     Quit,
 }
 
-/// The setups the tray offers to keep and put back, named for what the
-/// radio is set up for.
+/// The lab's profiles the tray offers to put back, named for what the
+/// radio is set up for. Locked: only a new build of the Agent changes them.
 pub const SETUPS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+
+/// The operator's own setups the tray offers to keep and put back, one
+/// beside each of the lab's.
+pub const MY_SETUPS: [&str; 5] = ["My VARA", "My FT8", "My JS8", "My fldigi", "My SSTV"];
+
+/// Every setup the tray's Restore menu offers, in its order, with the name
+/// shown and the name typed: the lab's profiles, then the operator's own.
+#[must_use]
+pub fn restore_menu() -> Vec<(String, &'static str)> {
+    SETUPS
+        .iter()
+        .map(|name| (format!("{name} (lab profile)"), *name))
+        .chain(MY_SETUPS.iter().map(|name| ((*name).to_owned(), *name)))
+        .collect()
+}
 
 impl Choice {
     /// The line typed at `station`'s console.
@@ -393,7 +408,10 @@ pub fn quoted(option: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, Grouper, Light, Said, classify, icon_file, question_box, quoted};
+    use super::{
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, question_box, quoted,
+        restore_menu,
+    };
 
     /// Every event `lines` make, in order.
     fn grouped(lines: &[&str]) -> Vec<String> {
@@ -508,7 +526,14 @@ mod tests {
 
     #[test]
     fn types_what_the_menu_chose() {
-        assert_eq!(Choice::Keep("VARA").typed(), "keep VARA");
+        assert_eq!(Choice::Keep("My VARA").typed(), "keep My VARA");
+        let menu = restore_menu();
+        assert_eq!(menu.len(), 10);
+        assert_eq!(menu[0], ("VARA (lab profile)".to_owned(), "VARA"));
+        assert_eq!(menu[5], ("My VARA".to_owned(), "My VARA"));
+        for name in MY_SETUPS {
+            assert!(crate::engine::check_setup_name(name).is_ok(), "{name}");
+        }
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
         assert_eq!(Choice::Enroll(false).typed(), "enroll off");

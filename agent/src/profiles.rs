@@ -62,7 +62,7 @@ pub fn find(maker: &str, model: &str, program: &str) -> Option<Profile> {
         .find(|file| file.maker == maker && file.model == model)?
         .profiles
         .into_iter()
-        .find(|profile| profile.name == program)
+        .find(|profile| profile.name.eq_ignore_ascii_case(program))
 }
 
 /// Whether the lab has any profile for the radio `maker` `model`: only

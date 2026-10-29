@@ -33,7 +33,7 @@ use std::time::{Duration, Instant};
 
 use native_windows_gui as nwg;
 
-use crate::tray::{self, Choice, Grouper, Light, SETUPS, Said};
+use crate::tray::{self, Choice, Grouper, Light, MY_SETUPS, Said};
 
 /// Microsoft Learn, "Process Creation Flags": the process is a console
 /// application that is being run without a console window.
@@ -329,7 +329,7 @@ impl Face {
         item("Fix radio settings", &face.menu, &mut face.fix)?;
         built(
             nwg::Menu::builder()
-                .text("Keep setup")
+                .text("Keep as my setup")
                 .parent(&face.menu)
                 .build(&mut face.keep_menu),
         )?;
@@ -339,12 +339,14 @@ impl Face {
                 .parent(&face.menu)
                 .build(&mut face.restore_menu),
         )?;
-        for name in SETUPS {
+        for name in MY_SETUPS {
             let mut keep = nwg::MenuItem::default();
             item(name, &face.keep_menu, &mut keep)?;
             face.keep.push(keep);
+        }
+        for (shown, _) in tray::restore_menu() {
             let mut restore = nwg::MenuItem::default();
-            item(name, &face.restore_menu, &mut restore)?;
+            item(&shown, &face.restore_menu, &mut restore)?;
             face.restore.push(restore);
         }
         item("Compare with kept setups", &face.menu, &mut face.compare)?;
@@ -419,7 +421,7 @@ impl Face {
         if handle == self.quit.handle {
             return Some(Choice::Quit);
         }
-        for (index, name) in SETUPS.iter().enumerate() {
+        for (index, name) in MY_SETUPS.iter().enumerate() {
             if self
                 .keep
                 .get(index)
@@ -427,11 +429,9 @@ impl Face {
             {
                 return Some(Choice::Keep(name));
             }
-            if self
-                .restore
-                .get(index)
-                .is_some_and(|item| item.handle == handle)
-            {
+        }
+        for ((_, name), item) in tray::restore_menu().into_iter().zip(&self.restore) {
+            if item.handle == handle {
                 return Some(Choice::Restore(name));
             }
         }

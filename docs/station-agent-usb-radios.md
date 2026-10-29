@@ -201,7 +201,9 @@ on an enrolled radio, puts that program's profile on without asking, shows
 what it changed, and records it. It does this once per program start; while
 the program runs, the operator's changes on the radio stand. When two
 programs share a radio, the first keeps it. Operators may still keep their
-own named setups and put one back by choice (`restore`, after a yes).
+own named setups and put one back by choice (`restore`, after a yes); the
+lab's profile names are locked, so `keep VARA` is refused and the tray keeps
+"My VARA" instead, while `restore VARA` puts the lab's profile back.
 (Principle X, second exception, constitution 5.0.0.)
 
 - **Only enrolled radios.** The first time the Agent sees a radio of a model
