@@ -28,6 +28,8 @@ mod civ_pretend;
 mod civ_radio;
 mod civ_serial;
 #[cfg(any(windows, test))]
+mod com0com;
+#[cfg(any(windows, test))]
 mod driver;
 mod engine;
 mod enrollment;
@@ -283,7 +285,8 @@ enum Command {
         /// there.
         engine: Option<(String, String, Option<String>)>,
         /// A COM port to answer on as a Kenwood TS-2000, for Winlink
-        /// Express: one end of a com0com pair.
+        /// Express: one end of a com0com pair. Without it, where Winlink
+        /// Express is installed, the Agent finds a com0com pair itself.
         kenwood: Option<String>,
     },
     /// `on`, `off` or `status`, and for `on`, the `station` options the

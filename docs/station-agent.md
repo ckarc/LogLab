@@ -219,15 +219,19 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    The file as first found is kept as `VARA.ini.lablog-original`; copying it
    back puts VARA on its own port again.
 
-   **Tuning from Winlink Express** (`--kenwood PORT`). Winlink Express tunes
-   a radio only through its own drivers on a COM port. With a com0com
-   virtual COM-port pair installed (com0com.sourceforge.net, a separate
-   install; Windows loads only signed drivers), `station --kenwood CNCB0`
-   answers as a Kenwood TS-2000 on one end of the pair, and Winlink
-   Express's Radio Setup picks a Kenwood radio on the other end. Frequency,
-   mode and PTT go through the Agent's own server under the same rules, and
-   the Agent then leaves Winlink Express's radio choice alone (only PTT stays
-   External, so the Agent keys when VARA asks).
+   **Tuning from Winlink Express.** Winlink Express tunes a radio only
+   through its own drivers on a COM port. With a com0com virtual COM-port
+   pair installed (com0com 3.0.0.0 from com0com.sourceforge.net, a separate
+   install; it loads on Windows 11, checked on FL-1 on 2026-10-29), the
+   Agent finds the first pair whose ends are named `COMn` (from
+   `HKLM\HARDWARE\DEVICEMAP\SERIALCOMM`), answers as a Kenwood TS-2000 on
+   its B end, and sets Winlink Express's `Control Port` to the A end while
+   Winlink Express is closed (on FL-1: the Agent on COM6, Winlink Express
+   on COM7). `--kenwood PORT` names the Agent's end instead. In Winlink
+   Express's Radio Setup, pick the Kenwood radio once; the Agent leaves
+   that choice alone. Frequency, mode and PTT go through the Agent's own
+   server under the same rules, and PTT stays External, so the Agent keys
+   when VARA asks.
 7. **Keeps the radio's settings on the Engine** (with `--engine` and
    `--key-file`), so every computer the radio is plugged into knows them.
    See "Setups kept on the Engine" below.
