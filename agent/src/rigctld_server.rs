@@ -1985,4 +1985,34 @@ mod tests {
         assert!(!transmitting(&bench), "unkeyed by the server's watch");
         drop(server);
     }
+    #[test]
+    fn answers_fldigi_as_hamlib_asks_for_it() {
+        // fldigi 4.1.23 (src/rigcontrol/hamlib.cxx) opens Hamlib's NET rigctl,
+        // reads the frequency and mode, unkeys, then tunes, changes mode and
+        // keys with PTT on data (its HAMLIBPTTONDATA default). These are the
+        // lines Hamlib 4.5.5 sent for those calls, captured on the wire.
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Shared::with_transmit(Box::new(radio), MINUTE);
+        let say = |line| as_program(&shared, PROGRAM, line);
+        assert_eq!(say("\\get_powerstat"), "1\n");
+        assert_eq!(say("\\chk_vfo"), "0\n");
+        assert!(say("\\dump_state").ends_with("done\n"));
+        assert_eq!(say("v"), "VFOA\n");
+        assert_eq!(say("f"), "14074000\n");
+        assert_eq!(say("s"), "0\nVFOA\n");
+        assert_eq!(say("m"), "PKTUSB\n0\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("F 7074000.000000"), "RPRT 0\n");
+        assert_eq!(say("f"), "7074000\n");
+        assert_eq!(say("M PKTUSB 0"), "RPRT 0\n");
+        assert_eq!(say("M USB 2400"), "RPRT 0\n");
+        assert!(say("m").starts_with("USB\n"));
+        assert_eq!(say("T 3"), "RPRT 0\n");
+        assert_eq!(say("t"), "1\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("t"), "0\n");
+    }
 }
