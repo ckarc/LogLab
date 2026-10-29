@@ -440,19 +440,22 @@ mod tests {
         (address, heard)
     }
 
-    /// Two free ports in a row on this computer: a command port and the
-    /// data port above it.
-    fn free_pair() -> u16 {
-        for _ in 0..50 {
+    /// Listeners on two ports in a row on this computer: a command port and
+    /// the data port above it. Held, so a test running alongside can't take
+    /// them.
+    fn bind_pair() -> (TcpListener, TcpListener) {
+        for _ in 0..200 {
             let Ok(first) = TcpListener::bind("127.0.0.1:0") else {
                 continue;
             };
             let Ok(address) = first.local_addr() else {
                 continue;
             };
-            let port = address.port();
-            if port < u16::MAX && TcpListener::bind(("127.0.0.1", port + 1)).is_ok() {
-                return port;
+            let Some(next) = address.port().checked_add(1) else {
+                continue;
+            };
+            if let Ok(second) = TcpListener::bind(("127.0.0.1", next)) {
+                return (first, second);
             }
         }
         unreachable!("no two free ports in a row")
@@ -480,31 +483,35 @@ mod tests {
 
     fn bench(keys_itself: bool) -> Bench {
         let (rigctld, heard) = pretend_rigctld();
-        let vara_port = free_pair();
-        let vara =
-            TcpListener::bind(("127.0.0.1", vara_port)).unwrap_or_else(|e| unreachable!("{e}"));
-        let vara_data =
-            TcpListener::bind(("127.0.0.1", vara_port + 1)).unwrap_or_else(|e| unreachable!("{e}"));
-        let clients = free_pair();
+        let (vara, vara_data) = bind_pair();
+        let vara_port = vara.local_addr().map_or(0, |address| address.port());
         let (notes, heard_notes) = mpsc::channel();
-        let proxy = Proxy::start(
-            &Ports {
-                clients,
-                vara: vara_port,
-                rigctld,
-            },
-            Arc::new(move |_, _| keys_itself),
-            notes,
-        )
-        .unwrap_or_else(|e| unreachable!("{e}"));
-        Bench {
-            _proxy: proxy,
-            clients,
-            vara,
-            vara_data,
-            rigctld: heard,
-            _notes: heard_notes,
+        // The proxy's ports: two in a row that are free, tried until the
+        // proxy gets them (a test alongside may take them first).
+        for _ in 0..200 {
+            let (first, second) = bind_pair();
+            let clients = first.local_addr().map_or(0, |address| address.port());
+            drop((first, second));
+            if let Ok(proxy) = Proxy::start(
+                &Ports {
+                    clients,
+                    vara: vara_port,
+                    rigctld,
+                },
+                Arc::new(move |_, _| keys_itself),
+                notes.clone(),
+            ) {
+                return Bench {
+                    _proxy: proxy,
+                    clients,
+                    vara,
+                    vara_data,
+                    rigctld: heard,
+                    _notes: heard_notes,
+                };
+            }
         }
+        unreachable!("the proxy found no two free ports in a row")
     }
 
     fn read_exactly(stream: &mut TcpStream, count: usize) -> Vec<u8> {
