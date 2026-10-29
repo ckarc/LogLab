@@ -29,6 +29,10 @@
 //!    operator types `keep NAME`. `restore NAME` puts a setup back, only
 //!    after the operator types yes, only settings verified on a real radio,
 //!    and records it (Principle X).
+//! 7. With `--engine`, also carries what the programs and LabLog need from
+//!    each other (see `carrier`): each QSO the programs log goes to LabLog
+//!    through the Agent's journal, the radio's live state goes to LabLog's
+//!    entry screen, and the Agent says who LabLog will log QSOs as.
 //!
 //! Starting `station` is the operator's choice that programs on this
 //! computer may key the radio, as `--allow-transmit` is for `serve`
@@ -1162,6 +1166,22 @@ pub fn run(
     run_found(found, listen, limit, uplink, &running, &typing)
 }
 
+/// Starts carrying QSOs, the radio's state and who LabLog logs as between
+/// the programs and the Engine, when there is one.
+fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate::carrier::Carrier> {
+    let Some(uplink) = uplink else {
+        println!(
+            "QSOs: stay in each program's own log (start the Agent with --engine to send them \
+             to LabLog)."
+        );
+        return None;
+    };
+    let radio = Arc::clone(shared) as Arc<dyn Source>;
+    crate::carrier::start(uplink.clone(), radio, &records_folder())
+        .map_err(|why| println!("QSOs: not sent to LabLog ({why})."))
+        .ok()
+}
+
 /// The serial number the pretend radio's settings are kept under.
 const PRETEND_SERIAL: &str = "PRETEND";
 
@@ -1209,6 +1229,7 @@ fn run_found<P: Port + Send + 'static>(
     if let Some(station) = &station {
         crate::programs::set_up(station, server.address());
     }
+    let carrier = start_carrier(uplink.as_ref(), &shared);
     let desk = found
         .serial
         .clone()
@@ -1260,6 +1281,7 @@ fn run_found<P: Port + Send + 'static>(
             }
         }
     });
+    drop(carrier);
     drop(server);
     #[cfg(windows)]
     drop(station);
