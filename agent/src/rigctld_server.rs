@@ -130,6 +130,12 @@ pub trait Source: Send + Sync {
         Err("transmitting isn't allowed here".to_owned())
     }
 
+    /// `program` has connected to the server listening at `server`, and
+    /// nothing it asks is answered until this returns.
+    fn connected(&self, program: SocketAddr, server: SocketAddr) {
+        let _ = (program, server);
+    }
+
     /// `program` has disconnected: if it has the radio keyed, unkey it.
     fn gone(&self, program: SocketAddr) {
         let _ = program;
@@ -697,7 +703,7 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let accepting = {
             let stop = Arc::clone(&stop);
-            thread::spawn(move || accept(&listener, &source, &stop))
+            thread::spawn(move || accept(&listener, address, &source, &stop))
         };
         Ok(Self {
             address,
@@ -722,7 +728,12 @@ impl Drop for Server {
     }
 }
 
-fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBool>) {
+fn accept(
+    listener: &TcpListener,
+    address: SocketAddr,
+    source: &Arc<dyn Source>,
+    stop: &Arc<AtomicBool>,
+) {
     let clients = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
         source.watch();
@@ -737,6 +748,7 @@ fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBoo
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
+                    source.connected(peer, address);
                     let _ = serve(stream, peer, source.as_ref(), &stop);
                     source.gone(peer);
                     clients.fetch_sub(1, Ordering::SeqCst);
