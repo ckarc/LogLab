@@ -26,7 +26,13 @@ program that asks (see "Sharing a radio" below).
   Agent. The Agent reports the transmit slice (or the active slice when none
   transmits) and names it, such as "Slice A". SmartSDR's radio chooser shows
   the radio's IP address; giving the radio a fixed address on the network
-  keeps the Agent's command line right.
+  keeps the Agent's command line right. With `serve --allow-tuning` or
+  `--allow-transmit`, programs may tune that slice, change its mode and key
+  the transmitter (through the radio's transmit interlock). A FlexRadio has
+  slices, not VFO A and B, so split is refused: set WSJT-X's Split Operation
+  to None, or set up a second slice in SmartSDR. `--flex-pretend` tries all
+  of this against a pretend FLEX-6600 on this computer. Not yet tried on a
+  real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
@@ -376,7 +382,8 @@ How it behaves:
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
 - Any radio the Agent can read can be served: `--civ PORT`, `--civ-pretend`, `--pretend`,
-  `--flex`, or a Hamlib radio. Hamlib's own network client, the one WSJT-X
+  `--cat PORT`, `--cat-pretend`, `--flex`, `--flex-pretend`, or a Hamlib
+  radio. Hamlib's own network client, the one WSJT-X
   uses, has been checked against it with Hamlib 4.5.5.
 
 ## Receiving a radio's audio (Windows)
@@ -565,10 +572,13 @@ pretend radio is what the Agent's CI-V code is tested against.
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
   (Principle XXI). Stopping the Agent stops it too.
-- The FlexRadio driver only asks: it subscribes to slice and transmitter
-  status, asks the radio's model, and pings it every 5 seconds. It sends no
-  command that changes the radio. If the radio says nothing for 15 seconds,
-  the Agent reconnects.
+- The FlexRadio driver subscribes to slice and transmitter status, asks the
+  radio's model, and pings it every 5 seconds. It sends a command that
+  changes the radio (`slice tune`, `slice set ... mode=`, `xmit`) only when
+  `serve` was started with `--allow-tuning` or `--allow-transmit` and a
+  program asks; keying counts as done only once the radio's interlock says
+  `TRANSMITTING`. If the radio says nothing for 15 seconds, the Agent
+  reconnects.
 - The Engine forgets a station's radio 15 seconds after its Agent goes quiet.
 - A request to join grants nothing until an administrator approves it, and
   expires after 10 minutes (the Agent then asks again with a new code).
