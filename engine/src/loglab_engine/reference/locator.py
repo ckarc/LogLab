@@ -50,6 +50,23 @@ def grid_place(text: str | None) -> Place | None:
     return Place(lat=lat + height / 2, lon=lon + width / 2)
 
 
+def place_grid(place: Place) -> str | None:
+    """The 6-character Maidenhead grid square holding ``place``, or ``None`` off the map.
+
+    The reverse of :func:`grid_place`: 20 by 10 degree fields, 2 by 1 degree
+    squares, then 24 subsquares a side, the letters of the last pair written
+    in lower case as programs show them.
+    """
+    if not (-90.0 <= place.lat <= 90.0 and -180.0 <= place.lon <= 180.0):  # noqa: PLR2004 - degrees
+        return None
+    lon = min(place.lon + 180.0, 359.999999)
+    lat = min(place.lat + 90.0, 179.999999)
+    field = chr(ord("A") + int(lon // 20)) + chr(ord("A") + int(lat // 10))
+    square = str(int(lon % 20 // 2)) + str(int(lat % 10 // 1))
+    sub = chr(ord("a") + int(lon % 2 * 12)) + chr(ord("a") + int(lat % 1 * 24))
+    return field + square + sub
+
+
 def adif_degrees(text: str | None, *, latitude: bool) -> float | None:
     """An ADIF Location (``N041 30.123``) in degrees, or ``None`` if it is not one."""
     found = _LOCATION.match((text or "").strip().upper())
