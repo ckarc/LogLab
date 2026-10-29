@@ -55,6 +55,17 @@ pub const JOURNAL: &str = "qsos.journal";
 /// The latest station information, in the records folder.
 pub const STATION_FILE: &str = "lablog-station.json";
 
+/// Who programs at this station log as, as the Engine last said, from
+/// `lablog-station.json` in the records folder `folder`: `None` before the
+/// Agent has heard from the Engine. Use `station_call` as the call a
+/// program sends on the air, and `grid` as its grid; leave a program's own
+/// setting alone where either is `None`.
+#[must_use]
+pub fn last_station(folder: &Path) -> Option<StationInfo> {
+    let bytes = fs::read(folder.join(STATION_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
 /// The running carrier; dropping it stops it.
 pub struct Carrier {
     stop: Arc<AtomicBool>,
@@ -83,6 +94,12 @@ pub fn start(uplink: Uplink, radio: Arc<dyn Source>, folder: &Path) -> Result<Ca
     if waiting > 0 {
         crate::print_event(&format!(
             "QSOs: {waiting} wait in the journal for LabLog; sending them now."
+        ));
+    }
+    if let Some(info) = last_station(folder) {
+        crate::print_event(&format!(
+            "LabLog, when last heard from: {}",
+            station_text(&info)
         ));
     }
     let mut work = Work {
@@ -387,7 +404,7 @@ fn adif_field(record: &str, name: &str) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{StationInfo, adif_field, station_text};
+    use super::{STATION_FILE, StationInfo, adif_field, last_station, station_text};
 
     #[test]
     fn reads_a_field_of_a_record() {
@@ -407,6 +424,21 @@ mod tests {
             grid: Some("EM18bm".to_owned()),
             grid_source: Some("gps".to_owned()),
         }
+    }
+
+    #[test]
+    fn keeps_who_programs_log_as_for_setting_them_up() {
+        let dir = std::env::temp_dir().join(format!("loglab-carrier-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::remove_file(dir.join(STATION_FILE));
+        assert_eq!(last_station(&dir), None);
+        let kept = info(Some("K9KSU"));
+        std::fs::write(
+            dir.join(STATION_FILE),
+            serde_json::to_vec_pretty(&kept).unwrap_or_default(),
+        )
+        .unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(last_station(&dir), Some(kept));
     }
 
     #[test]
