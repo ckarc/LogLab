@@ -1805,15 +1805,58 @@ fn vara_proxy(
     }
 }
 
-/// Answers as a Kenwood TS-2000 on `port`, one end of a com0com pair, for
-/// a program such as Winlink Express on the other end (see `kenwood_cat`).
+/// Where the virtual Kenwood answers, and the program's end of its
+/// com0com pair when known: `--kenwood PORT` if given, else, where
+/// Winlink Express is installed, the first com0com pair a program can open
+/// by a `COMn` name (see `com0com`).
 #[cfg(windows)]
-fn virtual_kenwood(port: &str, rigctld: SocketAddr) -> Option<crate::kenwood_cat::Virtual> {
+fn kenwood_ports(asked: Option<&str>) -> Option<(String, Option<String>)> {
+    let listing = crate::com0com::listed();
+    if let Some(port) = asked {
+        let program = crate::com0com::pairs(&listing)
+            .into_iter()
+            .find(|pair| pair.agent.eq_ignore_ascii_case(port))
+            .map(|pair| pair.program);
+        return Some((port.to_owned(), program));
+    }
+    crate::winlink::find()?;
+    let Some(pair) = crate::com0com::for_programs(&listing) else {
+        println!(
+            "Virtual Kenwood: not started, as no com0com pair named COMn was found. Winlink \
+             Express tunes the radio only through a COM port; it still keys through the Agent."
+        );
+        return None;
+    };
+    Some((pair.agent, Some(pair.program)))
+}
+
+/// How Winlink Express is set to tune, with or without the virtual
+/// Kenwood.
+#[cfg(windows)]
+fn kenwood_tuning(kenwood: Option<&(String, Option<String>)>) -> crate::winlink::Tuning<'_> {
+    kenwood.map_or(crate::winlink::Tuning::Agent, |(_, program)| {
+        crate::winlink::Tuning::Kenwood(program.as_deref())
+    })
+}
+
+/// Answers as a Kenwood TS-2000 on `port`, one end of a com0com pair, for
+/// a program such as Winlink Express on `program`, the other end (see
+/// `kenwood_cat`).
+#[cfg(windows)]
+fn virtual_kenwood(
+    port: &str,
+    program: Option<&str>,
+    rigctld: SocketAddr,
+) -> Option<crate::kenwood_cat::Virtual> {
     match crate::kenwood_cat::Virtual::start(port, rigctld) {
         Ok(running) => {
+            let other = program.map_or_else(
+                || "the other port of the pair".to_owned(),
+                |program| format!("{program} (set by the Agent while Winlink Express is closed)"),
+            );
             println!(
                 "Virtual Kenwood: answering as a TS-2000 on {port}. In Winlink Express, \
-                 Radio Setup: Kenwood, on the other port of the pair."
+                 Radio Setup: Kenwood, Control Port {other}."
             );
             Some(running)
         }
@@ -1965,13 +2008,19 @@ fn run_found(
     let server = rigctld_server::Server::start(listen, Arc::new(programs) as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
+    let kenwood = kenwood_ports(kenwood);
+    #[cfg(windows)]
+    let tuning = kenwood_tuning(kenwood.as_ref());
+    #[cfg(windows)]
     if let Some(station) = &station {
-        crate::programs::set_up(station, server.address(), kenwood.is_some());
+        crate::programs::set_up(station, server.address(), tuning);
     }
     #[cfg(windows)]
     let vara_proxy = vara_proxy(server.address(), vara_notes);
     #[cfg(windows)]
-    let virtual_kenwood = kenwood.and_then(|port| virtual_kenwood(port, server.address()));
+    let virtual_kenwood = kenwood
+        .as_ref()
+        .and_then(|(port, program)| virtual_kenwood(port, program.as_deref(), server.address()));
     #[cfg(not(windows))]
     if kenwood.is_some() {
         println!("Virtual Kenwood: Windows only, so not started.");
@@ -1984,7 +2033,7 @@ fn run_found(
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
-    let mut watching = Watching::new(kenwood.is_some());
+    let mut watching = Watching::new(kenwood.clone());
     let serving = AtomicBool::new(true);
     let mut lost = Lost::default();
     crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
@@ -2077,13 +2126,14 @@ struct Watching {
     last: std::time::Instant,
     was_on_air: bool,
     open: ProgramsOpen,
-    /// Whether programs tune the radio through the virtual Kenwood.
-    kenwood: bool,
+    /// The virtual Kenwood's port and its pair's program end, when
+    /// programs tune the radio through it.
+    kenwood: Option<(String, Option<String>)>,
 }
 
 #[cfg(windows)]
 impl Watching {
-    fn new(kenwood: bool) -> Self {
+    fn new(kenwood: Option<(String, Option<String>)>) -> Self {
         Self {
             hint: None,
             last: std::time::Instant::now(),
@@ -2107,7 +2157,7 @@ impl Watching {
                 "{closed} closed, so the Agent sets up the programs that are closed now."
             ));
             vara(station);
-            crate::programs::set_up(station, radio, self.kenwood);
+            crate::programs::set_up(station, radio, kenwood_tuning(self.kenwood.as_ref()));
         }
         for error in station.errors.try_iter() {
             crate::print_event(&format!("sound device error: {error}"));
