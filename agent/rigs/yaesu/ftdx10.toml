@@ -1,0 +1,2469 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Rig definition: Yaesu FTDX10.
+#
+# The first Yaesu CAT definition. The format is the IC-7300's (described in
+# docs/station-agent-usb-radios.md, "Rig definition files") with what CAT
+# needs: commands are written as they are sent, without the semicolon
+# ("RG0"); a menu item is its group, page and item ("01 04 17" is
+# EX010417); and `digits` says how many digits a value has on the wire. The
+# Agent keeps a value of digits as BCD bytes, as an Icom radio sends its
+# values: RG0255; is kept as 02 55.
+#
+# Nothing here has been checked on a real FTDX10. Every value is
+# `verified = false` and no setting has `write_checked`, so the Agent reads
+# and records this radio's settings but writes none until
+# `loglab-agent check-writes` has been run on a real FTDX10.
+#
+# Menu group 05 (the clock, memory and menu loads and saves, firmware
+# update, format, calibration and resets) is left out: the Agent never
+# touches it.
+
+[definition]
+schema = 1
+maker = "Yaesu"
+model = "FTDX10"
+family = "yaesu-cat"
+status = "draft"
+
+[[definition.sources]]
+id = "cat_manual"
+title = "Yaesu FTDX10 CAT operation reference manual, as hosted at rigpix.com/yaesu/ftdx10_cat_manual.pdf"
+note = """
+The command table (ID, FA, FB, MD, TX, RM, VS, ST, and every front-panel
+command below), the EX menu (Table 2: groups 01 to 05) and the width table
+(Table 3) were read from a text copy of this manual, 2026-10-29. The manual
+lists the USB ports: the Enhanced COM Port carries CAT, the Standard COM Port
+the transmit controls (PTT, CW keying, digital modes). It doesn't give data
+bits, stop bits or parity, or how the radio answers a command it can't do.
+"""
+
+[[definition.sources]]
+id = "hamlib_ftdx10"
+title = "Hamlib rigs/yaesu/ftdx10.c, ftdx10.h and newcat.c (github.com/Hamlib/Hamlib, master, read 2026-10-29)"
+note = """
+Used only for what the manual doesn't say; nothing was copied from it
+(Principle XVI). ftdx10.c: 4800 to 38400 baud, 8 data bits, 2 stop bits,
+hardware handshake. ftdx10.h: the Po meter at 27, 94, 147, 176 and 205 is 5,
+25, 50, 75 and 100 W, and SWR at 0, 26, 52, 89, 126, 173 and 236 is 1.0,
+1.2, 1.5, 2.0, 3.0, 4.0 and 5.0 (measured on an FTDX101D, says the file).
+newcat.c: the mode characters (3 CW, 7 CW-R, 6 RTTY, 9 RTTY-R, 8 PKTLSB,
+C PKTUSB, A PKTFM), and an answer of ?; as the radio refusing a command.
+"""
+
+[[definition.sources]]
+id = "usb_ids"
+title = "Silicon Labs CP2105 at 10C4:EA70 in FTDX10s (the FT8AF project's issue 817, as noted 2026-10-27), and the CP2105's two interfaces"
+note = """
+The radio's USB serial bridge is one CP2105 with two ports: interface 0, the
+Enhanced COM Port (CAT), and interface 1, the Standard COM Port (transmit
+controls). Which interface is which is not checked on a radio.
+"""
+
+[[definition.sources]]
+id = "silabs_driver"
+title = "Silicon Labs, CP210x Universal Windows Driver release notes (11.6.0, 2026-09-15), silabs.com/documents/public/release-notes/CP210x_Universal_Windows_Driver_ReleaseNotes.txt"
+note = "Lists the CP2105 among the devices it supports: the same driver as the IC-7300's."
+
+# ---------------------------------------------------------------------------
+# How the radio appears on USB.
+# ---------------------------------------------------------------------------
+[usb]
+audio = { name_contains = "USB Audio CODEC", verified = false }
+
+# One CP2105 with two ports. The Standard COM Port keys the transmitter from
+# its RTS or DTR line (the RPTT SELECT and PC KEYING items below), so the
+# Agent never opens it: it opens only interface 0, the Enhanced COM Port.
+[usb.serial]
+vid = 0x10C4
+pid = 0xEA70
+role = "cat"
+interface = 0
+verified = false
+
+[usb.serial.driver]
+name = "Silicon Labs CP210x"
+download = "https://www.silabs.com/documents/public/software/CP210x_Universal_Windows_Driver.zip"
+page = "https://www.silabs.com/developers/usb-to-uart-bridge-vcp-drivers"
+file = "CP210x_Universal_Windows_Driver.zip"
+inf = "silabser.inf"
+source = "silabs_driver"
+verified = false
+
+# ---------------------------------------------------------------------------
+# The CAT link: 4800 to 38400 baud (CAT RATE, EX030108), 8 data bits, 2 stop
+# bits (Hamlib). RTS is held on: with CAT RTS (EX030110) enabled the radio
+# uses it for flow control, and on the Enhanced port it can't key the radio.
+# DTR stays off.
+# ---------------------------------------------------------------------------
+[link]
+baud_rates = [38400, 9600, 19200, 4800]
+stop_bits = 2
+rts = "on"
+echo = "off"
+verified = false
+
+[identity]
+# ID; answers ID0761;.
+query = "ID"
+answer = "0761"
+source = "cat_manual"
+verified = false
+
+# ---------------------------------------------------------------------------
+# Modes: the character MD0; answers, by rig-model mode. CW-U is CW and CW-L
+# is CW-R, RTTY-L is RTTY and RTTY-U is RTTY-R (Hamlib newcat.c). FM-N, AM-N,
+# PSK and DATA-FM-N have no rig-model name yet.
+# ---------------------------------------------------------------------------
+[modes]
+source = "cat_manual"
+verified = false
+
+[modes.codes]
+LSB = 0x31
+USB = 0x32
+CW = 0x33
+FM = 0x34
+AM = 0x35
+RTTY = 0x36
+CW-R = 0x37
+DATA-LSB = 0x38
+RTTY-R = 0x39
+DATA-FM = 0x41
+DATA-USB = 0x43
+
+# ---------------------------------------------------------------------------
+# Commands the driver uses for rig-model operations, as sent without their
+# semicolons. The driver adds the values.
+# ---------------------------------------------------------------------------
+[commands]
+read_frequency = { command = "FA", source = "cat_manual", verified = false }
+set_frequency = { command = "FA", source = "cat_manual", verified = false }
+read_mode = { command = "MD0", source = "cat_manual", verified = false }
+set_mode = { command = "MD0", source = "cat_manual", verified = false }
+vfo_frequency = { command = "FB", source = "cat_manual", verified = false }
+select_vfo_a = { command = "VS0", source = "cat_manual", verified = false }
+select_vfo_b = { command = "VS1", source = "cat_manual", verified = false }
+split = { command = "ST", off = 0x30, on = 0x31, source = "cat_manual", verified = false }
+# TX1; is CAT TX on, TX0; off. Only the Agent's transmit path may send them
+# (Principle XI).
+ptt = { command = "TX", off = 0x30, on = 0x31, source = "cat_manual", verified = false }
+
+# ---------------------------------------------------------------------------
+# Every setting the radio exposes over CAT: the EX menu, groups 01 to 04, then
+# the front-panel controls. A setting with signed or text values ("+05", a
+# call sign) is kept raw as the characters the radio sends. `write = false`:
+# the CAT and RS-232C link, and the lines that key the radio.
+# ---------------------------------------------------------------------------
+[[settings]]
+id = "ssb_af_treble_gain"
+item = "01 01 01"
+label = "SSB AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_af_middle_tone_gain"
+item = "01 01 02"
+label = "SSB AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_af_bass_gain"
+item = "01 01 03"
+label = "SSB AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_agc_fast_delay"
+item = "01 01 04"
+label = "SSB AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_agc_mid_delay"
+item = "01 01 05"
+label = "SSB AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_agc_slow_delay"
+item = "01 01 06"
+label = "SSB AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_lcut_frequency"
+item = "01 01 07"
+label = "SSB LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_lcut_slope"
+item = "01 01 08"
+label = "SSB LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_hcut_frequency"
+item = "01 01 09"
+label = "SSB HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_hcut_slope"
+item = "01 01 10"
+label = "SSB HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_out_level"
+item = "01 01 11"
+label = "SSB OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_tx_bpf_sel"
+item = "01 01 12"
+label = "SSB TX BPF SEL"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_mod_source"
+item = "01 01 13"
+label = "SSB MOD SOURCE"
+values = { MIC = 0x00, REAR = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_rear_select"
+item = "01 01 14"
+label = "SSB REAR SELECT"
+values = { DATA = 0x00, USB = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_rport_gain"
+item = "01 01 15"
+label = "SSB RPORT GAIN"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_rptt_select"
+item = "01 01 16"
+label = "SSB RPTT SELECT"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the radio's Standard COM port keys it from SSB. The Agent keys with CAT (TX1;), so this is recorded but never changed."
+
+[[settings]]
+id = "am_af_treble_gain"
+item = "01 02 01"
+label = "AM AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_af_middle_tone_gain"
+item = "01 02 02"
+label = "AM AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_af_bass_gain"
+item = "01 02 03"
+label = "AM AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_agc_fast_delay"
+item = "01 02 04"
+label = "AM AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_agc_mid_delay"
+item = "01 02 05"
+label = "AM AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_agc_slow_delay"
+item = "01 02 06"
+label = "AM AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_lcut_frequency"
+item = "01 02 07"
+label = "AM LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_lcut_slope"
+item = "01 02 08"
+label = "AM LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_hcut_frequency"
+item = "01 02 09"
+label = "AM HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_hcut_slope"
+item = "01 02 10"
+label = "AM HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_out_level"
+item = "01 02 11"
+label = "AM OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_tx_bpf_sel"
+item = "01 02 12"
+label = "AM TX BPF SEL"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_mod_source"
+item = "01 02 13"
+label = "AM MOD SOURCE"
+values = { MIC = 0x00, REAR = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_mic_gain"
+item = "01 02 14"
+label = "AM MIC GAIN"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_rear_select"
+item = "01 02 15"
+label = "AM REAR SELECT"
+values = { DATA = 0x00, USB = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_rport_gain"
+item = "01 02 16"
+label = "AM RPORT GAIN"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_rptt_select"
+item = "01 02 17"
+label = "AM RPTT SELECT"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the Standard COM port keys it from AM. Recorded, never changed."
+
+[[settings]]
+id = "fm_af_treble_gain"
+item = "01 03 01"
+label = "FM AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_af_middle_tone_gain"
+item = "01 03 02"
+label = "FM AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_af_bass_gain"
+item = "01 03 03"
+label = "FM AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_agc_fast_delay"
+item = "01 03 04"
+label = "FM AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_agc_mid_delay"
+item = "01 03 05"
+label = "FM AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_agc_slow_delay"
+item = "01 03 06"
+label = "FM AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_lcut_frequency"
+item = "01 03 07"
+label = "FM LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_lcut_slope"
+item = "01 03 08"
+label = "FM LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_hcut_frequency"
+item = "01 03 09"
+label = "FM HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_hcut_slope"
+item = "01 03 10"
+label = "FM HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_out_level"
+item = "01 03 11"
+label = "FM OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_mod_source"
+item = "01 03 12"
+label = "FM MOD SOURCE"
+values = { MIC = 0x00, REAR = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_mic_gain"
+item = "01 03 13"
+label = "FM MIC GAIN"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_rear_select"
+item = "01 03 14"
+label = "FM REAR SELECT"
+values = { DATA = 0x00, USB = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_rport_gain"
+item = "01 03 15"
+label = "FM RPORT GAIN"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_rptt_select"
+item = "01 03 16"
+label = "FM RPTT SELECT"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the Standard COM port keys it from FM. Recorded, never changed."
+
+[[settings]]
+id = "fm_rpt_shift_28mhz"
+item = "01 03 17"
+label = "FM RPT SHIFT (28MHz)"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_rpt_shift_50mhz"
+item = "01 03 18"
+label = "FM RPT SHIFT (50MHz)"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_rpt_shift_direction"
+item = "01 03 19"
+label = "FM RPT SHIFT direction"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_tone_frequency"
+item = "01 03 20"
+label = "FM tone frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_enc_dec"
+item = "01 03 21"
+label = "FM ENC/DEC"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_af_treble_gain"
+item = "01 04 01"
+label = "DATA AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_af_middle_tone_gain"
+item = "01 04 02"
+label = "DATA AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_af_bass_gain"
+item = "01 04 03"
+label = "DATA AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_agc_fast_delay"
+item = "01 04 04"
+label = "DATA AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_agc_mid_delay"
+item = "01 04 05"
+label = "DATA AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_agc_slow_delay"
+item = "01 04 06"
+label = "DATA AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "psk_tone"
+item = "01 04 07"
+label = "PSK TONE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_shift_ssb"
+item = "01 04 08"
+label = "DATA SHIFT (SSB)"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_lcut_frequency"
+item = "01 04 09"
+label = "DATA LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_lcut_slope"
+item = "01 04 10"
+label = "DATA LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_hcut_frequency"
+item = "01 04 11"
+label = "DATA HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_hcut_slope"
+item = "01 04 12"
+label = "DATA HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_out_level"
+item = "01 04 13"
+label = "DATA OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_tx_bpf_sel"
+item = "01 04 14"
+label = "DATA TX BPF SEL"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_mod_source"
+item = "01 04 15"
+label = "DATA MOD SOURCE"
+values = { MIC = 0x00, REAR = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_rear_select"
+item = "01 04 16"
+label = "DATA REAR SELECT"
+values = { DATA = 0x00, USB = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_rport_gain"
+item = "01 04 17"
+label = "DATA RPORT GAIN"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_rptt_select"
+item = "01 04 18"
+label = "DATA RPTT SELECT"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the Standard COM port keys it from DATA. Recorded, never changed."
+
+[[settings]]
+id = "rtty_af_treble_gain"
+item = "01 05 01"
+label = "RTTY AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_af_middle_tone_gain"
+item = "01 05 02"
+label = "RTTY AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_af_bass_gain"
+item = "01 05 03"
+label = "RTTY AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_agc_fast_delay"
+item = "01 05 04"
+label = "RTTY AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_agc_mid_delay"
+item = "01 05 05"
+label = "RTTY AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_agc_slow_delay"
+item = "01 05 06"
+label = "RTTY AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_polarity_rx"
+item = "01 05 07"
+label = "RTTY POLARITY-RX"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_polarity_tx"
+item = "01 05 08"
+label = "RTTY POLARITY-TX"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_lcut_frequency"
+item = "01 05 09"
+label = "RTTY LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_lcut_slope"
+item = "01 05 10"
+label = "RTTY LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_hcut_frequency"
+item = "01 05 11"
+label = "RTTY HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_hcut_slope"
+item = "01 05 12"
+label = "RTTY HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_out_level"
+item = "01 05 13"
+label = "RTTY OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_shift_port"
+item = "01 05 14"
+label = "RTTY SHIFT PORT"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the Standard COM port shifts RTTY. Recorded, never changed."
+
+[[settings]]
+id = "rtty_mark_frequency"
+item = "01 05 15"
+label = "RTTY MARK FREQUENCY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_shift_frequency"
+item = "01 05 16"
+label = "RTTY SHIFT FREQUENCY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+note = "The manual's value list for this item repeats 1 for 170 and 200 Hz, so its meanings are not given here."
+
+[[settings]]
+id = "psk_mode"
+item = "01 06 01"
+label = "PSK MODE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "psk_decode_afc_range"
+item = "01 06 02"
+label = "PSK DECODE AFC RANGE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "qpsk_polarity_rx"
+item = "01 06 03"
+label = "QPSK POLARITY-RX"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "qpsk_polarity_tx"
+item = "01 06 04"
+label = "QPSK POLARITY-TX"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "psk_tx_level"
+item = "01 06 05"
+label = "PSK TX LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_rx_usos"
+item = "01 07 01"
+label = "RTTY RX USOS"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_tx_usos"
+item = "01 07 02"
+label = "RTTY TX USOS"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_rx_new_line_code"
+item = "01 07 03"
+label = "RTTY RX NEW LINE CODE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_tx_auto_cr_lf"
+item = "01 07 04"
+label = "RTTY TX AUTO CR+LF"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_tx_diddle"
+item = "01 07 05"
+label = "RTTY TX DIDDLE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_baudot_code"
+item = "01 07 06"
+label = "RTTY BAUDOT CODE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_af_treble_gain"
+item = "02 01 01"
+label = "CW AF treble gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_af_middle_tone_gain"
+item = "02 01 02"
+label = "CW AF middle tone gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_af_bass_gain"
+item = "02 01 03"
+label = "CW AF bass gain"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_agc_fast_delay"
+item = "02 01 04"
+label = "CW AGC fast delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_agc_mid_delay"
+item = "02 01 05"
+label = "CW AGC mid delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_agc_slow_delay"
+item = "02 01 06"
+label = "CW AGC slow delay"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_lcut_frequency"
+item = "02 01 07"
+label = "CW LCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_lcut_slope"
+item = "02 01 08"
+label = "CW LCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_hcut_frequency"
+item = "02 01 09"
+label = "CW HCUT frequency"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_hcut_slope"
+item = "02 01 10"
+label = "CW HCUT slope"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_out_level"
+item = "02 01 11"
+label = "CW OUT LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_auto_mode"
+item = "02 01 12"
+label = "CW AUTO MODE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_bk_in_type"
+item = "02 01 13"
+label = "CW BK-IN TYPE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_wave_shape"
+item = "02 01 14"
+label = "CW WAVE SHAPE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_freq_display"
+item = "02 01 15"
+label = "CW FREQ DISPLAY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "pc_keying"
+item = "02 01 16"
+label = "PC KEYING"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Which line of the Standard COM port keys CW. Recorded, never changed."
+
+[[settings]]
+id = "qsk_delay_time"
+item = "02 01 17"
+label = "QSK DELAY TIME"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_indicator"
+item = "02 01 18"
+label = "CW INDICATOR"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "keyer_type"
+item = "02 02 01"
+label = "KEYER TYPE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "keyer_dot_dash"
+item = "02 02 02"
+label = "KEYER DOT/DASH"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_weight"
+item = "02 02 03"
+label = "CW WEIGHT"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "number_style"
+item = "02 02 04"
+label = "NUMBER STYLE"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "contest_number"
+item = "02 02 05"
+label = "CONTEST NUMBER"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_memory_1"
+item = "02 02 06"
+label = "CW MEMORY 1"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_memory_2"
+item = "02 02 07"
+label = "CW MEMORY 2"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_memory_3"
+item = "02 02 08"
+label = "CW MEMORY 3"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_memory_4"
+item = "02 02 09"
+label = "CW MEMORY 4"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_memory_5"
+item = "02 02 10"
+label = "CW MEMORY 5"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "repeat_interval"
+item = "02 02 11"
+label = "REPEAT INTERVAL"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cw_decode_bw"
+item = "02 03 01"
+label = "CW DECODE BW"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "nb_width"
+item = "03 01 01"
+label = "NB WIDTH"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "nb_rejection"
+item = "03 01 02"
+label = "NB REJECTION"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "beep_level"
+item = "03 01 03"
+label = "BEEP LEVEL"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rf_sql_vr"
+item = "03 01 04"
+label = "RF/SQL VR"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "tuner_select"
+item = "03 01 05"
+label = "TUNER SELECT"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rs232c_rate"
+item = "03 01 06"
+label = "232C RATE"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rs232c_time_out_timer"
+item = "03 01 07"
+label = "232C TIME OUT TIMER"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cat_rate"
+item = "03 01 08"
+label = "CAT RATE"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "The CAT port's speed. Changing it would cut the Agent off."
+
+[[settings]]
+id = "cat_time_out_timer"
+item = "03 01 09"
+label = "CAT TIME OUT TIMER"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "cat_rts"
+item = "03 01 10"
+label = "CAT RTS"
+raw = true
+digits = 1
+write = false
+source = "cat_manual"
+verified = false
+note = "Whether the radio uses the CAT port's RTS line for flow control. The Agent holds RTS on, so either works."
+
+[[settings]]
+id = "qmb_ch"
+item = "03 01 11"
+label = "QMB CH"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mem_group"
+item = "03 01 12"
+label = "MEM GROUP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "quick_split_input"
+item = "03 01 13"
+label = "QUICK SPLIT INPUT"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "quick_split_freq"
+item = "03 01 14"
+label = "QUICK SPLIT FREQ"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "split_freq_display"
+item = "03 01 15"
+label = "SPLIT FREQ DISPLAY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "tx_time_out_timer"
+item = "03 01 16"
+label = "TX TIME OUT TIMER"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mic_scan"
+item = "03 01 17"
+label = "MIC SCAN"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mic_scan_resume"
+item = "03 01 18"
+label = "MIC SCAN RESUME"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ref_freq_adj"
+item = "03 01 19"
+label = "REF FREQ ADJ"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "keyboard_language"
+item = "03 01 20"
+label = "KEYBOARD LANGUAGE"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "apf_width"
+item = "03 02 01"
+label = "APF WIDTH"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "contour_level"
+item = "03 02 02"
+label = "CONTOUR LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "contour_width"
+item = "03 02 03"
+label = "CONTOUR WIDTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "if_notch_width"
+item = "03 02 04"
+label = "IF NOTCH WIDTH"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "amc_release_time"
+item = "03 03 01"
+label = "AMC RELEASE TIME"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq1_freq"
+item = "03 03 02"
+label = "PRMTRC EQ1 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq1_level"
+item = "03 03 03"
+label = "PRMTRC EQ1 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq1_bwth"
+item = "03 03 04"
+label = "PRMTRC EQ1 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq2_freq"
+item = "03 03 05"
+label = "PRMTRC EQ2 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq2_level"
+item = "03 03 06"
+label = "PRMTRC EQ2 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq2_bwth"
+item = "03 03 07"
+label = "PRMTRC EQ2 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq3_freq"
+item = "03 03 08"
+label = "PRMTRC EQ3 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq3_level"
+item = "03 03 09"
+label = "PRMTRC EQ3 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "prmtrc_eq3_bwth"
+item = "03 03 10"
+label = "PRMTRC EQ3 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq1_freq"
+item = "03 03 11"
+label = "P PRMTRC EQ1 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq1_level"
+item = "03 03 12"
+label = "P PRMTRC EQ1 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq1_bwth"
+item = "03 03 13"
+label = "P PRMTRC EQ1 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq2_freq"
+item = "03 03 14"
+label = "P PRMTRC EQ2 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq2_level"
+item = "03 03 15"
+label = "P PRMTRC EQ2 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq2_bwth"
+item = "03 03 16"
+label = "P PRMTRC EQ2 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq3_freq"
+item = "03 03 17"
+label = "P PRMTRC EQ3 FREQ"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq3_level"
+item = "03 03 18"
+label = "P PRMTRC EQ3 LEVEL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "p_prmtrc_eq3_bwth"
+item = "03 03 19"
+label = "P PRMTRC EQ3 BWTH"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "hf_max_power"
+item = "03 04 01"
+label = "HF MAX POWER"
+range = [5, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "item_50m_max_power"
+item = "03 04 02"
+label = "50M MAX POWER"
+range = [5, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "item_70m_max_power"
+item = "03 04 03"
+label = "70M MAX POWER"
+range = [5, 50]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_max_power"
+item = "03 04 04"
+label = "AM MAX POWER"
+range = [5, 25]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "vox_select"
+item = "03 04 05"
+label = "VOX SELECT"
+values = { MIC = 0x00, DATA = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "data_vox_gain"
+item = "03 04 06"
+label = "DATA VOX GAIN"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "emergency_freq_tx"
+item = "03 04 07"
+label = "EMERGENCY FREQ TX"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ssb_cw_dial_step"
+item = "03 05 01"
+label = "SSB/CW DIAL STEP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rtty_psk_dial_step"
+item = "03 05 02"
+label = "RTTY/PSK DIAL STEP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ch_step"
+item = "03 05 03"
+label = "CH STEP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "am_ch_step"
+item = "03 05 04"
+label = "AM CH STEP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "fm_ch_step"
+item = "03 05 05"
+label = "FM CH STEP"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "main_steps_per_rev"
+item = "03 05 06"
+label = "MAIN STEPS PER REV."
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mpvd_steps_per_rev"
+item = "03 05 07"
+label = "MPVD STEPS PER REV."
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "my_call"
+item = "04 01 01"
+label = "MY CALL"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "my_call_time"
+item = "04 01 02"
+label = "MY CALL TIME"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "screen_saver"
+item = "04 01 03"
+label = "SCREEN SAVER"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "dimmer_led"
+item = "04 01 04"
+label = "DIMMER LED"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mouse_pointer_speed"
+item = "04 01 05"
+label = "MOUSE POINTER SPEED"
+raw = true
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rbw"
+item = "04 02 01"
+label = "RBW"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "scope_ctr"
+item = "04 02 02"
+label = "SCOPE CTR"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "item_2d_disp_sensitivity"
+item = "04 02 03"
+label = "2D DISP SENSITIVITY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "item_3dss_disp_sensitivity"
+item = "04 02 04"
+label = "3DSS DISP SENSITIVITY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "ext_display"
+item = "04 03 01"
+label = "EXT DISPLAY"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "pixel"
+item = "04 03 02"
+label = "PIXEL"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+# Front-panel controls, each read by its own command (CAT manual, command table).
+
+[[settings]]
+id = "mode"
+command = "MD0"
+label = "Operating mode (main band)"
+raw = true
+write = true
+source = "cat_manual"
+verified = false
+selects = true
+note = "The mode character MD0 answers (2 USB, C DATA-U, ...). Put back first: the width and narrow belong to the mode."
+
+[[settings]]
+id = "af_gain"
+command = "AG0"
+label = "AF gain"
+range = [0, 255]
+percent = true
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rf_gain"
+command = "RG0"
+label = "RF gain"
+range = [0, 255]
+percent = true
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "squelch"
+command = "SQ0"
+label = "Squelch"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "preamp"
+command = "PA0"
+label = "Preamp (IPO)"
+values = { IPO = 0x00, AMP1 = 0x01, AMP2 = 0x02 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "attenuator"
+command = "RA0"
+label = "Attenuator"
+values = { OFF = 0x00, "6dB" = 0x01, "12dB" = 0x02, "18dB" = 0x03 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "agc"
+command = "GT0"
+label = "AGC"
+raw = true
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+note = "Read 0 OFF, 1 FAST, 2 MID, 3 SLOW, 4 to 6 AUTO-FAST, -MID, -SLOW; set 0 to 3, or 4 for AUTO. Kept raw: an AUTO reading may not go back as it was."
+
+[[settings]]
+id = "noise_reduction"
+command = "NR0"
+label = "Noise reduction (DNR)"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "nr_level"
+command = "RL0"
+label = "DNR level"
+range = [1, 15]
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "noise_blanker"
+command = "NB0"
+label = "Noise blanker"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "nb_level"
+command = "NL0"
+label = "Noise blanker level"
+range = [0, 10]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "auto_notch"
+command = "BC0"
+label = "Auto notch (DNF)"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "manual_notch"
+command = "BP00"
+label = "Manual notch"
+range = [0, 1]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "notch_position"
+command = "BP01"
+label = "Manual notch frequency"
+raw = true
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "if_width"
+command = "SH0"
+label = "IF width (selected mode)"
+range = [0, 23]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+per_selection = true
+note = "SH0 answers 0 and the width step: SSB 01 = 300 Hz to 23 = 4000 Hz, CW and DATA 01 = 50 Hz to 18 = 3000 Hz, 00 the roofing filter's default (manual, Table 3)."
+
+[[settings]]
+id = "narrow"
+command = "NA0"
+label = "Narrow"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+per_selection = true
+
+[[settings]]
+id = "contour"
+command = "CO00"
+label = "Contour"
+range = [0, 1]
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "contour_frequency"
+command = "CO01"
+label = "Contour frequency"
+raw = true
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "apf"
+command = "CO02"
+label = "APF"
+range = [0, 1]
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "apf_frequency"
+command = "CO03"
+label = "APF frequency"
+range = [0, 50]
+digits = 4
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "rf_power"
+command = "PC"
+label = "RF power"
+range = [5, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "mic_gain"
+command = "MG"
+label = "MIC gain"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "processor"
+command = "PR0"
+label = "Speech processor"
+values = { OFF = 0x01, ON = 0x02 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "parametric_eq"
+command = "PR1"
+label = "Parametric microphone equalizer"
+values = { OFF = 0x01, ON = 0x02 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "vox"
+command = "VX"
+label = "VOX"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "vox_gain"
+command = "VG"
+label = "VOX gain"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "key_speed"
+command = "KS"
+label = "Key speed"
+range = [4, 60]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "key_pitch"
+command = "KP"
+label = "Key pitch"
+range = [0, 75]
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "break_in_delay"
+command = "SD"
+label = "CW break-in delay"
+range = [0, 33]
+digits = 2
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "break_in"
+command = "BI"
+label = "Break-in"
+values = { OFF = 0x00, ON = 0x01 }
+digits = 1
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "monitor"
+command = "ML0"
+label = "Monitor"
+range = [0, 1]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+[[settings]]
+id = "monitor_level"
+command = "ML1"
+label = "Monitor level"
+range = [0, 100]
+digits = 3
+write = true
+source = "cat_manual"
+verified = false
+
+# ---------------------------------------------------------------------------
+# The transmit meters: RM5 Po, RM6 SWR, RM4 ALC, each 000 to 255 (manual).
+# Po and SWR points are Hamlib's (ftdx10.h); the manual gives no scale for
+# ALC, so its 0 to 255 is read as 0 to 100% of the meter.
+# ---------------------------------------------------------------------------
+[meters]
+source = "hamlib_ftdx10"
+# Watts of 100: percent.
+power = [[0, 0], [27, 5], [94, 25], [147, 50], [176, 75], [205, 100]]
+swr = [[0, 10], [26, 12], [52, 15], [89, 20], [126, 30], [173, 40], [236, 50]]
+alc = [[0, 0], [255, 100]]
+# DATA modes take the Agent's audio from USB (REAR SELECT USB), at RPORT GAIN.
+drive = "data_rport_gain"
+power_setting = "rf_power"
+
+# ---------------------------------------------------------------------------
+# Requirements.
+# ---------------------------------------------------------------------------
+[[requirements]]
+job = "digital_modes"
+setting = "data_mod_source"
+accept = ["REAR"]
+offer = "REAR"
+explain = "In the DATA modes the radio takes transmit audio from the microphone, so programs like WSJT-X and VARA would transmit silence. Set DATA MOD SOURCE to REAR."
+
+[[requirements]]
+job = "digital_modes"
+setting = "data_rear_select"
+accept = ["USB"]
+offer = "USB"
+explain = "In the DATA modes the radio takes rear-panel audio from the DATA jack, not USB, so programs like WSJT-X and VARA would transmit silence. Set DATA REAR SELECT to USB."

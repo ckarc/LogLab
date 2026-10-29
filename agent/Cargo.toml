@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 # A radio's COM port, for the CI-V driver. No default features: they only
 # add USB device listing through libudev on Linux, which needs system
 # libraries. MPL-2.0.
-serialport = { version = "4.10.1", default-features = false }
+serialport = { version = "4.10.1", default-features = false, features = ["usbportinfo-interface"] }
 serde_json = "1"
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }

@@ -19,7 +19,7 @@ use std::time::SystemTime;
 use serde::Serialize;
 
 use crate::civ;
-use crate::civ_radio::{CivRadio, Port};
+use crate::serial_radio::SerialRadio;
 use crate::settings_record;
 
 /// What became of one setting.
@@ -98,8 +98,8 @@ impl Report {
 
 /// Writes each changeable setting's own value back to it, and says which
 /// the radio took. `progress` is told how many are done, out of how many.
-pub fn check<P: Port>(
-    radio: &mut CivRadio<P>,
+pub fn check(
+    radio: &mut dyn SerialRadio,
     serial: Option<&str>,
     now: SystemTime,
     computer: &str,

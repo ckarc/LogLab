@@ -31,7 +31,11 @@ use serde::Deserialize;
 /// The only schema version this Agent understands.
 const SCHEMA: u32 = 1;
 /// The protocol families this Agent has drivers for, or will.
-const FAMILIES: [&str; 1] = ["icom-civ"];
+const FAMILIES: [&str; 2] = [ICOM_CIV, YAESU_CAT];
+/// Icom's CI-V: binary frames between addresses.
+pub const ICOM_CIV: &str = "icom-civ";
+/// Yaesu's CAT: text commands such as `FA;`, each ended by a semicolon.
+pub const YAESU_CAT: &str = "yaesu-cat";
 /// The largest definition file the Agent will read.
 const MAX_FILE_BYTES: u64 = 256 * 1024;
 /// The longest text value (a label, a note, an explanation).
@@ -164,6 +168,10 @@ struct UsbSerial {
     vid: u16,
     pid: u16,
     role: String,
+    /// The USB interface number of the radio's control port, for a radio
+    /// whose one USB serial bridge has more than one port, such as the
+    /// FTDX10's Enhanced (CAT) and Standard (transmit control) ports.
+    interface: Option<u8>,
     /// The end of the USB serial number of the one port the Agent may
     /// open, for a radio with more than one serial port behind its USB,
     /// such as the IC-9700's USB (A) and USB (B).
@@ -194,9 +202,16 @@ struct UsbAudio {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Link {
-    default_address: u8,
-    controller_address: u8,
+    /// The radio's CI-V address (Icom only).
+    default_address: Option<u8>,
+    /// The Agent's own CI-V address (Icom only).
+    controller_address: Option<u8>,
     baud_rates: Vec<u32>,
+    /// Stop bits: 1 (the default) or 2.
+    stop_bits: Option<u8>,
+    /// The RTS line: "off" (the default) or "on", for a CAT port whose
+    /// radio uses RTS for flow control only.
+    rts: Option<String>,
     echo: String,
     verified: bool,
 }
@@ -205,6 +220,9 @@ struct Link {
 #[serde(deny_unknown_fields)]
 struct Identity {
     query: String,
+    /// What the radio answers after the query's command, for a family
+    /// whose answer isn't an address (Yaesu's `ID0761;` is `0761`).
+    answer: Option<String>,
     source: String,
     verified: bool,
 }
@@ -252,6 +270,10 @@ struct Setting {
     percent: bool,
     #[serde(default)]
     raw: bool,
+    /// How many digits the radio sends and takes for a Yaesu setting's
+    /// value, such as 3 for `RG0255;`. The Agent keeps them as BCD bytes,
+    /// as an Icom radio sends its values.
+    digits: Option<u8>,
     write: bool,
     source: String,
     verified: bool,
@@ -299,12 +321,22 @@ pub struct Definition {
     pub family: String,
     /// How far it has been tested: `draft` or `tested`.
     pub status: String,
-    /// The radio's default address on its link (its CI-V address).
+    /// The radio's default address on its link (its CI-V address; 0 for a
+    /// family with no addresses).
     pub default_address: u8,
-    /// The address the Agent uses for itself on the link.
+    /// The address the Agent uses for itself on the link (0 for a family
+    /// with no addresses).
     pub controller_address: u8,
     /// The serial speeds to try, in order.
     pub baud_rates: Vec<u32>,
+    /// Stop bits on the serial link: 1 or 2.
+    pub stop_bits: u8,
+    /// Whether the port's RTS line is held on (flow control on a CAT port
+    /// that can't key the radio); otherwise it is held off.
+    pub rts_on: bool,
+    /// What the radio answers to the identity query, for a family whose
+    /// answer isn't its address.
+    pub identity_answer: Option<String>,
     /// The vendor and product IDs of the radio's USB serial bridge, if it
     /// has one, so the Agent can find its port.
     pub usb_serial: Option<(u16, u16)>,
@@ -312,6 +344,9 @@ pub struct Definition {
     /// radio has other serial ports behind its USB that the Agent must
     /// never open.
     pub usb_serial_number_ends: Option<String>,
+    /// The USB interface number of the radio's control port, when its USB
+    /// serial bridge has other ports the Agent must never open.
+    pub usb_serial_interface: Option<u8>,
     /// Part of the name of the radio's USB sound device, if it has one.
     pub usb_audio: Option<String>,
     /// The Windows driver its USB serial bridge needs, if Windows has none.
@@ -419,6 +454,8 @@ pub struct SettingSummary {
     pub percent: bool,
     /// Whether it is kept as the bytes the radio sent, without a meaning.
     pub raw: bool,
+    /// For a Yaesu setting, how many digits its value has on the wire.
+    pub digits: Option<u8>,
     /// Whether the Agent may ever change it.
     pub write: bool,
     /// Whether its values' meanings were checked on a real radio.
@@ -467,25 +504,30 @@ impl Definition {
     pub fn summary(&self) -> String {
         let writable = self.settings.iter().filter(|s| s.write).count();
         let speeds: Vec<String> = self.baud_rates.iter().map(u32::to_string).collect();
+        let mut jobs: Vec<&str> = Vec::new();
+        for requirement in &self.requirements {
+            if !jobs.contains(&requirement.job.as_str()) {
+                jobs.push(&requirement.job);
+            }
+        }
+        let identity = match &self.identity_answer {
+            Some(answer) => format!("answers ID{answer}"),
+            None => format!("address {:02X}h", self.default_address),
+        };
         format!(
-            "{} {} ({}, {}): address {:02X}h, speeds {}; {} settings ({} writable), \
+            "{} {} ({}, {}): {identity}, speeds {}; {} settings ({} writable), \
              requirements for {}; {} of {} values verified",
             self.maker,
             self.model,
             self.family,
             self.status,
-            self.default_address,
             speeds.join("/"),
             self.settings.len(),
             writable,
-            if self.requirements.is_empty() {
+            if jobs.is_empty() {
                 "nothing".to_owned()
             } else {
-                self.requirements
-                    .iter()
-                    .map(|r| r.job.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ")
+                jobs.join(", ")
             },
             self.verified_values,
             self.checked_values,
@@ -522,7 +564,7 @@ impl std::error::Error for DefinitionError {}
 /// The Agent is one executable with nothing to install beside it, so the
 /// definitions travel inside it; a test fails if a file in `rigs/` is
 /// missing here.
-const BUILT_IN: [(&str, &str); 2] = [
+const BUILT_IN: [(&str, &str); 3] = [
     (
         "icom/ic-7300.toml",
         include_str!("../rigs/icom/ic-7300.toml"),
@@ -530,6 +572,10 @@ const BUILT_IN: [(&str, &str); 2] = [
     (
         "icom/ic-9700.toml",
         include_str!("../rigs/icom/ic-9700.toml"),
+    ),
+    (
+        "yaesu/ftdx10.toml",
+        include_str!("../rigs/yaesu/ftdx10.toml"),
     ),
 ];
 
@@ -635,9 +681,12 @@ fn summarize(file: &File, check: &Check) -> Definition {
         model: file.definition.model.clone(),
         family: file.definition.family.clone(),
         status: file.definition.status.clone(),
-        default_address: file.link.default_address,
-        controller_address: file.link.controller_address,
+        default_address: file.link.default_address.unwrap_or_default(),
+        controller_address: file.link.controller_address.unwrap_or_default(),
         baud_rates: file.link.baud_rates.clone(),
+        stop_bits: file.link.stop_bits.unwrap_or(1),
+        rts_on: file.link.rts.as_deref() == Some("on"),
+        identity_answer: file.identity.answer.clone(),
         usb_serial: file
             .usb
             .as_ref()
@@ -648,6 +697,11 @@ fn summarize(file: &File, check: &Check) -> Definition {
             .as_ref()
             .and_then(|usb| usb.serial.as_ref())
             .and_then(|serial| serial.number_ends_with.clone()),
+        usb_serial_interface: file
+            .usb
+            .as_ref()
+            .and_then(|usb| usb.serial.as_ref())
+            .and_then(|serial| serial.interface),
         usb_audio: file
             .usb
             .as_ref()
@@ -673,11 +727,12 @@ fn summarize(file: &File, check: &Check) -> Definition {
                 id: s.id.clone(),
                 label: s.label.clone(),
                 // Already checked.
-                read: read_command(s).unwrap_or_default(),
+                read: read_command(&file.definition.family, s).unwrap_or_default(),
                 values: s.values.clone(),
                 range: s.range,
                 percent: s.percent,
                 raw: s.raw,
+                digits: s.digits,
                 write: s.write,
                 verified: s.verified,
                 write_checked: s.write_checked.is_some(),
@@ -719,6 +774,8 @@ fn summarize(file: &File, check: &Check) -> Definition {
 
 #[derive(Default)]
 struct Check {
+    /// The file's protocol family, which decides how commands are written.
+    family: String,
     problems: Vec<String>,
     sources: BTreeSet<String>,
     checked: usize,
@@ -730,7 +787,12 @@ impl Check {
         self.problems.push(problem);
     }
 
+    fn yaesu(&self) -> bool {
+        self.family == YAESU_CAT
+    }
+
     fn file(&mut self, file: &File) {
+        self.family.clone_from(&file.definition.family);
         self.header(&file.definition);
         if let Some(usb) = &file.usb {
             self.usb(usb);
@@ -738,8 +800,13 @@ impl Check {
         self.link(&file.link);
         self.identity(&file.identity);
         let voice = self.modes(&file.modes);
-        if let Some(data_mode) = &file.data_mode {
-            self.data_mode(data_mode, &voice);
+        match &file.data_mode {
+            Some(_) if self.yaesu() => self.problem(
+                "[data_mode] is for Icom radios; a Yaesu radio's data modes are modes of their own, in modes.codes"
+                    .to_owned(),
+            ),
+            Some(data_mode) => self.data_mode(data_mode, &voice),
+            None => {}
         }
         self.commands(&file.commands);
         let settings = self.settings(&file.settings);
@@ -775,6 +842,11 @@ impl Check {
         }
         if let Some(tuner) = &meters.tuner {
             self.source("meters.tuner", &tuner.source);
+            if self.yaesu() {
+                self.problem(
+                    "meters.tuner: the Agent asks only Icom radios about their tuner".to_owned(),
+                );
+            }
             if bytes(&tuner.command).ok().as_deref() != Some(TUNER_STATUS) {
                 self.problem(format!(
                     "meters.tuner.command is {:?}: the only tuner question the Agent sends is 1C 01, \
@@ -834,6 +906,9 @@ impl Check {
                 self.problem("usb.serial: vid and pid must not be 0".to_owned());
             }
             self.text("usb.serial.role", &serial.role);
+            if serial.interface.is_some_and(|interface| interface > 15) {
+                self.problem("usb.serial.interface is a USB interface number, 0 to 15".to_owned());
+            }
             if let Some(end) = &serial.number_ends_with
                 && (end.is_empty()
                     || end.len() > 8
@@ -883,20 +958,29 @@ impl Check {
     }
 
     fn link(&mut self, link: &Link) {
-        for (field, address) in [
-            ("link.default_address", link.default_address),
-            ("link.controller_address", link.controller_address),
-        ] {
-            if address == 0 || CIV_FRAMING.contains(&address) {
-                self.problem(format!(
-                    "{field} is {address:02X}h, which can't be an address (00h is broadcast; FEh and FDh frame every message)"
-                ));
+        if self.yaesu() {
+            if link.default_address.is_some() || link.controller_address.is_some() {
+                self.problem(
+                    "link: a Yaesu CAT link has no addresses; leave out default_address and controller_address"
+                        .to_owned(),
+                );
+            }
+        } else {
+            self.addresses(link);
+            if link.rts.as_deref() == Some("on") {
+                self.problem(
+                    "link.rts: an Icom radio can key its transmitter from RTS, so it stays off"
+                        .to_owned(),
+                );
             }
         }
-        if link.default_address == link.controller_address {
-            self.problem(
-                "link.default_address and link.controller_address are the same".to_owned(),
-            );
+        if let Some(stop_bits) = link.stop_bits
+            && !matches!(stop_bits, 1 | 2)
+        {
+            self.problem(format!("link.stop_bits is {stop_bits}; it must be 1 or 2"));
+        }
+        if let Some(rts) = &link.rts {
+            self.one_of("link.rts", rts, &["off", "on"]);
         }
         if link.baud_rates.is_empty() {
             self.problem("link.baud_rates is empty: give at least one speed to try".to_owned());
@@ -916,10 +1000,57 @@ impl Check {
         self.flag(link.verified);
     }
 
+    fn addresses(&mut self, link: &Link) {
+        let (Some(radio), Some(agent)) = (link.default_address, link.controller_address) else {
+            self.problem(
+                "link: a CI-V link needs default_address and controller_address".to_owned(),
+            );
+            return;
+        };
+        for (field, address) in [
+            ("link.default_address", radio),
+            ("link.controller_address", agent),
+        ] {
+            if address == 0 || CIV_FRAMING.contains(&address) {
+                self.problem(format!(
+                    "{field} is {address:02X}h, which can't be an address (00h is broadcast; FEh and FDh frame every message)"
+                ));
+            }
+        }
+        if radio == agent {
+            self.problem(
+                "link.default_address and link.controller_address are the same".to_owned(),
+            );
+        }
+    }
+
     fn identity(&mut self, identity: &Identity) {
         self.command_bytes("identity.query", &identity.query);
         self.source("identity", &identity.source);
         self.flag(identity.verified);
+        match (&identity.answer, self.yaesu()) {
+            (Some(answer), true) => {
+                if identity.query != "ID" {
+                    self.problem("identity.query: a Yaesu radio is asked with ID".to_owned());
+                }
+                if answer.is_empty()
+                    || answer.len() > 8
+                    || !answer.chars().all(|c| c.is_ascii_alphanumeric())
+                {
+                    self.problem(format!(
+                        "identity.answer must be 1 to 8 letters or digits, not {answer:?}"
+                    ));
+                }
+            }
+            (None, true) => self.problem(
+                "identity.answer: say what a Yaesu radio answers to ID, as in \"0761\"".to_owned(),
+            ),
+            (Some(_), false) => self.problem(
+                "identity.answer is for Yaesu radios; an Icom radio answers with its address"
+                    .to_owned(),
+            ),
+            (None, false) => {}
+        }
     }
 
     /// Checks the mode table; returns the voice modes it names.
@@ -932,16 +1063,24 @@ impl Check {
         let mut codes = BTreeMap::new();
         for (name, code) in &modes.codes {
             if DATA_MODES.contains(&name.as_str()) {
-                self.problem(format!(
-                    "modes.codes has {name}: data modes go in [data_mode], as the voice mode with data on"
-                ));
+                if !self.yaesu() {
+                    self.problem(format!(
+                        "modes.codes has {name}: data modes go in [data_mode], as the voice mode with data on"
+                    ));
+                }
             } else if !VOICE_MODES.contains(&name.as_str()) {
                 self.problem(format!(
                     "modes.codes has {name:?}, which is not a mode the rig model knows ({})",
                     VOICE_MODES.join(", ")
                 ));
             }
-            if CIV_FRAMING.contains(code) {
+            if self.yaesu() {
+                if !(code.is_ascii_digit() || code.is_ascii_uppercase()) {
+                    self.problem(format!(
+                        "modes.codes.{name} is {code:02X}h; a Yaesu mode code is the character the radio sends, 0-9 or A-Z"
+                    ));
+                }
+            } else if CIV_FRAMING.contains(code) {
                 self.problem(format!(
                     "modes.codes.{name} is {code:02X}h, a CI-V framing byte"
                 ));
@@ -992,7 +1131,7 @@ impl Check {
                         self.problem(format!("{field}: off and on are both {off:02X}h"));
                     }
                     for value in [off, on] {
-                        if CIV_FRAMING.contains(&value) {
+                        if !self.yaesu() && CIV_FRAMING.contains(&value) {
                             self.problem(format!("{field}: {value:02X}h is a CI-V framing byte"));
                         }
                     }
@@ -1018,7 +1157,7 @@ impl Check {
             if by_id.insert(setting.id.as_str(), setting).is_some() {
                 self.problem(format!("setting {:?} is listed twice", setting.id));
             }
-            if let Ok(read) = read_command(setting)
+            if let Ok(read) = read_command(&self.family, setting)
                 && !reads.insert(read.clone())
             {
                 self.problem(format!(
@@ -1034,8 +1173,22 @@ impl Check {
     fn setting(&mut self, setting: &Setting) {
         let field = format!("setting {:?}", setting.id);
         self.id("a setting id", &setting.id);
-        if let Err(problem) = read_command(setting) {
+        if let Err(problem) = read_command(&self.family, setting) {
             self.problem(format!("{field}: {problem}"));
+        }
+        match (setting.digits, self.yaesu()) {
+            (Some(digits), true) if !(1..=4).contains(&digits) => {
+                self.problem(format!(
+                    "{field}: digits is {digits}; the Agent reads 1 to 4"
+                ));
+            }
+            (None, true) if !setting.raw => self.problem(format!(
+                "{field}: a Yaesu setting with values or a range says how many digits they have"
+            )),
+            (Some(_), false) => self.problem(format!(
+                "{field}: digits is for Yaesu settings; an Icom radio sends bytes"
+            )),
+            _ => {}
         }
         self.text(&format!("{field} label"), &setting.label);
         if let Some(note) = &setting.note {
@@ -1102,7 +1255,7 @@ impl Check {
         let mut seen = BTreeMap::new();
         for (name, value) in values {
             self.text(&format!("{field} value name"), name);
-            if CIV_FRAMING.contains(value) {
+            if !self.yaesu() && CIV_FRAMING.contains(value) {
                 self.problem(format!(
                     "{field}: value {name} is {value:02X}h, a CI-V framing byte"
                 ));
@@ -1177,7 +1330,12 @@ impl Check {
     }
 
     fn command_bytes(&mut self, field: &str, text: &str) {
-        if let Err(problem) = bytes(text) {
+        let parsed = if self.yaesu() {
+            cat_command(text)
+        } else {
+            bytes(text)
+        };
+        if let Err(problem) = parsed {
             self.problem(format!("{field} {problem}"));
         }
     }
@@ -1233,9 +1391,25 @@ const READABLE: [&[u8]; 10] = [
     &[0x1A, 0x05],
 ];
 
-/// The command that reads a setting: `1A 05` and the item number for a menu
-/// item, or the setting's own command.
-fn read_command(setting: &Setting) -> Result<Vec<u8>, String> {
+/// The Yaesu CAT commands a setting may be read with, each exactly as sent
+/// before its semicolon. Each one only asks: the FTDX10 CAT manual lists a
+/// Read form and an Answer for every one. Commands that act when sent, such
+/// as `TX` with a value (transmit), `AC` (the tuner), `KY` (send CW), `BD`
+/// and `BU` (band down and up) or `ZI` (zero in), are not here, so a
+/// definition can't make the Agent change a radio while reading it.
+const CAT_READABLE: [&str; 32] = [
+    "AG0", "BC0", "BI", "BP00", "BP01", "CO00", "CO01", "CO02", "CO03", "GT0", "KP", "KS", "MD0",
+    "MG", "ML0", "ML1", "NA0", "NB0", "NL0", "NR0", "PA0", "PC", "PR0", "PR1", "RA0", "RG0", "RL0",
+    "SD", "SH0", "SQ0", "VG", "VX",
+];
+
+/// The command that reads a setting: `1A 05` and the item number for an
+/// Icom menu item, `EX` and the item for a Yaesu one, or the setting's own
+/// command.
+fn read_command(family: &str, setting: &Setting) -> Result<Vec<u8>, String> {
+    if family == YAESU_CAT {
+        return cat_read_command(setting);
+    }
     match (&setting.item, &setting.command) {
         (Some(item), None) => {
             let item = bytes(item).map_err(|problem| format!("item {problem}"))?;
@@ -1274,6 +1448,62 @@ fn read_command(setting: &Setting) -> Result<Vec<u8>, String> {
         }
         (Some(_), Some(_)) => Err("give item or command, not both".to_owned()),
         (None, None) => Err("give its menu item or its command".to_owned()),
+    }
+}
+
+/// The command that reads a Yaesu setting: `EX` and the menu item's three
+/// numbers (group, page, item: `03 01 08` is `EX030108`, CAT RATE), or one
+/// of `CAT_READABLE`. Menu group 05 holds the clock, memory and menu loads
+/// and saves, and resets: never read, never written.
+fn cat_read_command(setting: &Setting) -> Result<Vec<u8>, String> {
+    match (&setting.item, &setting.command) {
+        (Some(item), None) => {
+            let parts: Vec<&str> = item.split_whitespace().collect();
+            let numbers: Vec<u8> = parts.iter().filter_map(|part| part.parse().ok()).collect();
+            match numbers.as_slice() {
+                _ if parts.iter().any(|part| part.len() != 2) || numbers.len() != 3 => {
+                    Err(format!(
+                        "item {item:?} is a menu item's group, page and item, two digits each, as in \"03 01 08\""
+                    ))
+                }
+                [5, _, _] => Err(format!(
+                    "item {item:?} is in menu group 05 (clock, loads, saves and resets): the Agent never touches it"
+                )),
+                [group, page, number] if (1..=4).contains(group) && *page >= 1 && *number >= 1 => {
+                    Ok(format!("EX{group:02}{page:02}{number:02}").into_bytes())
+                }
+                _ => Err(format!(
+                    "item {item:?} is not a menu item (groups 01 to 04)"
+                )),
+            }
+        }
+        (None, Some(command)) if CAT_READABLE.contains(&command.as_str()) => {
+            Ok(command.clone().into_bytes())
+        }
+        (None, Some(command)) => Err(format!(
+            "command {command:?} is not one the Agent reads settings with ({})",
+            CAT_READABLE.join(", ")
+        )),
+        (Some(_), Some(_)) => Err("give item or command, not both".to_owned()),
+        (None, None) => Err("give its menu item or its command".to_owned()),
+    }
+}
+
+/// Reads a Yaesu CAT command written as it is sent, without its semicolon:
+/// two capital letters, then up to six capital letters or digits.
+fn cat_command(text: &str) -> Result<Vec<u8>, String> {
+    let good = text.len() >= 2
+        && text.len() <= 8
+        && text.chars().take(2).all(|c| c.is_ascii_uppercase())
+        && text
+            .chars()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit());
+    if good {
+        Ok(text.as_bytes().to_vec())
+    } else {
+        Err(format!(
+            "{text:?}: write a CAT command as it is sent, without its semicolon, as in \"FA\" or \"MD0\""
+        ))
     }
 }
 
@@ -1499,6 +1729,142 @@ explain = "Data mode audio must come from USB."
         assert_eq!(
             definition.verified_values, 0,
             "nothing is checked on a radio yet"
+        );
+    }
+
+    #[test]
+    fn reads_the_ftdx10() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("rigs/yaesu/ftdx10.toml");
+        let definition = load(&path).unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(
+            (definition.maker.as_str(), definition.model.as_str()),
+            ("Yaesu", "FTDX10")
+        );
+        assert_eq!(definition.family, super::YAESU_CAT);
+        assert_eq!(definition.identity_answer.as_deref(), Some("0761"));
+        assert_eq!(definition.usb_serial, Some((0x10C4, 0xEA70)));
+        assert_eq!(
+            definition.usb_serial_interface,
+            Some(0),
+            "the Enhanced COM Port only"
+        );
+        assert_eq!((definition.stop_bits, definition.rts_on), (2, true));
+        assert_eq!(definition.mode_codes.get("DATA-USB"), Some(&b'C'));
+        let read = |id: &str| {
+            definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .map(|s| String::from_utf8_lossy(&s.read).into_owned())
+        };
+        assert_eq!(read("data_rport_gain").as_deref(), Some("EX010417"));
+        assert_eq!(read("rf_gain").as_deref(), Some("RG0"));
+        // Menu group 05 (clock, loads, saves, resets) is never read.
+        assert!(
+            definition
+                .settings
+                .iter()
+                .all(|s| !s.read.starts_with(b"EX05"))
+        );
+        // Nothing checked on a real FTDX10: nothing may be written yet.
+        assert!(definition.settings.iter().all(|s| !s.write_checked));
+        assert_eq!(definition.verified_values, 0);
+        // The CAT link and the lines that key the radio are never written.
+        for id in ["cat_rate", "cat_rts", "pc_keying", "data_rptt_select"] {
+            assert!(
+                definition.settings.iter().any(|s| s.id == id && !s.write),
+                "{id}"
+            );
+        }
+        let meters = definition.meters.clone().unwrap_or_else(|| unreachable!());
+        assert_eq!(meters.drive.as_deref(), Some("data_rport_gain"));
+        assert_eq!(meters.power.value(147), 50);
+    }
+
+    /// `MINIMAL` as a Yaesu CAT file, with `setting` as its one setting.
+    fn yaesu_with(setting: &str) -> String {
+        format!(
+            r#"
+[definition]
+schema = 1
+maker = "Test"
+model = "TY-1"
+family = "yaesu-cat"
+status = "draft"
+
+[[definition.sources]]
+id = "manual"
+title = "The TY-1 manual"
+
+[link]
+baud_rates = [38400]
+stop_bits = 2
+rts = "on"
+echo = "off"
+verified = false
+
+[identity]
+query = "ID"
+answer = "0999"
+source = "manual"
+verified = false
+
+[modes]
+source = "manual"
+verified = false
+
+[modes.codes]
+USB = 0x32
+DATA-USB = 0x43
+
+[[settings]]
+{setting}
+label = "A setting"
+raw = true
+digits = 1
+write = true
+source = "manual"
+verified = false
+"#
+        )
+    }
+
+    #[test]
+    fn a_yaesu_file_reads_settings_only_with_commands_that_only_ask() {
+        assert!(parse(&yaesu_with("id = \"rf\"\ncommand = \"RG0\"")).is_ok());
+        assert!(parse(&yaesu_with("id = \"menu\"\nitem = \"03 01 05\"")).is_ok());
+        // TX keys the radio, AC starts the tuner, KY sends CW, BD changes
+        // band: none may be a setting.
+        for command in ["TX", "TX1", "AC", "KY", "BD0", "ZI"] {
+            refused_for(
+                &yaesu_with(&format!("id = \"x\"\ncommand = \"{command}\"")),
+                "is not one the Agent reads settings with",
+            );
+        }
+        refused_for(
+            &yaesu_with("id = \"reset\"\nitem = \"05 05 03\""),
+            "menu group 05",
+        );
+        refused_for(
+            &yaesu_with("id = \"menu\"\nitem = \"3 1 5\""),
+            "two digits each",
+        );
+    }
+
+    #[test]
+    fn a_yaesu_link_has_no_addresses_and_an_icom_link_never_holds_rts() {
+        let yaesu = yaesu_with("id = \"rf\"\ncommand = \"RG0\"");
+        refused_for(
+            &yaesu.replace(
+                "baud_rates = [38400]",
+                "default_address = 0x94\nbaud_rates = [38400]",
+            ),
+            "has no addresses",
+        );
+        refused_for(&yaesu.replace("answer = \"0999\"\n", ""), "identity.answer");
+        refused_for(
+            &changed("echo = \"detect\"", "echo = \"detect\"\nrts = \"on\""),
+            "an Icom radio can key its transmitter from RTS",
         );
     }
 
@@ -1925,7 +2291,7 @@ explain = "Data mode audio must come from USB."
             "only understands schema 1",
         );
         refused_for(
-            &changed("family = \"icom-civ\"", "family = \"yaesu-cat\""),
+            &changed("family = \"icom-civ\"", "family = \"kenwood-cat\""),
             "definition.family",
         );
     }

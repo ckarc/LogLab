@@ -190,6 +190,13 @@ impl<P: Port> CivRadio<P> {
     ///
     /// No known radio answered at any speed, or the port failed.
     pub fn find(mut port: P, definitions: &[Definition]) -> Result<Self, RadioError> {
+        // Only Icom radios: another family's radio isn't asked in CI-V.
+        let icom: Vec<Definition> = definitions
+            .iter()
+            .filter(|d| d.family == rigdef::ICOM_CIV)
+            .cloned()
+            .collect();
+        let definitions = icom.as_slice();
         let mut speeds: Vec<u32> = Vec::new();
         for definition in definitions {
             for baud in &definition.baud_rates {
@@ -248,6 +255,7 @@ impl<P: Port> CivRadio<P> {
     }
 
     /// The definition of the radio that answered.
+    #[cfg(test)]
     pub fn definition(&self) -> &Definition {
         &self.definition
     }
