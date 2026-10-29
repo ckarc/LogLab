@@ -198,6 +198,39 @@ mod tests {
     }
 
     #[test]
+    fn the_ic_7300_fldigi_profile_is_the_vara_one_with_agc_fast_and_no_nb_nr_or_notch() {
+        let fldigi = find("Icom", "IC-7300", "fldigi");
+        let bytes: Vec<(String, String)> = fldigi
+            .map(|fldigi| {
+                fldigi
+                    .settings
+                    .into_iter()
+                    .map(|s| (s.id, s.bytes))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let wanted = [
+            ("mode_and_filter", "01 01"),
+            ("data_mode_and_filter", "01 01"),
+            ("filter_width", "27"),
+            ("agc", "01"),
+            ("noise_blanker", "00"),
+            ("noise_reduction", "00"),
+            ("auto_notch", "00"),
+            ("manual_notch", "00"),
+            ("usb_mod_level", "01 02"),
+            ("data_mod", "03"),
+        ];
+        assert_eq!(
+            bytes,
+            wanted
+                .iter()
+                .map(|(id, b)| ((*id).to_owned(), (*b).to_owned()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
     fn the_ic_7300_ft8_and_js8_profiles_are_data_usb_fil1_at_3_khz() {
         for program in ["FT8", "JS8"] {
             let profile = find("Icom", "IC-7300", program);

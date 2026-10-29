@@ -333,7 +333,7 @@ program's file, is touched.
 |---|---|---|
 | VARA | `VARA.ini` next to `VARA.exe` | `[Soundcard]` input and output device |
 | WSJT-X, JS8Call | `%LOCALAPPDATA%\<app>\<app>.ini` | `[Configuration]` `SoundInName`, `SoundOutName`, `Rig` (Hamlib NET rigctl), `CATNetworkPort`, `PTTMethod` (CAT), `DataMode` (Data/Pkt), `Polling` (1, only if missing or 0) |
-| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device; Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
+| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device, by the 31-character name PortAudio gives the cable's MME device (fldigi opens the first device with exactly that name); Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
 | MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input only, for now |
 
 MMSSTV keys a radio only through a COM port, so it receives through the

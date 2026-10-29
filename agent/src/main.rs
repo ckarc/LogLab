@@ -19,6 +19,7 @@ mod audio;
 #[cfg(windows)]
 mod audio_windows;
 mod auto_mode;
+mod carrier;
 mod civ;
 mod civ_demo;
 mod civ_pretend;
@@ -43,6 +44,7 @@ mod profiles;
 mod program_id;
 #[cfg(windows)]
 mod programs;
+mod qso_logs;
 #[cfg(any(windows, test))]
 mod qt_settings;
 mod restore;

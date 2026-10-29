@@ -190,6 +190,8 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
 6. **Keeps the radio's settings on the Engine** (with `--engine` and
    `--key-file`), so every computer the radio is plugged into knows them.
    See "Setups kept on the Engine" below.
+7. **Carries what programs and LabLog need from each other** (with
+   `--engine` and `--key-file`). See "QSOs and LabLog in `station`" below.
 
 Starting `station` is the operator's choice that programs on this computer
 may key the radio (Principle IX).
@@ -208,6 +210,43 @@ after sign-in it starts the programs listed there, or in what order, so the
 Agent may start after VARA the first time. Then it leaves VARA's file alone
 and says so; once set, VARA keeps the setting. A Windows service, which
 runs before anyone signs in, comes with the tray program.
+
+### QSOs and LabLog in `station`
+
+With `--engine`, `station` carries three things between this computer's
+programs and the LabLog Engine:
+
+- **Every QSO a program logs goes to LabLog.** The Agent watches each
+  program's own ADIF log and notices each QSO added to it: WSJT-X's
+  `wsjtx_log.adi` and JS8Call's `js8call_log.adi` (in their folders under
+  `%LOCALAPPDATA%`), fldigi's logbook (the file its settings name, else
+  `fldigi.files\logs\logbook.adi`), and VarAC's `VarAC_qso_log.adi` (in
+  `C:\VarAC`, Program Files, or `C:\VARA`). Any other ADIF log is watched
+  when its full path is a line of `qso-logs.txt` in `records`. Nothing in the
+  programs needs changing, and a QSO logged while the Agent wasn't running
+  is sent when it starts. What is already in a log the first time the Agent
+  sees it is history and is not sent.
+- Each QSO goes into the Agent's journal (`records\qsos.journal`) before
+  anything else, and stays there until the Engine has logged it, as whoever
+  is signed in to LabLog at this station (Principle XV). With the Engine
+  unreachable or nobody signed in, the Agent says how many wait and why, and
+  sends them as soon as it can. One the Engine refuses for good is added to
+  `records\qsos.journal.refused.adi` for fixing and importing by hand. A QSO
+  already in the log (same call, band and mode in the same minute) is not
+  logged twice.
+- **The radio's live state** goes to LabLog, so its entry screen shows the
+  radio's frequency and mode, as `run` does.
+- **Who LabLog logs QSOs as** comes back: the operator signed in at this
+  station, the call QSOs are made as (the chosen operation's, else the
+  operator's), and the station's grid (FieldLab's GPS first). The Agent
+  says it when it changes and keeps the latest in
+  `records\lablog-station.json`, for setting programs' own call and grid.
+
+MMSSTV keeps its log in its own binary `.MDT` file (MMSSTV's
+`LogFile.cpp`), and writes ADIF only when asked to export (`LogConv.cpp`),
+so its QSOs aren't sent yet; export them and import the file in LabLog's
+Menu. Winlink Express hasn't been looked at yet: it isn't open source, and
+where it records anything QSO-like isn't documented.
 
 ## Sharing a radio with WSJT-X and other programs
 

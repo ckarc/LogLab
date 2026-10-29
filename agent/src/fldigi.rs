@@ -18,7 +18,15 @@
 //! - Each setting is one element, `<TAG>value</TAG>`, inside
 //!   `<FLDIGI_DEFS>`; strings escape `& < > " '` as XML entities.
 //! - `AUDIOIO` 1 is `PortAudio`; `PORTINDEVICE` and `PORTOUTDEVICE` are the
-//!   devices, matched by name (`PORTININDEX`/`PORTOUTINDEX` -1: no index).
+//!   devices (`PORTININDEX`/`PORTOUTINDEX` -1: no index). fldigi opens the
+//!   first of `PortAudio`'s devices whose name is exactly the one it holds
+//!   (`SoundPort::name_to_device`), and when none is, the default device.
+//!   `PortAudio` lists its Windows MME devices first (`pa_win_hostapis.c`),
+//!   and an MME device's name is only the first 31 characters of the
+//!   device's name (`pa_win_wmme.c`: `szPname` holds 32 with the end), so
+//!   the Agent writes the name cut that way: fldigi then opens the cable's
+//!   MME device. (`PortAudio` v19.7.0, the version MXE builds; fldigi's
+//!   Windows build takes `PortAudio` from MXE, `scripts/setupmxe.sh`.)
 //! - `CHKUSEHAMLIBIS` 1 turns Hamlib on; fldigi tries flrig
 //!   (`CLIENT_TO_FLRIG`) and `RigCAT` (`CHKUSERIGCATIS`) first, so those are
 //!   turned off, and so is XML-RPC rig control (`CHKUSEXMLRPCIS`).
@@ -45,10 +53,28 @@ const ROOT_END: &str = "</FLDIGI_DEFS>";
 /// Hamlib's model number for its network client, NET rigctl.
 const NET_RIGCTL: &str = "2";
 
+/// The longest name an MME sound device has, in UTF-16 units.
+const MME_NAME: usize = 31;
+
+/// The name `PortAudio` gives the MME device for the Windows sound device
+/// `device`: its first 31 UTF-16 units.
+#[must_use]
+pub fn mme_name(device: &str) -> String {
+    let mut units = 0;
+    device
+        .chars()
+        .take_while(|c| {
+            units += c.len_utf16();
+            units <= MME_NAME
+        })
+        .collect()
+}
+
 /// What the Agent wants fldigi's settings to say.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Wanted {
-    /// The device fldigi records from, or `None` to leave it alone.
+    /// The device fldigi records from, as `PortAudio` names it (see
+    /// [`mme_name`]), or `None` to leave it alone.
     pub input: Option<String>,
     /// The device fldigi plays into, or `None` to leave it alone.
     pub output: Option<String>,
@@ -168,7 +194,7 @@ pub fn find() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Wanted, escape, set, unescape, value, with_station};
+    use super::{Wanted, escape, mme_name, set, unescape, value, with_station};
     use crate::settings_file::Outcome;
 
     /// Part of an `fldigi_def.xml`, laid out as fldigi writes it.
@@ -180,6 +206,25 @@ mod tests {
             output: Some("CABLE-A Input (VB-Audio Cable A)".to_owned()),
             radio: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
         }
+    }
+
+    #[test]
+    fn names_a_device_as_mme_does() {
+        assert_eq!(
+            mme_name("CABLE Output (VB-Audio Virtual Cable)"),
+            "CABLE Output (VB-Audio Virtual "
+        );
+        assert_eq!(
+            mme_name("CABLE-A Input (VB-Audio Cable A)"),
+            "CABLE-A Input (VB-Audio Cable A"
+        );
+        assert_eq!(
+            mme_name("Speakers (USB Audio CODEC )"),
+            "Speakers (USB Audio CODEC )"
+        );
+        // A character outside the BMP takes two of the 31 units.
+        let long = format!("{}\u{1f4fb}x", "a".repeat(30));
+        assert_eq!(mme_name(&long), "a".repeat(30));
     }
 
     #[test]

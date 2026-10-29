@@ -3,7 +3,13 @@
 
 """Reference data the Engine owns and serves itself (Principle VI)."""
 
-from loglab_engine.reference.locator import Place, distance_km, grid_place, record_place
+from loglab_engine.reference.locator import (
+    Place,
+    distance_km,
+    grid_place,
+    place_grid,
+    record_place,
+)
 from loglab_engine.reference.sections import (
     SECTIONS,
     SOURCE,
@@ -27,6 +33,7 @@ __all__ = [
     "ZoneTally",
     "distance_km",
     "grid_place",
+    "place_grid",
     "record_place",
     "section_for",
     "tally_sections",
