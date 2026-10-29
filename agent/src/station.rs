@@ -1790,6 +1790,28 @@ fn vara_proxy(
     }
 }
 
+/// Answers as a Kenwood TS-2000 on `port`, one end of a com0com pair, for
+/// a program such as Winlink Express on the other end (see `kenwood_cat`).
+#[cfg(windows)]
+fn virtual_kenwood(port: &str, rigctld: SocketAddr) -> Option<crate::kenwood_cat::Virtual> {
+    match crate::kenwood_cat::Virtual::start(port, rigctld) {
+        Ok(running) => {
+            println!(
+                "Virtual Kenwood: answering as a TS-2000 on {port}. In Winlink Express, \
+                 Radio Setup: Kenwood, on the other port of the pair."
+            );
+            Some(running)
+        }
+        Err(why) => {
+            println!(
+                "Virtual Kenwood: not started ({why}).\n  -> Is com0com installed, and is \
+                 {port} one end of its pair?"
+            );
+            None
+        }
+    }
+}
+
 /// Tells the operator how programs on this computer reach the radio.
 fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     println!(
@@ -1825,6 +1847,7 @@ pub fn run(
     listen: SocketAddr,
     limit: Duration,
     engine: Option<(&str, &str, Option<&str>)>,
+    kenwood: Option<&str>,
 ) -> Result<(), String> {
     let running = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&running);
@@ -1843,12 +1866,12 @@ pub fn run(
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
             };
-            run_found(found, listen, limit, uplink, &running, &typing)?
+            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
         } else {
             let Some(found) = wait_for_radio(port, &running) else {
                 break;
             };
-            run_found(found, listen, limit, uplink, &running, &typing)?
+            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
         };
         if ended == Ended::Stopped {
             break;
@@ -1890,6 +1913,7 @@ fn run_found(
     uplink: Option<Uplink>,
     running: &AtomicBool,
     typing: &Typing,
+    kenwood: Option<&str>,
 ) -> Result<Ended, String> {
     let identity = found.radio.identity().clone();
     println!(
@@ -1927,10 +1951,16 @@ fn run_found(
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
     if let Some(station) = &station {
-        crate::programs::set_up(station, server.address());
+        crate::programs::set_up(station, server.address(), kenwood.is_some());
     }
     #[cfg(windows)]
     let vara_proxy = vara_proxy(server.address(), vara_notes);
+    #[cfg(windows)]
+    let virtual_kenwood = kenwood.and_then(|port| virtual_kenwood(port, server.address()));
+    #[cfg(not(windows))]
+    if kenwood.is_some() {
+        println!("Virtual Kenwood: Windows only, so not started.");
+    }
     let carrier = start_carrier(uplink.as_ref(), &shared);
     let desk = found
         .serial
@@ -1939,7 +1969,7 @@ fn run_found(
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
-    let mut watching = Watching::new();
+    let mut watching = Watching::new(kenwood.is_some());
     let serving = AtomicBool::new(true);
     let mut lost = Lost::default();
     crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
@@ -1954,6 +1984,8 @@ fn run_found(
     });
     #[cfg(windows)]
     drop(vara_proxy);
+    #[cfg(windows)]
+    drop(virtual_kenwood);
     drop(carrier);
     drop(server);
     #[cfg(windows)]
@@ -2030,16 +2062,19 @@ struct Watching {
     last: std::time::Instant,
     was_on_air: bool,
     open: ProgramsOpen,
+    /// Whether programs tune the radio through the virtual Kenwood.
+    kenwood: bool,
 }
 
 #[cfg(windows)]
 impl Watching {
-    fn new() -> Self {
+    fn new(kenwood: bool) -> Self {
         Self {
             hint: None,
             last: std::time::Instant::now(),
             was_on_air: false,
             open: ProgramsOpen::now(),
+            kenwood,
         }
     }
 
@@ -2057,7 +2092,7 @@ impl Watching {
                 "{closed} closed, so the Agent sets up the programs that are closed now."
             ));
             vara(station);
-            crate::programs::set_up(station, radio);
+            crate::programs::set_up(station, radio, self.kenwood);
         }
         for error in station.errors.try_iter() {
             crate::print_event(&format!("sound device error: {error}"));

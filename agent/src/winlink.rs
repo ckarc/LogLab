@@ -50,9 +50,11 @@ pub const IMAGE: &str = "RMS Express.exe";
 const FOLDER: &str = r"C:\RMS Express";
 
 /// `text` with Winlink Express's VARA radio setup left to the Agent, and
-/// what changed.
+/// what changed. With `kenwood`, Winlink Express tunes the radio through
+/// the Agent's virtual Kenwood (see `kenwood_cat`), so the radio model and
+/// its port are left as they are, and only PTT stays the Agent's.
 #[must_use]
-pub fn with_agent_keying(text: &str) -> (String, Vec<Change>) {
+pub fn with_agent_keying(text: &str, kenwood: bool) -> (String, Vec<Change>) {
     let has_section = text
         .lines()
         .any(|line| line.trim().eq_ignore_ascii_case(&format!("[{SECTION}]")));
@@ -61,6 +63,7 @@ pub fn with_agent_keying(text: &str) -> (String, Vec<Change>) {
     }
     let changes: Vec<Change> = WANTED
         .iter()
+        .filter(|(key, _)| !kenwood || *key == "PTT Port")
         .filter_map(|(key, value)| {
             let before = ini::value(text, SECTION, key);
             (before.as_deref().map(str::to_ascii_uppercase) != Some(value.to_ascii_uppercase()))
@@ -88,13 +91,14 @@ pub fn with_agent_keying(text: &str) -> (String, Vec<Change>) {
 }
 
 /// Leaves keying to the Agent in Winlink Express's settings file at
-/// `path`. Winlink Express must not be running.
+/// `path`, and tuning too unless `kenwood`. Winlink Express must not be
+/// running.
 ///
 /// # Errors
 ///
 /// The file can't be read or written.
-pub fn set(path: &Path) -> Result<Outcome, String> {
-    settings_file::update(path, |text| Ok(with_agent_keying(text)))
+pub fn set(path: &Path, kenwood: bool) -> Result<Outcome, String> {
+    settings_file::update(path, |text| Ok(with_agent_keying(text, kenwood)))
 }
 
 /// Where Winlink Express's settings file is, if it is installed and has
@@ -116,7 +120,7 @@ mod tests {
 
     #[test]
     fn leaves_the_radio_to_the_agent_and_nothing_else() {
-        let (text, changes) = with_agent_keying(INI);
+        let (text, changes) = with_agent_keying(INI, false);
         assert_eq!(
             text,
             INI.replace("Control Port=COM5", "Control Port=NONE")
@@ -127,18 +131,28 @@ mod tests {
         assert_eq!(keys, ["Model", "Control Port", "PTT Port"]);
         assert_eq!(changes[0].before.as_deref(), Some("Icom IC-7300"));
         // Already so: nothing changes, whatever the case Winlink wrote.
-        assert!(with_agent_keying(&text).1.is_empty());
+        assert!(with_agent_keying(&text, false).1.is_empty());
         assert!(
-            with_agent_keying(&text.replace("=NONE", "=None"))
+            with_agent_keying(&text.replace("=NONE", "=None"), false)
                 .1
                 .is_empty()
         );
     }
 
     #[test]
+    fn tuning_through_the_virtual_kenwood_keeps_the_radio_choice() {
+        let (text, changes) = with_agent_keying(INI, true);
+        assert_eq!(text, INI.replace("PTT Port=COM5", "PTT Port=EXTERNAL"));
+        assert_eq!(changes.len(), 1);
+    }
+
+    #[test]
     fn a_file_without_radio_setup_is_left_alone() {
         let fresh = "[W0CY]\r\nMode=Vara HF Winlink\r\n[Vara TNC]\r\nProcess Id=-1\r\n";
-        assert_eq!(with_agent_keying(fresh), (fresh.to_owned(), Vec::new()));
+        assert_eq!(
+            with_agent_keying(fresh, false),
+            (fresh.to_owned(), Vec::new())
+        );
     }
 
     #[test]
@@ -148,8 +162,8 @@ mod tests {
         std::fs::create_dir_all(&folder).unwrap_or_else(|error| unreachable!("{error}"));
         let path = folder.join("RMS Express.ini");
         std::fs::write(&path, INI).unwrap_or_else(|error| unreachable!("{error}"));
-        assert!(matches!(set(&path), Ok(Outcome::Changed(changes)) if changes.len() == 3));
-        assert_eq!(set(&path), Ok(Outcome::AlreadySet));
+        assert!(matches!(set(&path, false), Ok(Outcome::Changed(changes)) if changes.len() == 3));
+        assert_eq!(set(&path, false), Ok(Outcome::AlreadySet));
         let kept = std::fs::read_to_string(folder.join("RMS Express.ini.lablog-original"))
             .unwrap_or_default();
         assert_eq!(kept, INI);
