@@ -86,6 +86,15 @@ impl Selectors {
     }
 }
 
+/// Whether the Agent can choose each filter on this radio: its definition
+/// has the Icom settings that choose the mode, data mode and filter and
+/// read the selected filter's width, each checked on a real radio. Other
+/// radios' Lab Stock goes without each filter's width.
+#[must_use]
+pub fn can_choose(definition: &Definition) -> bool {
+    Selectors::of(definition).is_ok()
+}
+
 /// Which mode and filter the radio is on, as `04` and `1A 06` say.
 #[derive(Clone, PartialEq, Eq)]
 struct Selection {
@@ -409,6 +418,19 @@ mod tests {
         );
         assert_eq!(read_now(&mut radio, "mode_and_filter"), [0x01, 0x03]);
         assert_eq!(read(&mut radio).unwrap_or_default(), widths);
+    }
+
+    #[test]
+    fn chooses_filters_only_where_the_definition_can() {
+        let mut definition = radio().definition().clone();
+        assert!(super::can_choose(&definition));
+        definition
+            .settings
+            .retain(|s| s.id != "data_mode_and_filter");
+        assert!(
+            !super::can_choose(&definition),
+            "a radio without Icom's 1A 06"
+        );
     }
 
     #[test]

@@ -546,13 +546,24 @@ fn stock_save(desk: &Desk, definition: &Definition, now: Result<Record, String>)
         );
     }
     let number = desk.ask(Asked::StockSave);
-    let lines = [
+    let about = if crate::filter_widths::can_choose(definition) {
         format!(
             "Lab Stock: sending this radio's {} settings as a proposal also reads each filter's \
              width. The Agent chooses FIL1, FIL2 and FIL3 in turn on the mode the radio is on, \
              then puts it back on the filter it is on now. Nothing else changes.",
             settings.len()
-        ),
+        )
+    } else {
+        format!(
+            "Lab Stock: the Agent reads this radio's {} settings and sends them as a proposal; \
+             it can't choose each filter on the {}, so filter widths other than the selected \
+             one aren't in it. Nothing on the radio changes.",
+            settings.len(),
+            record.model
+        )
+    };
+    let lines = [
+        about,
         numbered(
             "-> Type yes to read them and send the proposal; anything else sends nothing.",
             number,
@@ -578,7 +589,11 @@ fn stock_send(
                 std::time::SystemTime::now(),
                 &settings_record::computer_name(),
             );
-            let widths = crate::filter_widths::read(radio)?;
+            let widths = if crate::filter_widths::can_choose(radio.definition()) {
+                crate::filter_widths::read(radio)?
+            } else {
+                Vec::new()
+            };
             Ok::<_, String>((record, widths))
         })
         .and_then(|read| read);
@@ -589,10 +604,15 @@ fn stock_send(
     let settings = crate::lab_stock::from_record(&record, definition, &widths);
     match setups.propose_lab_stock(&record, &settings) {
         Ok(number) => format!(
-            "Lab Stock: sent the radio's {} settings, with FIL1, FIL2 and FIL3's widths, to the \
-             Engine as proposal #{number} for the {}; the radio is back on the filter it was on. \
-             It changes nothing until an administrator approves it in LabLog (Admin, Lab Stock).",
+            "Lab Stock: sent the radio's {} settings{} to the Engine as proposal #{number} for \
+             the {}. It changes nothing until an administrator approves it in LabLog (Admin, \
+             Lab Stock).",
             settings.len(),
+            if widths.is_empty() {
+                ""
+            } else {
+                ", with FIL1, FIL2 and FIL3's widths (the radio is back on the filter it was on),"
+            },
             record.model
         ),
         Err(why) => format!("Lab Stock proposal not sent: {why}"),
