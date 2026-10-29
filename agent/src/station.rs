@@ -354,6 +354,11 @@ enum Typed {
     /// Enroll this radio in lab settings control or leave it out, or
     /// (`None`) say which.
     Enroll(Option<bool>),
+    /// Show what putting the model's Lab Stock on would change, and wait
+    /// for a yes.
+    Stock,
+    /// Send the radio's settings to the Engine as a Lab Stock proposal.
+    StockSave,
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -401,6 +406,11 @@ fn typed(line: &str) -> Result<Typed, String> {
             "off" => Ok(Typed::Enroll(Some(false))),
             _ => Err("enroll takes on or off, like enroll on".to_owned()),
         },
+        ("stock", rest) => match rest.to_ascii_lowercase().as_str() {
+            "" => Ok(Typed::Stock),
+            "save" => Ok(Typed::StockSave),
+            _ => Err("stock takes save or nothing: stock, or stock save".to_owned()),
+        },
         ("help" | "?", "") => Ok(Typed::Help),
         _ => Err(format!("unknown command {line:?}")),
     }
@@ -412,7 +422,9 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          one back, show NAME to read a setting (show DATA MOD, say), fix to \
                          fix what stops a job working, auto on to let the Agent make its \
                          fixes without asking, enroll on to put the lab's profiles on this \
-                         radio as programs start, or quit to stop the Agent.";
+                         radio as programs start, stock to put the lab's Lab Stock on, stock \
+                         save to send the radio's settings as a Lab Stock proposal, or quit to \
+                         stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -485,6 +497,78 @@ fn lab_locked(shared: &Shared, name: &str) -> Option<String> {
          another name, like keep My {}; restore My {} puts it back.",
         profile.name, identity.model, profile.name, profile.name
     ))
+}
+
+/// What `stock` says: what putting the model's Lab Stock on would change,
+/// left waiting for a yes, or why it can't.
+fn stock(
+    setups: &dyn Setups,
+    definition: &Definition,
+    desk: &Desk,
+    now: Result<Record, String>,
+) -> String {
+    match now.and_then(|now| {
+        setups
+            .lab_stock(&now.maker, &now.model)
+            .map(|stock| (now, stock))
+    }) {
+        Ok((now, Some(stock))) => {
+            stock_offer(desk, crate::lab_stock::plan(&stock, &now, definition))
+        }
+        Ok((now, None)) => format!(
+            "Lab Stock: none approved for the {} yet, so nothing changed.\n-> stock save \
+             sends this radio's settings as a proposal; an administrator approves it in \
+             LabLog (Admin, Lab Stock).",
+            now.model
+        ),
+        Err(why) => format!("Lab Stock not put on: {why}"),
+    }
+}
+
+/// What `stock save` says: the radio's settings sent to the Engine as a
+/// Lab Stock proposal, which changes nothing until an administrator
+/// approves it.
+fn stock_save(setups: &dyn Setups, definition: &Definition, now: Result<Record, String>) -> String {
+    let record = match now {
+        Ok(record) => record,
+        Err(why) => return format!("Lab Stock proposal not sent: {why}"),
+    };
+    let settings = crate::lab_stock::from_record(&record, definition);
+    if settings.is_empty() {
+        return format!(
+            "Lab Stock: nothing sent; none of the {}'s settings has been checked on a real \
+             radio yet, so a Lab Stock would put nothing on.",
+            record.model
+        );
+    }
+    match setups.propose_lab_stock(&record, &settings) {
+        Ok(number) => format!(
+            "Lab Stock: sent the radio's {} settings to the Engine as proposal #{number} for \
+             the {}. It changes nothing until an administrator approves it in LabLog (Admin, \
+             Lab Stock).",
+            settings.len(),
+            record.model
+        ),
+        Err(why) => format!("Lab Stock proposal not sent: {why}"),
+    }
+}
+
+/// Shows what putting the Lab Stock on would change and waits for the
+/// operator's yes: always a yes, even in auto mode (Principle X, first
+/// exception).
+fn stock_offer(desk: &Desk, plan: crate::restore::Plan) -> String {
+    let mut lines = plan.lines();
+    if plan.put.is_empty() {
+        return lines.join("\n");
+    }
+    let ask = format!(
+        "-> Type yes to put {} Lab Stock setting{} on the radio; anything else leaves it as it is.",
+        plan.put.len(),
+        if plan.put.len() == 1 { "" } else { "s" }
+    );
+    let number = desk.wait_for_yes(plan);
+    lines.push(numbered(&ask, number));
+    lines.join("\n")
 }
 
 /// Puts a confirmed plan back on the radio and records it beside the
@@ -1071,6 +1155,8 @@ fn console(
                 serial,
             ))),
             Ok(Typed::Enroll(Some(on))) => desk.enroll(on),
+            Ok(Typed::Stock) => stock(setups, definition, desk, read()),
+            Ok(Typed::StockSave) => stock_save(setups, definition, read()),
             Ok(Typed::Show(name)) => show(shared, definition, &name),
             Ok(Typed::Fix) => match read() {
                 Ok(now) => {
@@ -2190,6 +2276,129 @@ mod tests {
         assert!(put.contains(&"filter_width".to_owned()), "{put:?}");
         assert!(put.contains(&"usb_mod_level".to_owned()), "{put:?}");
         assert!(lab_plan(&now, "My VARA", &definition).is_none());
+    }
+
+    /// Lab Stock kept as a test Engine would keep it: one approved, and the
+    /// proposals sent.
+    struct StockEngine {
+        stock: Option<crate::engine::LabStock>,
+        proposed: Arc<Mutex<Vec<Vec<crate::engine::StockSetting>>>>,
+    }
+
+    impl crate::setups::Setups for StockEngine {
+        fn keep(&self, _: &settings_record::Record, _: &str) -> Result<(), String> {
+            Err("not kept here".to_owned())
+        }
+
+        fn kept(&self, _: &str, _: &str, _: &str) -> Result<KeptRadio, String> {
+            Err("not kept here".to_owned())
+        }
+
+        fn place(&self) -> String {
+            "on the test Engine".to_owned()
+        }
+
+        fn lab_stock(&self, _: &str, _: &str) -> Result<Option<crate::engine::LabStock>, String> {
+            Ok(self.stock.clone())
+        }
+
+        fn propose_lab_stock(
+            &self,
+            _: &settings_record::Record,
+            settings: &[crate::engine::StockSetting],
+        ) -> Result<u64, String> {
+            let mut proposed = self.proposed.lock().map_err(|e| e.to_string())?;
+            proposed.push(settings.to_vec());
+            Ok(7)
+        }
+    }
+
+    /// Types `lines` at the console of the pretend IC-7300, auto mode on,
+    /// with `engine` keeping Lab Stock; returns the desk.
+    fn typed_at_console(
+        shared: &Shared,
+        definition: &rigdef::Definition,
+        engine: &StockEngine,
+        lines: &[&str],
+    ) -> Desk {
+        let desk = Desk {
+            waiting: Arc::new(Mutex::new(None)),
+            asked: Arc::new(AtomicU32::new(0)),
+            auto: Arc::new(AtomicBool::new(true)),
+            serial: "PRETEND".to_owned(),
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        for line in lines {
+            let _ = send.send((*line).to_owned());
+        }
+        drop(send);
+        super::console(shared, engine, definition, &desk, &receive);
+        desk
+    }
+
+    #[test]
+    fn lab_stock_waits_for_a_yes_even_in_auto_mode_and_stock_save_proposes_it() {
+        assert_eq!(typed("stock"), Ok(Typed::Stock));
+        assert_eq!(typed("Stock SAVE"), Ok(Typed::StockSave));
+        assert!(typed("stock now").is_err());
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let before = setting_now(&shared, "data_mod");
+        let stock = crate::engine::LabStock {
+            id: 3,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            settings: vec![crate::engine::StockSetting {
+                id: "data_mod".to_owned(),
+                label: "DATA MOD".to_owned(),
+                bytes: if before.as_deref() == Some("02") {
+                    "03"
+                } else {
+                    "02"
+                }
+                .to_owned(),
+                shown: None,
+            }],
+        };
+        let engine = StockEngine {
+            stock: Some(stock),
+            proposed: Arc::new(Mutex::new(Vec::new())),
+        };
+        let desk = typed_at_console(&shared, &definition, &engine, &["stock"]);
+        let waiting = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
+        let Some((1, super::Asked::Change(plan))) = waiting else {
+            unreachable!("the Lab Stock waits for a yes, auto mode or not")
+        };
+        assert_eq!(plan.setup, "Lab Stock #3");
+        assert_eq!(plan.put.len(), 1);
+        assert_eq!(
+            setting_now(&shared, "data_mod"),
+            before,
+            "nothing written yet"
+        );
+
+        let _ = typed_at_console(&shared, &definition, &engine, &["stock save"]);
+        let proposed = engine
+            .proposed
+            .lock()
+            .map(|p| p.clone())
+            .unwrap_or_default();
+        assert_eq!(proposed.len(), 1);
+        let ids: Vec<&str> = proposed[0].iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"data_mod"), "{ids:?}");
+        assert!(
+            proposed[0].iter().all(|s| definition
+                .settings
+                .iter()
+                .any(|d| d.id == s.id && d.write && d.write_checked && !d.moves)),
+            "only settings the Agent may write"
+        );
+
+        let none = StockEngine {
+            stock: None,
+            proposed: Arc::new(Mutex::new(Vec::new())),
+        };
+        let desk = typed_at_console(&shared, &definition, &none, &["stock"]);
+        assert!(desk.waiting.lock().is_ok_and(|slot| slot.is_none()));
     }
 
     /// The pretend IC-7300, shared for transmitting, after one transmission

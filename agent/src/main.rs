@@ -35,6 +35,7 @@ mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
 mod journal;
+mod lab_stock;
 #[cfg(any(windows, test))]
 mod mmsstv;
 mod pairing;

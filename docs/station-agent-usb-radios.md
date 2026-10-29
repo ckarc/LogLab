@@ -218,6 +218,36 @@ lab's profile names are locked, so `keep VARA` is refused and the tray keeps
   its profile is on (up to 15 seconds), and nothing is written while a
   program has the radio keyed.
 
+**Lab Stock.** Each radio model also has one everyday baseline, its Lab
+Stock: every setting the Agent may write, the way the lab wants a radio of
+that model left between users. The per-program profiles sit on top of it.
+Lab Stock is kept on the Engine and managed in LabLog, behind a gate (brian,
+2026-10-29: "any changes to the labstock settings should be gated"):
+
+- **Proposing.** `stock save` at the Agent's console (or the tray's Lab Stock
+  menu, "Send settings as a Lab Stock proposal") sends the radio's settings
+  to the Engine as a proposal. A proposal changes nothing.
+- **The gate.** In LabLog, Admin then Lab Stock, an administrator sees each
+  proposal and exactly which settings it changes against the Lab Stock now,
+  and approves or refuses it, once. The newest approval is the model's Lab
+  Stock. The database refuses a decision from anyone but a signed-in
+  administrator, and a station key can never approve. Approving is refused
+  if the Lab Stock changed since the administrator compared it. Going back to
+  an earlier one is a new proposal that needs its own approval. Every
+  proposal and decision is kept (Principle VII; migration
+  `0022_lab_stock`).
+- **Putting it on.** `stock` (the tray's "Put Lab Stock on") shows what
+  putting the approved Lab Stock on would change and waits for the
+  operator's yes, even in auto mode; then the restore path writes it (mode
+  and filter first, only checked settings, read back, recorded in
+  `records`). (Principle X, first exception.)
+- **Only checked settings.** A proposal holds only settings the rig
+  definition marks writable and checked on a real radio, and not the clock.
+  A model with none checked yet (the IC-9700, until `check-writes` runs on
+  one) has nothing to propose.
+- **Filter widths.** Like any reading, a Lab Stock has the selected filter's
+  width only, not FIL1, FIL2 and FIL3 each.
+
 ## Virtual radios (personalities)
 
 | Personality | What it is | Who uses it |

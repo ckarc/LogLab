@@ -35,7 +35,7 @@
   }
 
   const utc = (when) => `${new Date(when).toISOString().slice(0, 16).replace("T", " ")}Z`;
-  const value = (s) => (s ? (s.shown ? `${s.shown} (${s.bytes})` : s.bytes) : "not set");
+  const value = (s) => (s ? s.shown || s.bytes : "not set");
 
   function from(p) {
     const where = p.again_of
