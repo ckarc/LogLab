@@ -44,10 +44,11 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
                 input.as_deref(),
                 &recording,
             )),
-            output: station
-                .transmit_cable
-                .as_deref()
-                .map(|cable| as_vara_names_it(cable, output.as_deref(), &playing)),
+            output: Some(as_vara_names_it(
+                transmit_to(station),
+                output.as_deref(),
+                &playing,
+            )),
             radio,
             call: sends.call.clone(),
             grid: sends.grid().map(str::to_owned),
@@ -59,7 +60,7 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
     {
         let wanted = fldigi::Wanted {
             input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
-            output: station.transmit_cable.as_deref().map(fldigi::mme_name),
+            output: Some(fldigi::mme_name(transmit_to(station))),
             radio,
             call: sends.call.clone(),
             grid: sends.grid().map(str::to_owned),
@@ -80,6 +81,16 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
              a radio only through a COM port)."
         );
     }
+}
+
+/// Where a program plays its transmit audio: the transmit cable, or
+/// without one, straight into the radio's own USB sound device, so it
+/// doesn't transmit silence (as VARA does, see `station`).
+fn transmit_to(station: &Station) -> &str {
+    station
+        .transmit_cable
+        .as_deref()
+        .unwrap_or(&station.radio_playing)
 }
 
 /// Whether `app` (executable `image`) is closed, saying why not if it isn't.
