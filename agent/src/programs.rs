@@ -6,7 +6,8 @@
 //! `qt_settings`), fldigi (see `fldigi`), and MMSSTV's receive audio (see
 //! `mmsstv`), and Winlink Express's VARA radio setup (see `winlink`). VARA is
 //! set up the same way (see `vara`, called from
-//! `station`).
+//! `station`). The call and grid square each program sends are the ones
+//! the station keeps up to date (see `sends_as`).
 //!
 //! A program that is running is left alone, because each writes its own
 //! settings when it closes and would undo the change; `station` sets it
@@ -27,6 +28,7 @@ use crate::{fldigi, mmsstv, qt_settings, winlink};
 /// radio through the Agent's virtual Kenwood.
 pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>) {
     let (recording, playing) = device_names();
+    let sends = crate::sends_as::current();
     for (app, image) in [("WSJT-X", "wsjtx.exe"), ("JS8Call", "js8call.exe")] {
         let Some(path) = qt_settings::find(app) else {
             continue;
@@ -48,6 +50,8 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
                 &playing,
             )),
             radio,
+            call: sends.call.clone(),
+            grid: sends.grid().map(str::to_owned),
         };
         say(app, &path, qt_settings::set(&path, &wanted));
     }
@@ -58,6 +62,8 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
             input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
             output: Some(fldigi::mme_name(transmit_to(station))),
             radio,
+            call: sends.call.clone(),
+            grid: sends.grid().map(str::to_owned),
         };
         say("fldigi", &path, fldigi::set(&path, &wanted));
     }
