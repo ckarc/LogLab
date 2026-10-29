@@ -55,7 +55,8 @@ use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
 use crate::rig::{
-    Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters, Vfo,
+    ControlPath, Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters,
+    Vfo,
 };
 
 /// The longest command line accepted.
@@ -156,6 +157,10 @@ pub trait Source: Send + Sync {
 /// line under the note.
 fn refused_hint(tuning: Tuning, identity: &RadioIdentity) -> String {
     match tuning {
+        // A FlexRadio has no other VFO: split is a second slice.
+        Tuning::OtherFrequency(_) if identity.path == ControlPath::Flex => {
+            "\n-> In WSJT-X, Settings > Radio > Split Operation: None avoids this.".to_owned()
+        }
         Tuning::Frequency(_) | Tuning::OtherFrequency(_) => format!(
             "\n-> The {} {} most likely has no band there. A program offering that band \
              (WSJT-X shows \"Rig Control Error\" and reconnects) should have it removed \
@@ -1167,7 +1172,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, respond};
+    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, refused_hint, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
@@ -1176,6 +1181,25 @@ mod tests {
         TxMeters,
     };
     use crate::rigdef;
+
+    #[test]
+    fn a_flexradio_refusing_the_other_vfo_is_told_as_split() {
+        let identity = |path| RadioIdentity {
+            maker: "FlexRadio".to_owned(),
+            model: "FLEX-6600".to_owned(),
+            path,
+        };
+        let split = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Flex),
+        );
+        assert!(split.contains("Split Operation: None"), "{split}");
+        let band = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Civ),
+        );
+        assert!(band.contains("no band there"), "{band}");
+    }
 
     /// The program the tests speak as.
     const PROGRAM: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_001));
