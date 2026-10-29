@@ -568,7 +568,7 @@ impl<P: Port> Keyable for CatRadio<P> {
         Ok(Some(TxMeters {
             power,
             swr_tenths,
-            alc,
+            alc: Some(alc),
             tuning: false,
             readings: 0,
         }))

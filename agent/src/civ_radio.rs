@@ -522,7 +522,7 @@ impl<P: Port> Keyable for CivRadio<P> {
         Ok(Some(TxMeters {
             power,
             swr_tenths,
-            alc,
+            alc: Some(alc),
             tuning,
             readings: 0,
         }))
@@ -906,7 +906,7 @@ mod tests {
             Some(TxMeters {
                 power: 0,
                 swr_tenths: 10,
-                alc: 0,
+                alc: Some(0),
                 ..TxMeters::default()
             }),
             "receiving: every meter at the bottom"
@@ -921,7 +921,7 @@ mod tests {
             Some(TxMeters {
                 power: 100,
                 swr_tenths: 20,
-                alc: 33,
+                alc: Some(33),
                 ..TxMeters::default()
             })
         );

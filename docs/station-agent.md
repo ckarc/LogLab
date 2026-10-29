@@ -30,7 +30,12 @@ program that asks (see "Sharing a radio" below).
   `--allow-transmit`, programs may tune that slice, change its mode and key
   the transmitter (through the radio's transmit interlock). A FlexRadio has
   slices, not VFO A and B, so split is refused: set WSJT-X's Split Operation
-  to None, or set up a second slice in SmartSDR. `--flex-pretend` tries all
+  to None, or set up a second slice in SmartSDR. Before the first
+  transmission the Agent asks the radio to send its meters to a UDP port on
+  this computer (Windows may ask once whether to let the Agent receive on
+  the network), and after each transmission it says the peak forward power
+  (in percent of 100 W) and SWR. A FlexRadio's ALC meter is in dBFS, not a
+  scale the Agent can judge, so ALC is not given. `--flex-pretend` tries all
   of this against a pretend FLEX-6600 on this computer. Not yet tried on a
   real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
