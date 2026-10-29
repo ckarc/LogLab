@@ -76,6 +76,9 @@ pub enum ControlPath {
     Flex,
     /// Over a serial port, in Icom's CI-V protocol, by the Agent's own driver.
     Civ,
+    /// Over a serial port, in Yaesu's CAT protocol, by the Agent's own
+    /// driver.
+    Cat,
     /// The Agent's built-in pretend radio, for trying LabLog without one.
     Pretend,
 }

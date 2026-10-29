@@ -184,10 +184,33 @@ pub fn read(
     now: SystemTime,
     computer: &str,
 ) -> Record {
+    read_where(radio, |_| true, serial, now, computer)
+}
+
+/// Reads only the settings whose ids are in `ids`, in the definition's
+/// order: enough to plan putting a few settings back, quickly.
+pub fn read_these(
+    radio: &mut dyn Exposes,
+    ids: &[&str],
+    serial: Option<&str>,
+    now: SystemTime,
+    computer: &str,
+) -> Record {
+    read_where(radio, |id| ids.contains(&id), serial, now, computer)
+}
+
+fn read_where(
+    radio: &mut dyn Exposes,
+    wanted: impl Fn(&str) -> bool,
+    serial: Option<&str>,
+    now: SystemTime,
+    computer: &str,
+) -> Record {
     let definition = radio.definition().clone();
     let settings = definition
         .settings
         .iter()
+        .filter(|setting| wanted(&setting.id))
         .map(|setting| {
             let (value, bytes) = match radio.read_exposed(setting) {
                 Ok(bytes) => (decode(setting, &bytes), Some(civ::hex(&bytes))),
@@ -448,16 +471,21 @@ pub fn report(
     definition: &Definition,
 ) -> Vec<String> {
     let mut lines = Vec::new();
+    // A radio with no link address (Yaesu CAT) is named without one.
+    let at = if record.address == 0 {
+        String::new()
+    } else {
+        format!(" at {:02X}h", record.address)
+    };
     match as_received {
         None => lines.push(format!(
-            "As received: {} {} at {:02X}h, read {} on {}",
-            record.maker, record.model, record.address, record.read_utc, record.computer
+            "As received: {} {}{at}, read {} on {}",
+            record.maker, record.model, record.read_utc, record.computer
         )),
         Some(first) => lines.push(format!(
-            "{} {} at {:02X}h, read {} on {} (as received {} on {})",
+            "{} {}{at}, read {} on {} (as received {} on {})",
             record.maker,
             record.model,
-            record.address,
             record.read_utc,
             record.computer,
             first.read_utc,

@@ -12,7 +12,7 @@ import pytest
 
 from loglab_engine.adif import Field, Record
 from loglab_engine.reference import Place, distance_km, grid_place, record_place
-from loglab_engine.reference.locator import adif_degrees
+from loglab_engine.reference.locator import adif_degrees, place_grid
 
 MAP = files("loglab_engine") / "web" / "maps" / "world.json"
 
@@ -41,6 +41,34 @@ def test_a_grid_square_is_its_centre(grid: str, lat: float, lon: float) -> None:
 def test_a_bad_grid_square_has_no_place(grid: str | None) -> None:
     """Anything that is not a Maidenhead locator is ignored, not guessed at."""
     assert grid_place(grid) is None
+
+
+@pytest.mark.parametrize(
+    ("lat", "lon", "grid"),
+    [
+        (41.714775, -72.727260, "FN31pr"),  # W1AW, Newington, Connecticut
+        (38.979167, -94.625, "EM28qx"),
+        (-90.0, -180.0, "AA00aa"),
+        (90.0, 180.0, "RR99xx"),
+    ],
+)
+def test_a_place_has_a_grid_square(lat: float, lon: float, grid: str) -> None:
+    """The reverse of a square's centre, six characters, as programs show them."""
+    assert place_grid(Place(lat=lat, lon=lon)) == grid
+
+
+def test_a_grid_square_round_trips() -> None:
+    """A square's centre is in that square."""
+    for grid in ("EM18bm", "JO01aa", "QF56od", "FN31pr"):
+        place = grid_place(grid)
+        assert place is not None
+        assert place_grid(place) == grid
+
+
+def test_off_the_map_has_no_grid_square() -> None:
+    """Nothing is made up for an impossible place."""
+    assert place_grid(Place(lat=91.0, lon=0.0)) is None
+    assert place_grid(Place(lat=0.0, lon=-181.0)) is None
 
 
 def test_adif_locations() -> None:

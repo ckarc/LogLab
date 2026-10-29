@@ -110,6 +110,7 @@ from loglab_engine.reference import (
     ZoneKind,
     distance_km,
     grid_place,
+    place_grid,
     record_place,
     section_for,
     tally_sections,
@@ -142,6 +143,14 @@ from loglab_engine.store import (
 )
 from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
+from loglab_engine.store.lab_stock import (
+    DecidedError,
+    LabStockMovedError,
+    LabStockNotFoundError,
+    LabStockStore,
+    Proposal,
+    StockSetting,
+)
 from loglab_engine.store.licenses import COUNTRY, LicenseStore, Source
 from loglab_engine.store.lotw import BatchQso, LotwAccountStore, LotwBatch
 from loglab_engine.store.operation import (
@@ -240,9 +249,9 @@ _PLAIN: Final = r"^[^\x00-\x1f\x7f]*$"
 
 
 class RadioPathIn(_Strict):
-    """How the Agent reaches the radio: Hamlib (and its model), FlexRadio, CI-V, or pretend."""
+    """How the Agent reaches the radio: Hamlib (and its model), FlexRadio, CI-V, CAT, or pretend."""
 
-    kind: Literal["hamlib", "flex", "civ", "pretend"]
+    kind: Literal["hamlib", "flex", "civ", "cat", "pretend"]
     model: Annotated[int, Field(ge=1, le=99_999)] | None = None
 
 
@@ -320,6 +329,74 @@ class KeptReadingOut(BaseModel):
 
     created: bool
     reading: RadioReadingOut
+
+
+class LabStockSettingIn(_Strict):
+    """One Lab Stock setting: its id and label, its bytes, and its value in words."""
+
+    id: Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]
+    label: Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)]
+    bytes: Annotated[str, StringConstraints(pattern=r"^[0-9A-F]{2}( [0-9A-F]{2}){0,63}$")]
+    shown: (
+        Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)] | None
+    ) = None
+
+
+class LabStockProposalIn(_Strict):
+    """The settings an Agent read from a radio, proposed as its model's Lab Stock.
+
+    Only an administrator's approval makes it the Lab Stock.
+    """
+
+    maker: _RadioText
+    model: _RadioText
+    serial: _Serial
+    note: Annotated[str, StringConstraints(min_length=1, max_length=500, pattern=_PLAIN)] | None = (
+        None
+    )
+    settings: Annotated[list[LabStockSettingIn], Field(min_length=1, max_length=MAX_SETTINGS)]
+
+
+class LabStockDecisionIn(_Strict):
+    """An administrator's approval of a proposal.
+
+    ``against`` is the number of the Lab Stock it was compared with, or None
+    if the model had none: if that has changed, nothing is approved.
+    """
+
+    against: int | None
+
+
+class LabStockDecisionOut(BaseModel):
+    """An approval or refusal: which, by whom, and when."""
+
+    approved: bool
+    by: str
+    at: datetime
+
+
+class LabStockOut(BaseModel):
+    """A Lab Stock proposal and where it stands."""
+
+    id: int
+    maker: str
+    model: str
+    status: str
+    current: bool
+    settings: list[LabStockSettingIn]
+    note: str | None
+    station: str | None
+    serial: str | None
+    again_of: int | None
+    proposed_by: str | None
+    proposed_at: datetime
+    decision: LabStockDecisionOut | None
+
+
+class AgentLabStockOut(BaseModel):
+    """A model's Lab Stock now, if an administrator has approved one."""
+
+    lab_stock: LabStockOut | None
 
 
 class PairingAskIn(_Strict):
@@ -1407,6 +1484,26 @@ class AgentQsoOut(BaseModel):
     message: str
 
 
+class AgentStationOut(BaseModel):
+    """Who a program at the Agent's station logs as, for setting the program up.
+
+    ``operator`` is who is signed in there now, if anyone. ``station_call`` is
+    the call QSOs logged there are made as: the operation's (or its GOTA
+    call) when the operator chose one, else the operator's own. ``grid`` is
+    where the station is: FieldLab's GPS fix (``gps``, measured) when a
+    recent one has been heard, else the operator's saved location
+    (``saved``: LoTW's station location, or the callbook's grid for their
+    call). Nothing is looked up to answer (Principle V).
+    """
+
+    station: str
+    operator: str | None
+    station_call: str | None
+    operation: str | None
+    grid: str | None
+    grid_source: Literal["gps", "saved"] | None
+
+
 class LotwCertificateIn(_Strict):
     """A LoTW callsign certificate: TrustedQSL's ``.p12`` file, in base64, and its password."""
 
@@ -1787,14 +1884,19 @@ def list_zones(
     )
 
 
-def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
-    """Where the operator's station is, when a QSO does not say."""
+def _saved_grid(conn: Conn, who: Actor) -> str | None:
+    """The operator's saved grid: LoTW's station location, else the callbook's."""
     account = LotwAccountStore(conn).get(who)
     grid = (account.location or {}).get("grid") if account is not None else None
     if not isinstance(grid, str):
         cached = CallbookStore(conn).cached(CALLBOOK_SOURCE, who.operator)
         grid = cached.entry.get("grid") if cached is not None and cached.found else None
-    return grid_place(grid) if isinstance(grid, str) else None
+    return grid if isinstance(grid, str) and grid_place(grid) is not None else None
+
+
+def _station_home(conn: Conn, who: Actor) -> MapPlace | None:
+    """Where the operator's station is, when a QSO does not say."""
+    return grid_place(_saved_grid(conn, who))
 
 
 def _gps_fix(request: Request) -> GpsFix | None:
@@ -2393,6 +2495,8 @@ def _radio_path(path: RadioPathIn) -> str:
         return "FlexRadio API"
     if path.kind == "civ":
         return "Icom CI-V"
+    if path.kind == "cat":
+        return "Yaesu CAT"
     return f"Hamlib model {path.model}" if path.model is not None else "Hamlib"
 
 
@@ -2512,6 +2616,150 @@ def radio_settings(
     return RadioSettingsOut(
         as_received=None if found is None else _reading_out(found),
         setups=tuple(_reading_out(r) for r in store.setups(radio)),
+    )
+
+
+def _lab_stock_out(found: Proposal) -> LabStockOut:
+    decision = found.decision
+    return LabStockOut(
+        id=found.id,
+        maker=found.maker,
+        model=found.model,
+        status=found.status.value,
+        current=found.current,
+        settings=[
+            LabStockSettingIn(id=s.id, label=s.label, bytes=s.bytes, shown=s.shown)
+            for s in found.settings
+        ],
+        note=found.note,
+        station=found.station,
+        serial=found.serial,
+        again_of=found.again_of,
+        proposed_by=found.proposed_by,
+        proposed_at=found.proposed_at,
+        decision=None
+        if decision is None
+        else LabStockDecisionOut(approved=decision.approved, by=decision.by, at=decision.at),
+    )
+
+
+@api.post("/agent/lab-stock", status_code=status.HTTP_201_CREATED)
+def propose_lab_stock(body: LabStockProposalIn, station: AgentStation, conn: Conn) -> LabStockOut:
+    """Propose the settings an Agent read from its radio as that model's Lab Stock.
+
+    A proposal changes nothing: it becomes the Lab Stock only when an
+    administrator approves it in LabLog. A station key can never approve.
+    """
+    return _lab_stock_out(
+        LabStockStore(conn).propose(
+            station,
+            body.maker,
+            body.model,
+            body.serial,
+            tuple(StockSetting(s.id, s.label, s.bytes, s.shown) for s in body.settings),
+            note=body.note,
+        )
+    )
+
+
+@api.get("/agent/lab-stock")
+def agent_lab_stock(
+    maker: _RadioText, model: _RadioText, station: AgentStation, conn: Conn
+) -> AgentLabStockOut:
+    """A model's Lab Stock now: the proposal an administrator approved most recently.
+
+    The Agent puts it on a radio only when the operator there asks and
+    confirms (Principle X).
+    """
+    del station
+    found = LabStockStore(conn).current(maker, model)
+    return AgentLabStockOut(lab_stock=None if found is None else _lab_stock_out(found))
+
+
+@api.get("/lab-stock")
+def list_lab_stock(who: Signed, conn: Conn) -> list[LabStockOut]:
+    """Every Lab Stock proposal, newest first, with what became of each. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return [_lab_stock_out(p) for p in LabStockStore(conn).all()]
+
+
+@api.post("/lab-stock/{proposal_id}/approve")
+def approve_lab_stock(
+    proposal_id: int, body: LabStockDecisionIn, who: Signed, conn: Conn
+) -> LabStockOut:
+    """Approve a proposal, making it its model's Lab Stock. Administrators only.
+
+    Refused with 409 if it was already decided, or if the model's Lab Stock
+    is no longer the one it was compared ``against``.
+    """
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(
+        LabStockStore(conn).decide(who, proposal_id, approve=True, against=body.against)
+    )
+
+
+@api.post("/lab-stock/{proposal_id}/refuse")
+def refuse_lab_stock(proposal_id: int, who: Signed, conn: Conn) -> LabStockOut:
+    """Refuse a proposal: it is kept, and never becomes the Lab Stock. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(LabStockStore(conn).decide(who, proposal_id, approve=False))
+
+
+@api.post("/lab-stock/{proposal_id}/again", status_code=status.HTTP_201_CREATED)
+def propose_lab_stock_again(proposal_id: int, who: Signed, conn: Conn) -> LabStockOut:
+    """Propose an earlier proposal's settings again, to go back to them. Administrators only.
+
+    The new proposal still needs its own approval.
+    """
+    _require(conn, who, Permission.ADMIN)
+    return _lab_stock_out(LabStockStore(conn).propose_again(who, proposal_id))
+
+
+@api.get("/agent/station")
+def agent_station(
+    station: AgentStation,
+    conn: Conn,
+    gps: Annotated[GpsFix | None, Depends(_gps_fix)],
+) -> AgentStationOut:
+    """Who programs at the Agent's station log as, and where the station is.
+
+    The Agent asks this so it can say who QSOs will be logged as, and so the
+    programs it sets up (WSJT-X, JS8Call, fldigi) send the right call and
+    grid. Nothing here is the operator's secret: their callsign, the
+    operation's name and call, and a 6-character grid (Principle XXI).
+    """
+    who = IdentityStore(conn).at_station(station)
+    grid = None if gps is None else place_grid(MapPlace(lat=gps.lat, lon=gps.lon))
+    source: Literal["gps", "saved"] | None = None if grid is None else "gps"
+    if who is None:
+        return AgentStationOut(
+            station=station,
+            operator=None,
+            station_call=None,
+            operation=None,
+            grid=grid,
+            grid_source=source,
+        )
+    if grid is None:
+        grid = _saved_grid(conn, who)
+        source = None if grid is None else "saved"
+    call, name = who.operator, None
+    ref = _chosen_operation(conn, who)
+    if ref is not None:
+        try:
+            op = OperationStore(conn).get(ref.id)
+        except OperationNotFoundError:
+            op = None
+        if op is not None and not op.over(datetime.now(UTC)):
+            name = op.name
+            call = op.gota_call if ref.gota and op.gota_call else op.station_call
+    return AgentStationOut(
+        station=station,
+        operator=who.operator,
+        station_call=call,
+        operation=name,
+        grid=grid,
+        grid_source=source,
     )
 
 
@@ -3857,6 +4105,9 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (NotSignedInError, status.HTTP_401_UNAUTHORIZED),
     (NotAuthorizedError, status.HTTP_403_FORBIDDEN),
     (QsoNotFoundError, status.HTTP_404_NOT_FOUND),
+    (LabStockNotFoundError, status.HTTP_404_NOT_FOUND),
+    (DecidedError, status.HTTP_409_CONFLICT),
+    (LabStockMovedError, status.HTTP_409_CONFLICT),
     (OperationNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
     (ArchivedError, status.HTTP_409_CONFLICT),

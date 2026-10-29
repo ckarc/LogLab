@@ -19,6 +19,9 @@ mod audio;
 #[cfg(windows)]
 mod audio_windows;
 mod auto_mode;
+mod carrier;
+mod cat_pretend;
+mod cat_radio;
 mod civ;
 mod civ_demo;
 mod civ_pretend;
@@ -27,27 +30,33 @@ mod civ_serial;
 #[cfg(any(windows, test))]
 mod driver;
 mod engine;
+mod enrollment;
+mod filter_widths;
 #[cfg(any(windows, test))]
 mod fldigi;
 mod flex;
+mod flex_pretend;
 mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
 mod journal;
+mod lab_stock;
 #[cfg(any(windows, test))]
 mod mmsstv;
 mod pairing;
-#[cfg(any(windows, test))]
-mod peer_program;
 mod pretend;
+mod profiles;
+mod program_id;
 #[cfg(windows)]
 mod programs;
+mod qso_logs;
 #[cfg(any(windows, test))]
 mod qt_settings;
 mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;
+mod serial_radio;
 #[cfg(any(windows, test))]
 mod settings_file;
 mod settings_record;
@@ -60,6 +69,8 @@ mod tray_windows;
 mod vara;
 #[cfg(any(windows, test))]
 mod vara_proxy;
+#[cfg(any(windows, test))]
+mod winlink;
 mod write_check;
 mod wsjtx;
 
@@ -73,10 +84,13 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use cat_pretend::{PretendCat, PretendCatPort};
+use cat_radio::CatRadio;
 use civ_pretend::PretendCiv;
 use civ_radio::{CivRadio, PretendPort};
 use engine::{Handed, RadioReport, Report, SendError, Uplink};
 use flex::FlexRadio;
+use flex_pretend::PretendFlex;
 use hamlib::{HamlibRadio, Launch, Source};
 use journal::Journal;
 use pretend::PretendRadio;
@@ -171,6 +185,12 @@ RADIO is one of:
                                        speed and the radio by itself
   --civ-pretend                        the same driver, talking to a pretend
                                        IC-7300
+  --cat PORT                           a Yaesu radio (FTDX10) on a serial
+                                       port, through the Agent's own CAT
+                                       driver; RTS is held on, as Yaesu's
+                                       CAT port uses it for flow control
+  --cat-pretend                        the same driver, talking to a pretend
+                                       FTDX10
   --hamlib-model N --device PORT [--baud N] [--rigctld-program PATH]
                                        start Hamlib's rigctld for a radio
                                        (3073 is the Icom IC-7300)
@@ -178,7 +198,11 @@ RADIO is one of:
                                        use a rigctld already running here
   --flex ADDRESS                       a FlexRadio on the network, by its IP
                                        address or name (port 4992 unless
-                                       given, as in 192.168.1.20:4992)
+                                       given, as in 192.168.1.20:4992),
+                                       through its SmartSDR API; serve may
+                                       tune and key its transmit slice
+  --flex-pretend                       the same driver, talking to a pretend
+                                       FLEX-6600 on this computer
 
 With --station, an Agent whose key file is empty or missing asks to join as
 that station, shows a code, and waits for an administrator to approve it in
@@ -204,8 +228,14 @@ enum RadioChoice {
     CivPretend,
     /// The Agent's own CI-V driver, on a real serial port (`COM5`).
     Civ(String),
+    /// The Agent's own CAT driver, talking to a pretend FTDX10.
+    CatPretend,
+    /// The Agent's own CAT driver, on a real serial port.
+    Cat(String),
     Hamlib(HamlibChoice),
     Flex(String),
+    /// The FlexRadio driver, talking to a pretend FlexRadio.
+    FlexPretend,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -296,9 +326,10 @@ struct Options {
     engine: Option<String>,
     key_file: Option<String>,
     station: Option<String>,
-    pretend: bool,
-    civ_pretend: bool,
+    /// The pretend radios asked for.
+    pretends: Vec<RadioChoice>,
     civ: Option<String>,
+    cat: Option<String>,
     model: Option<u32>,
     device: Option<String>,
     baud: Option<u32>,
@@ -362,12 +393,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let mut options = Options::default();
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
-        if flag == "--pretend" {
-            options.pretend = true;
-            continue;
-        }
-        if flag == "--civ-pretend" {
-            options.civ_pretend = true;
+        if let Some(pretend) = pretend_flag(flag) {
+            if !options.pretends.contains(&pretend) {
+                options.pretends.push(pretend);
+            }
             continue;
         }
         if flag == "--allow-tuning" {
@@ -392,6 +421,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--rigctld-program" => options.program = Some(value),
             "--flex" => options.flex = Some(value),
             "--civ" => options.civ = Some(value),
+            "--cat" => options.cat = Some(value),
             "--journal" => options.journal = Some(value),
             "--records" => options.records = Some(value),
             "--tx-limit" => options.tx_limit = Some(number(flag, &value)?),
@@ -547,11 +577,9 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.tx_limit.is_some() && allowed != Allowed::Transmitting {
         return Err("--tx-limit goes with --allow-transmit".to_owned());
     }
-    if allowed != Allowed::Reading
-        && !matches!(radio, RadioChoice::CivPretend | RadioChoice::Civ(_))
-    {
+    if allowed != Allowed::Reading && !radio.can_tune() {
         return Err(format!(
-            "{} works only with the Agent's own CI-V driver (--civ PORT or --civ-pretend) for now",
+            "{} works only with the Agent's own drivers (--civ PORT, --cat PORT, --flex ADDRESS, or their -pretend) for now",
             allowed.flag()
         ));
     }
@@ -605,29 +633,39 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     }
 }
 
+/// The pretend radio a flag names, if it names one.
+fn pretend_flag(flag: &str) -> Option<RadioChoice> {
+    Some(match flag {
+        "--pretend" => RadioChoice::Pretend,
+        "--civ-pretend" => RadioChoice::CivPretend,
+        "--cat-pretend" => RadioChoice::CatPretend,
+        "--flex-pretend" => RadioChoice::FlexPretend,
+        _ => return None,
+    })
+}
+
 fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     let hamlib = options.model.is_some() || options.device.is_some() || options.rigctld.is_some();
     let chosen = [
-        options.pretend,
-        options.civ_pretend,
         options.civ.is_some(),
+        options.cat.is_some(),
         hamlib,
         options.flex.is_some(),
     ];
-    if chosen.iter().filter(|c| **c).count() > 1 {
+    if chosen.iter().filter(|c| **c).count() + options.pretends.len() > 1 {
         return Err(
-            "choose one radio: --pretend, --civ-pretend, --civ, a Hamlib radio, or --flex"
+            "choose one radio: --pretend, --civ-pretend, --civ, --cat-pretend, --cat, a Hamlib radio, --flex or --flex-pretend"
                 .to_owned(),
         );
     }
-    if options.pretend {
-        return Ok(RadioChoice::Pretend);
-    }
-    if options.civ_pretend {
-        return Ok(RadioChoice::CivPretend);
+    if let Some(pretend) = options.pretends.pop() {
+        return Ok(pretend);
     }
     if let Some(port) = options.civ.take() {
         return Ok(RadioChoice::Civ(port));
+    }
+    if let Some(port) = options.cat.take() {
+        return Ok(RadioChoice::Cat(port));
     }
     if let Some(address) = options.flex.take() {
         return Ok(RadioChoice::Flex(address));
@@ -673,16 +711,79 @@ fn civ_serial_radio(port: &str) -> Result<CivRadio<civ_serial::SerialPort>, rig:
     CivRadio::find(port, &definitions)
 }
 
-/// The Agent's own CI-V driver, the only one that can tune or key a radio.
-fn civ_keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
+/// The CAT driver, finding a pretend FTDX10 that listens at 9600 baud, so
+/// the speed search has to work to find it.
+fn cat_pretend_radio() -> Result<CatRadio<PretendCatPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let ftdx10 = definitions
+        .iter()
+        .find(|d| d.model == "FTDX10")
+        .ok_or_else(|| rig::RadioError("the FTDX10 definition is not built in".to_owned()))?;
+    let port = PretendCatPort::new(PretendCat::new(ftdx10), 9600);
+    CatRadio::find(port, &definitions)
+}
+
+/// The CAT driver on a real serial port: 2 stop bits and RTS on, as the
+/// Yaesu definitions ask.
+fn cat_serial_radio(port: &str) -> Result<CatRadio<civ_serial::SerialPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let yaesu = definitions
+        .iter()
+        .find(|d| d.family == rigdef::YAESU_CAT)
+        .ok_or_else(|| rig::RadioError("no Yaesu definition is built in".to_owned()))?;
+    let port = civ_serial::SerialPort::open_for(port, yaesu).map_err(rig::RadioError)?;
+    CatRadio::find(port, &definitions)
+}
+
+impl RadioChoice {
+    /// Whether the radio is reached through one of the Agent's own drivers,
+    /// the only ones that can tune or key a radio or read its settings.
+    fn is_own_driver(&self) -> bool {
+        matches!(
+            self,
+            Self::Civ(_) | Self::CivPretend | Self::Cat(_) | Self::CatPretend
+        )
+    }
+
+    /// Whether the Agent can tune and key the radio: through its own
+    /// serial drivers, or a FlexRadio's API.
+    fn can_tune(&self) -> bool {
+        self.is_own_driver() || matches!(self, Self::Flex(_) | Self::FlexPretend)
+    }
+}
+
+/// The FlexRadio driver, talking to a pretend FLEX-6600 on this computer.
+fn flex_pretend_radio() -> Result<FlexRadio, rig::RadioError> {
+    let pretend = PretendFlex::start("FLEX-6600", true)
+        .map_err(|error| rig::RadioError(format!("can't start the pretend FlexRadio: {error}")))?;
+    FlexRadio::open(pretend.address())
+}
+
+/// The Agent's own driver for the radio chosen, if it is one of them.
+fn serial_radio(
+    choice: &RadioChoice,
+) -> Result<Box<dyn serial_radio::SerialRadio>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
+        RadioChoice::Cat(port) => Box::new(cat_serial_radio(port)?),
+        RadioChoice::CatPretend => Box::new(cat_pretend_radio()?),
         _ => {
             return Err(rig::RadioError(
-                "only the Agent's own CI-V driver can tune or key a radio".to_owned(),
+                "only the Agent's own drivers (CI-V and CAT) can tune or key a radio or read its settings"
+                    .to_owned(),
             ));
         }
+    })
+}
+
+/// The drivers that can tune or key a radio: the Agent's own serial
+/// drivers and the FlexRadio's.
+fn keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
+    Ok(match choice {
+        RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
+        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
+        _ => serial_radio(choice)?,
     })
 }
 
@@ -691,7 +792,10 @@ fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> 
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
         RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
+        RadioChoice::CatPretend => Box::new(cat_pretend_radio()?),
+        RadioChoice::Cat(port) => Box::new(cat_serial_radio(port)?),
         RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
+        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
             Box::new(HamlibRadio::open(&Source::Started(launch.clone()))?)
         }
@@ -1069,10 +1173,10 @@ fn serve(
 ) -> Result<(), String> {
     let (notes, heard) = mpsc::channel();
     let shared: Arc<dyn rigctld_server::Source> = if let Some(limit) = transmit_limit {
-        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
+        let radio = keyable(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::with_transmit(radio, limit).with_notes(notes))
     } else if allow_tuning {
-        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
+        let radio = keyable(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::with_tuning(radio).with_notes(notes))
     } else {
         let radio = open(choice).map_err(|error| error.to_string())?;
@@ -1163,23 +1267,11 @@ fn print_event(event: &str) {
 /// Read a radio's menu settings, keep the first reading as its as-received
 /// record, and report (Principles X and XIV).
 fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
-    match choice {
-        RadioChoice::CivPretend => record_from(
-            &mut civ_pretend_radio().map_err(|error| error.to_string())?,
-            dir,
-        ),
-        RadioChoice::Civ(port) => record_from(
-            &mut civ_serial_radio(port).map_err(|error| error.to_string())?,
-            dir,
-        ),
-        _ => Err(
-            "only the Agent's own CI-V driver can read settings: use --civ PORT or --civ-pretend"
-                .to_owned(),
-        ),
-    }
+    let mut radio = serial_radio(choice).map_err(|error| error.to_string())?;
+    record_from(radio.as_mut(), dir)
 }
 
-fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Result<(), String> {
+fn record_from(radio: &mut dyn serial_radio::SerialRadio, dir: &Path) -> Result<(), String> {
     let now = settings_record::read(
         radio,
         None,
@@ -1431,6 +1523,16 @@ mod tests {
         );
         assert!(parse(&args("read --civ")).is_err(), "needs a port");
         assert!(parse(&args("read --civ COM5 --civ-pretend")).is_err());
+        assert_eq!(
+            parse(&args("read --cat COM7")),
+            Ok(Command::Read(RadioChoice::Cat("COM7".to_owned())))
+        );
+        assert_eq!(
+            parse(&args("read --cat-pretend")),
+            Ok(Command::Read(RadioChoice::CatPretend))
+        );
+        assert!(parse(&args("read --cat COM7 --civ COM5")).is_err());
+        assert!(parse(&args("serve --cat COM7 --allow-transmit")).is_ok());
         assert!(parse(&args("read --civ COM5 --hamlib-model 3073 --device COM5")).is_err());
     }
 
@@ -1440,6 +1542,26 @@ mod tests {
             parse(&args("read --flex 192.168.1.20")),
             Ok(Command::Read(RadioChoice::Flex("192.168.1.20".to_owned())))
         );
+        assert_eq!(
+            parse(&args("read --flex-pretend")),
+            Ok(Command::Read(RadioChoice::FlexPretend))
+        );
+        assert_eq!(
+            parse(&args("read --flex-pretend --flex-pretend")),
+            Ok(Command::Read(RadioChoice::FlexPretend))
+        );
+        // A FlexRadio may be tuned and keyed, through its API.
+        assert!(matches!(
+            parse(&args("serve --flex 192.168.1.20 --allow-transmit")),
+            Ok(Command::Serve {
+                radio: RadioChoice::Flex(_),
+                transmit_limit: Some(_),
+                ..
+            })
+        ));
+        assert!(parse(&args("serve --flex-pretend --allow-tuning")).is_ok());
+        assert!(parse(&args("read --flex-pretend --cat-pretend")).is_err());
+        assert!(parse(&args("read --flex-pretend --flex 10.0.0.2")).is_err());
     }
 
     #[test]

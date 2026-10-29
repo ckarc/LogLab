@@ -26,7 +26,13 @@ program that asks (see "Sharing a radio" below).
   Agent. The Agent reports the transmit slice (or the active slice when none
   transmits) and names it, such as "Slice A". SmartSDR's radio chooser shows
   the radio's IP address; giving the radio a fixed address on the network
-  keeps the Agent's command line right.
+  keeps the Agent's command line right. With `serve --allow-tuning` or
+  `--allow-transmit`, programs may tune that slice, change its mode and key
+  the transmitter (through the radio's transmit interlock). A FlexRadio has
+  slices, not VFO A and B, so split is refused: set WSJT-X's Split Operation
+  to None, or set up a second slice in SmartSDR. `--flex-pretend` tries all
+  of this against a pretend FLEX-6600 on this computer. Not yet tried on a
+  real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
@@ -195,13 +201,18 @@ loglab-agent station --engine http://192.168.1.10:8073 --key-file station.key
    passes everything through unchanged, and keys the radio when VARA says
    `PTT ON`, through its own server under the rules below. A program that
    already keys through the Agent's server itself, like VarAC, keeps doing
-   so. Nothing changes in Winlink Express; in its VARA HF Radio Setup, use
-   no radio control and no PTT port, and set the dial frequency on the radio.
+   so. In Winlink Express's `C:\RMS Express\RMS Express.ini`, the Agent
+   sets the VARA Radio Setup to no radio model (`Model=Manual`), no control
+   port (`Control Port=NONE`) and PTT "External" (`PTT Port=EXTERNAL`),
+   only while Winlink Express is closed, keeping the file as first found
+   as `RMS Express.ini.lablog-original`. Set the dial frequency on the radio.
    The file as first found is kept as `VARA.ini.lablog-original`; copying it
    back puts VARA on its own port again.
 7. **Keeps the radio's settings on the Engine** (with `--engine` and
    `--key-file`), so every computer the radio is plugged into knows them.
    See "Setups kept on the Engine" below.
+7. **Carries what programs and LabLog need from each other** (with
+   `--engine` and `--key-file`). See "QSOs and LabLog in `station`" below.
 
 Starting `station` is the operator's choice that programs on this computer
 may key the radio (Principle IX).
@@ -220,6 +231,43 @@ after sign-in it starts the programs listed there, or in what order, so the
 Agent may start after VARA the first time. Then it leaves VARA's file alone
 and says so; once set, VARA keeps the setting. A Windows service, which
 runs before anyone signs in, comes with the tray program.
+
+### QSOs and LabLog in `station`
+
+With `--engine`, `station` carries three things between this computer's
+programs and the LabLog Engine:
+
+- **Every QSO a program logs goes to LabLog.** The Agent watches each
+  program's own ADIF log and notices each QSO added to it: WSJT-X's
+  `wsjtx_log.adi` and JS8Call's `js8call_log.adi` (in their folders under
+  `%LOCALAPPDATA%`), fldigi's logbook (the file its settings name, else
+  `fldigi.files\logs\logbook.adi`), and VarAC's `VarAC_qso_log.adi` (in
+  `C:\VarAC`, Program Files, or `C:\VARA`). Any other ADIF log is watched
+  when its full path is a line of `qso-logs.txt` in `records`. Nothing in the
+  programs needs changing, and a QSO logged while the Agent wasn't running
+  is sent when it starts. What is already in a log the first time the Agent
+  sees it is history and is not sent.
+- Each QSO goes into the Agent's journal (`records\qsos.journal`) before
+  anything else, and stays there until the Engine has logged it, as whoever
+  is signed in to LabLog at this station (Principle XV). With the Engine
+  unreachable or nobody signed in, the Agent says how many wait and why, and
+  sends them as soon as it can. One the Engine refuses for good is added to
+  `records\qsos.journal.refused.adi` for fixing and importing by hand. A QSO
+  already in the log (same call, band and mode in the same minute) is not
+  logged twice.
+- **The radio's live state** goes to LabLog, so its entry screen shows the
+  radio's frequency and mode, as `run` does.
+- **Who LabLog logs QSOs as** comes back: the operator signed in at this
+  station, the call QSOs are made as (the chosen operation's, else the
+  operator's), and the station's grid (FieldLab's GPS first). The Agent
+  says it when it changes and keeps the latest in
+  `records\lablog-station.json`, for setting programs' own call and grid.
+
+MMSSTV keeps its log in its own binary `.MDT` file (MMSSTV's
+`LogFile.cpp`), and writes ADIF only when asked to export (`LogConv.cpp`),
+so its QSOs aren't sent yet; export them and import the file in LabLog's
+Menu. Winlink Express hasn't been looked at yet: it isn't open source, and
+where it records anything QSO-like isn't documented.
 
 ## Sharing a radio with WSJT-X and other programs
 
@@ -349,7 +397,8 @@ How it behaves:
 - **Several programs at once.** Up to eight can connect; readings are
   shared, so they don't crowd the radio.
 - Any radio the Agent can read can be served: `--civ PORT`, `--civ-pretend`, `--pretend`,
-  `--flex`, or a Hamlib radio. Hamlib's own network client, the one WSJT-X
+  `--cat PORT`, `--cat-pretend`, `--flex`, `--flex-pretend`, or a Hamlib
+  radio. Hamlib's own network client, the one WSJT-X
   uses, has been checked against it with Hamlib 4.5.5.
 
 ## Receiving a radio's audio (Windows)
@@ -538,10 +587,13 @@ pretend radio is what the Agent's CI-V code is tested against.
 
 - `rigctld` has no sign-in, so the Agent runs it on this computer only
   (Principle XXI). Stopping the Agent stops it too.
-- The FlexRadio driver only asks: it subscribes to slice and transmitter
-  status, asks the radio's model, and pings it every 5 seconds. It sends no
-  command that changes the radio. If the radio says nothing for 15 seconds,
-  the Agent reconnects.
+- The FlexRadio driver subscribes to slice and transmitter status, asks the
+  radio's model, and pings it every 5 seconds. It sends a command that
+  changes the radio (`slice tune`, `slice set ... mode=`, `xmit`) only when
+  `serve` was started with `--allow-tuning` or `--allow-transmit` and a
+  program asks; keying counts as done only once the radio's interlock says
+  `TRANSMITTING`. If the radio says nothing for 15 seconds, the Agent
+  reconnects.
 - The Engine forgets a station's radio 15 seconds after its Agent goes quiet.
 - A request to join grants nothing until an administrator approves it, and
   expires after 10 minutes (the Agent then asks again with a new code).

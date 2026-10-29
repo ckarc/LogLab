@@ -189,27 +189,70 @@ recorded settings back. The Agent then restores only after the operator
 confirms it, and records the restore like any other change it makes to a
 radio. (Principle X, amended in constitution 3.0.0.)
 
-**Setups per program, applied by themselves.** A radio can also have a setup
-kept for each program: one for WSJT-X, one for VARA, one for MMSSTV. When a
-program starts using the radio's audio through the Agent, the Agent puts that
-program's setup back on the radio without asking, shows what it changed, and
-records it. It does this once, as the program starts; while the program
-runs, the operator's changes on the radio stand. When the program stops, the
-Agent keeps the radio's settings as that program's setup again, so the next
-session starts where this one left off. (Principle X, amended in constitution
-5.0.0.)
+**Setups per program, applied by themselves.** The lab keeps one known-good
+profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV), in
+`agent/profiles/` and built into the Agent, so it is locked: only a new build
+replaces it, and the Agent never saves a radio's settings over it (decided by
+brian, 2026-10-28). When a program connects to the virtual radio, the Agent
+tells which program it is from the process that owns the connection
+(Windows' `GetExtendedTcpTable` and the process's executable; `VarAC.exe`
+means VARA, since VarAC is the program that drives the radio for VARA) and,
+on an enrolled radio, puts that program's profile on without asking, shows
+what it changed, and records it. It does this once per program start; while
+the program runs, the operator's changes on the radio stand. When two
+programs share a radio, the first keeps it. Operators may still keep their
+own named setups and put one back by choice (`restore`, after a yes); the
+lab's profile names are locked, so `keep VARA` is refused and the tray keeps
+"My VARA" instead, while `restore VARA` puts the lab's profile back.
+(Principle X, second exception, constitution 5.0.0.)
 
-- **Only radios with a setup for that program.** A radio gets setups when
-  someone keeps one (`keep`), or when an administrator marks it a station
-  radio on the Engine, which gives it LabLog's starting setup for each program
-  its model has one for. A starting setup is a rig definition's suggested
-  settings for a program, each with the source it came from. A radio with
-  no setup for the program, such as a visitor's, is never changed this way.
+- **Only enrolled radios.** The first time the Agent sees a radio of a model
+  the lab has profiles for, it asks once whether this is a FieldLab radio.
+  Yes enrolls it in lab settings control; no leaves it alone for good, as for
+  a visitor's radio. `enroll on` or `enroll off` (or the tray's Lab radio
+  menu) changes it later. Kept per radio serial number in `records`.
 - **Only verified settings.** As with any restore, the Agent writes only
-  settings its rig definition marks writable and verified on a real radio,
+  settings its rig definition marks writable and checked on a real radio,
   and reads each one back afterward.
-- **Never mid-transmission.** A setup is applied before the program first
-  keys the radio, never while it is transmitting.
+- **Never mid-transmission.** The program's first transmission waits until
+  its profile is on (up to 15 seconds), and nothing is written while a
+  program has the radio keyed.
+
+**Lab Stock.** Each radio model also has one everyday baseline, its Lab
+Stock: every setting the Agent may write, the way the lab wants a radio of
+that model left between users. The per-program profiles sit on top of it.
+Lab Stock is kept on the Engine and managed in LabLog, behind a gate (brian,
+2026-10-29: "any changes to the labstock settings should be gated"):
+
+- **Proposing.** `stock save` at the Agent's console (or the tray's Lab Stock
+  menu, "Send settings as a Lab Stock proposal") sends the radio's settings
+  to the Engine as a proposal. A proposal changes nothing.
+- **The gate.** In LabLog, Admin then Lab Stock, an administrator sees each
+  proposal and exactly which settings it changes against the Lab Stock now,
+  and approves or refuses it, once. The newest approval is the model's Lab
+  Stock. The database refuses a decision from anyone but a signed-in
+  administrator, and a station key can never approve. Approving is refused
+  if the Lab Stock changed since the administrator compared it. Going back to
+  an earlier one is a new proposal that needs its own approval. Every
+  proposal and decision is kept (Principle VII; migration
+  `0022_lab_stock`).
+- **Putting it on.** `stock` (the tray's "Put Lab Stock on") shows what
+  putting the approved Lab Stock on would change and waits for the
+  operator's yes, even in auto mode; then the restore path writes it (mode
+  and filter first, only checked settings, read back, recorded in
+  `records`). (Principle X, first exception.)
+- **Only checked settings.** A proposal holds only settings the rig
+  definition marks writable and checked on a real radio, and not the clock.
+  A model with none checked yet (the IC-9700, until `check-writes` runs on
+  one) has nothing to propose.
+- **Every filter's width.** The radio reads and sets only the selected
+  filter's width (`1A 03`), so `stock save` asks a yes, then chooses FIL1,
+  FIL2 and FIL3 in turn on the mode the radio is on, reads each width, and
+  puts the radio back on the filter it was on, reading it again to be sure
+  (brian, 2026-10-27: back exactly as found). `stock` sets each filter's
+  width the same way, last, on the Lab Stock's mode, then selects the Lab
+  Stock's filter. In data mode the filter is chosen with `1A 06`, since `06`
+  turns data mode off. Widths are kept for the Lab Stock's mode only.
 
 ## Virtual radios (personalities)
 
@@ -240,8 +283,11 @@ What each program supports, briefly:
   says `PTT ON`, the Agent keys the radio through its own rigctld server, as
   one more program under the same rules. A client that already has its own
   connection to the rigctld server, such as VarAC, keys for itself, and the
-  Agent leaves it to. Nothing changes in Winlink Express's or VarAC's
-  settings. Only one client connects to VARA at a time.
+  Agent leaves it to. In Winlink Express, the Agent sets the VARA radio
+  setup (`RMS Express.ini`, `[Vara]`) to `Model=Manual`,
+  `Control Port=NONE` and `PTT Port=EXTERNAL`, Winlink Express's own
+  defaults, read from version 1.8.6.0, so it never opens the radio's COM
+  port. Only one client connects to VARA at a time.
 - **N1MM Logger+** can reach a radio over TCP when told it is a particular
   radio model, so it needs no virtual COM port.
 - **N3FJP** is fed through its API, so it never touches the radio at all.
@@ -336,7 +382,7 @@ program's file, is touched.
 |---|---|---|
 | VARA | `VARA.ini` next to `VARA.exe` | `[Soundcard]` input and output device |
 | WSJT-X, JS8Call | `%LOCALAPPDATA%\<app>\<app>.ini` | `[Configuration]` `SoundInName`, `SoundOutName`, `Rig` (Hamlib NET rigctl), `CATNetworkPort`, `PTTMethod` (CAT), `DataMode` (Data/Pkt), `Polling` (1, only if missing or 0) |
-| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device; Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
+| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device, by the 31-character name PortAudio gives the cable's MME device (fldigi opens the first device with exactly that name); Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
 | MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input only, for now |
 
 MMSSTV keys a radio only through a COM port, so it receives through the
@@ -417,6 +463,10 @@ Each file says:
 - **Identity**: maker, model, protocol family, and how the radio identifies
   itself (for Icom, its default CI-V address).
 - **USB layout**: which serial ports and sound device the radio presents.
+  A radio with more than one serial port behind its USB names its control
+  port by how its USB serial number ends (`number_ends_with = "A"` for the
+  IC-9700's USB (A)); the Agent never opens the others, which may carry data
+  the radio transmits.
 - **Link**: the baud rates to try, the default address, echo behavior.
 - **Modes**: the radio's mode codes, mapped to the rig model's modes.
 - **Commands**: the protocol commands the driver uses for each rig-model
@@ -452,6 +502,26 @@ the Agent, so there is one source of truth.
 
 [`agent/rigs/icom/ic-7300.toml`](../agent/rigs/icom/ic-7300.toml) is the first
 definition and the model for the rest.
+[`agent/rigs/icom/ic-9700.toml`](../agent/rigs/icom/ic-9700.toml) uses the same
+CI-V driver at address A2h; nothing in it is checked on a real IC-9700 yet,
+so the Agent records its settings but writes none until `check-writes` has
+been run on one.
+
+[`agent/rigs/yaesu/ftdx10.toml`](../agent/rigs/yaesu/ftdx10.toml) is the first
+Yaesu CAT definition (`family = "yaesu-cat"`), driven by the Agent's own CAT
+driver (`agent/src/cat_radio.rs`). CAT is text, so a CAT definition writes a
+command as it is sent without its semicolon (`RG0`), a menu item as its group,
+page and item (`01 04 17` is `EX010417`), and a value's length in `digits`.
+The Agent keeps a value of digits as BCD bytes, as an Icom radio sends its
+values, so ranges, records and profiles mean the same for both. A CAT link has
+no addresses; it says its `stop_bits`, whether RTS is held on (`rts = "on"`,
+refused for CI-V), and what the radio answers to `ID` (`identity.answer`).
+Settings are read only with commands on the Agent's list of CAT commands that
+only ask, and Yaesu's menu group 05 (clock, loads, saves and resets) is
+refused. A radio whose one USB bridge has more ports than its control port
+names its control port's USB `interface` (the FTDX10's Enhanced COM Port is
+0); the Agent never opens the other, whose RTS and DTR key the radio. Nothing
+in the FTDX10 file is checked on a real radio yet.
 
 ## Working with no internet
 

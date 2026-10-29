@@ -184,6 +184,7 @@ impl Said {
             Self::Program(text) | Self::Other(text) => {
                 text.lines().any(|line| line.trim_start().starts_with("->"))
                     || text.contains("Auto mode:")
+                    || text.starts_with("Lab profile:")
             }
             _ => false,
         }
@@ -277,6 +278,14 @@ pub enum Choice {
     Compare,
     /// Turn auto mode on or off.
     Auto(bool),
+    /// Enroll the radio in lab settings control, or leave it out.
+    Enroll(bool),
+    /// Put the model's Lab Stock on (after a yes), or (`true`) send the
+    /// radio's settings as a Lab Stock proposal.
+    Stock {
+        /// Send a proposal instead.
+        save: bool,
+    },
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -288,9 +297,24 @@ pub enum Choice {
     Quit,
 }
 
-/// The setups the tray offers to keep and put back, named for what the
-/// radio is set up for.
+/// The lab's profiles the tray offers to put back, named for what the
+/// radio is set up for. Locked: only a new build of the Agent changes them.
 pub const SETUPS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+
+/// The operator's own setups the tray offers to keep and put back, one
+/// beside each of the lab's.
+pub const MY_SETUPS: [&str; 5] = ["My VARA", "My FT8", "My JS8", "My fldigi", "My SSTV"];
+
+/// Every setup the tray's Restore menu offers, in its order, with the name
+/// shown and the name typed: the lab's profiles, then the operator's own.
+#[must_use]
+pub fn restore_menu() -> Vec<(String, &'static str)> {
+    SETUPS
+        .iter()
+        .map(|name| (format!("{name} (lab profile)"), *name))
+        .chain(MY_SETUPS.iter().map(|name| ((*name).to_owned(), *name)))
+        .collect()
+}
 
 impl Choice {
     /// The line typed at `station`'s console.
@@ -302,6 +326,9 @@ impl Choice {
             Self::Restore(name) => format!("restore {name}"),
             Self::Compare => "compare".to_owned(),
             Self::Auto(on) => format!("auto {}", if *on { "on" } else { "off" }),
+            Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
+            Self::Stock { save: false } => "stock".to_owned(),
+            Self::Stock { save: true } => "stock save".to_owned(),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -389,7 +416,10 @@ pub fn quoted(option: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, Grouper, Light, Said, classify, icon_file, question_box, quoted};
+    use super::{
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, question_box, quoted,
+        restore_menu,
+    };
 
     /// Every event `lines` make, in order.
     fn grouped(lines: &[&str]) -> Vec<String> {
@@ -497,13 +527,26 @@ mod tests {
         assert!(!classify("a program connected (127.0.0.1:57447)").needs_a_look());
         assert!(classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").needs_a_look());
         assert!(!classify("Setups: kept on this computer.").needs_a_look());
+        assert!(
+            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").needs_a_look()
+        );
     }
 
     #[test]
     fn types_what_the_menu_chose() {
-        assert_eq!(Choice::Keep("VARA").typed(), "keep VARA");
+        assert_eq!(Choice::Keep("My VARA").typed(), "keep My VARA");
+        let menu = restore_menu();
+        assert_eq!(menu.len(), 10);
+        assert_eq!(menu[0], ("VARA (lab profile)".to_owned(), "VARA"));
+        assert_eq!(menu[5], ("My VARA".to_owned(), "My VARA"));
+        for name in MY_SETUPS {
+            assert!(crate::engine::check_setup_name(name).is_ok(), "{name}");
+        }
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
+        assert_eq!(Choice::Enroll(false).typed(), "enroll off");
+        assert_eq!(Choice::Stock { save: false }.typed(), "stock");
+        assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(
             Choice::Answer {
                 number: 3,

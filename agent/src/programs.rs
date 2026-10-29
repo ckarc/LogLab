@@ -4,12 +4,13 @@
 //! Setting up the programs on this computer that use the radio, so each
 //! works through the Agent with nothing typed in: WSJT-X and `JS8Call` (see
 //! `qt_settings`), fldigi (see `fldigi`), and MMSSTV's receive audio (see
-//! `mmsstv`). VARA is set up the same way (see `vara`, called from
+//! `mmsstv`), and Winlink Express's VARA radio setup (see `winlink`). VARA is
+//! set up the same way (see `vara`, called from
 //! `station`).
 //!
 //! A program that is running is left alone, because each writes its own
-//! settings when it closes and would undo the change; the Agent says to
-//! close it and start the Agent again. A program that isn't installed, or
+//! settings when it closes and would undo the change; `station` sets it
+//! up as soon as it closes, ready for its next start. A program that isn't installed, or
 //! has never been started (so has no settings file yet), is skipped.
 
 use std::net::SocketAddr;
@@ -19,7 +20,7 @@ use crate::audio::RECEIVE_CABLE_OUT;
 use crate::audio_windows::{Station, device_names};
 use crate::settings_file::{self, Change, Outcome};
 use crate::vara::as_vara_names_it;
-use crate::{fldigi, mmsstv, qt_settings};
+use crate::{fldigi, mmsstv, qt_settings, winlink};
 
 /// Sets up every program found, for the radio at `radio` and the audio
 /// `station` carries.
@@ -52,11 +53,16 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
         && closed("fldigi", "fldigi.exe")
     {
         let wanted = fldigi::Wanted {
-            input: Some(RECEIVE_CABLE_OUT.to_owned()),
-            output: station.transmit_cable.clone(),
+            input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
+            output: station.transmit_cable.as_deref().map(fldigi::mme_name),
             radio,
         };
         say("fldigi", &path, fldigi::set(&path, &wanted));
+    }
+    if let Some(path) = winlink::find()
+        && closed("Winlink Express", winlink::IMAGE)
+    {
+        say("Winlink Express", &path, winlink::set(&path));
     }
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
@@ -76,7 +82,7 @@ fn closed(app: &str, image: &str) -> bool {
         Ok(true) => {
             println!(
                 "{app}: running, so its settings were left alone (it writes them when it \
-                 closes).\n  -> Close {app}, then start the Agent again."
+                 closes).\n  -> Close {app}: the Agent sets it up as soon as it closes."
             );
             false
         }

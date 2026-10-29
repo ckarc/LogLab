@@ -26,7 +26,7 @@
 //! A client that already keys the radio through the Agent's `rigctld`
 //! server itself, such as `VarAC`, is left to do so: the Agent keying too
 //! would make one of the two refused. Which program a client is comes from
-//! `peer_program` on Windows.
+//! `program_id` on Windows.
 //!
 //! Like the `rigctld` server, the proxy listens on this computer only and
 //! refuses connections from anywhere else (Principle XXI), and a command
@@ -48,9 +48,10 @@ const MAX_LINE: usize = 1024;
 /// How long the Agent waits for its own `rigctld` server to answer.
 const ANSWER_WITHIN: Duration = Duration::from_secs(5);
 
-/// Whether the program connected from `client` already keys the radio
-/// itself, through the Agent's `rigctld` server listening on `rigctld_port`.
-pub type KeysItself = Arc<dyn Fn(SocketAddr, u16) -> bool + Send + Sync>;
+/// Whether the program connected from `client` to the proxy at `proxy`
+/// already keys the radio itself, through the Agent's `rigctld` server
+/// listening on `rigctld_port`.
+pub type KeysItself = Arc<dyn Fn(SocketAddr, SocketAddr, u16) -> bool + Send + Sync>;
 
 /// What VARA asked for on its command port.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -270,6 +271,9 @@ impl Session {
         // unkeying the radio when VARA asks.
         let mut commands = Commands::default();
         let mut keyer = Keyer::new(&self);
+        if let Err(error) = keyer.connect() {
+            self.note(&format!("the Agent's radio server didn't answer ({error})"));
+        }
         copy(&vara, client, &self.stop, |chunk| {
             for ptt in commands.feed(chunk) {
                 keyer.ptt(ptt);
@@ -303,8 +307,12 @@ impl<'a> Keyer<'a> {
 
     fn ptt(&mut self, ptt: Ptt) {
         let agent_keys = *self.agent_keys.get_or_insert_with(|| {
-            let itself =
-                (self.session.keys_itself)(self.session.peer, self.session.ports.rigctld.port());
+            let proxy = SocketAddr::from(([127, 0, 0, 1], self.session.ports.clients));
+            let itself = (self.session.keys_itself)(
+                self.session.peer,
+                proxy,
+                self.session.ports.rigctld.port(),
+            );
             self.session.note(if itself {
                 "its client keys the radio through the Agent itself, so the Agent leaves \
                  VARA's PTT requests to it"
@@ -343,8 +351,10 @@ impl<'a> Keyer<'a> {
         }
     }
 
-    /// Sends `line` to the Agent's `rigctld` server and returns its answer.
-    fn ask(&mut self, line: &str) -> Result<String, String> {
+    /// Connects to the Agent's `rigctld` server, if not connected. Done as
+    /// the client connects, so the lab's VARA profile goes on the radio
+    /// before VARA first asks to transmit (see `station`'s `Programs`).
+    fn connect(&mut self) -> Result<(), String> {
         if self.rigctld.is_none() {
             let stream = TcpStream::connect_timeout(&self.session.ports.rigctld, ANSWER_WITHIN)
                 .map_err(|error| error.to_string())?;
@@ -354,6 +364,12 @@ impl<'a> Keyer<'a> {
             let _ = stream.set_nodelay(true);
             self.rigctld = Some(BufReader::new(stream));
         }
+        Ok(())
+    }
+
+    /// Sends `line` to the Agent's `rigctld` server and returns its answer.
+    fn ask(&mut self, line: &str) -> Result<String, String> {
+        self.connect()?;
         let Some(reader) = self.rigctld.as_mut() else {
             return Err("not connected".to_owned());
         };
@@ -498,7 +514,7 @@ mod tests {
                     vara: vara_port,
                     rigctld,
                 },
-                Arc::new(move |_, _| keys_itself),
+                Arc::new(move |_, _, _| keys_itself),
                 notes.clone(),
             ) {
                 return Bench {

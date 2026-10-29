@@ -1,0 +1,161 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# The lab's known-good profiles for the Icom IC-7300: one per program, the
+# same for every IC-7300 the lab has enrolled (brian's decision,
+# 2026-10-28: per model, locked, and only an administrator replaces them,
+# by changing this file in a new build of the Agent). The Agent puts a
+# program's profile on an enrolled radio once, as that program starts
+# (Principle X, second exception). It never saves the radio over these.
+#
+# Each setting is a setting id from rigs/icom/ic-7300.toml and the bytes the
+# radio sends and takes for it, in hex. The Agent writes only settings the
+# definition marks as checked on a real radio (write_checked).
+
+maker = "Icom"
+model = "IC-7300"
+
+[[profiles]]
+name = "VARA"
+source = "brian, K9KSU, at FieldLab, 2026-10-28 and 2026-10-29: the kept VARA setup of the first VarAC/VARA contact (DATA-USB on FIL1, FIL1 2.3 kHz, FIL2 1.2 kHz, FIL3 500 Hz, USB MOD Level 40%), with DATA MOD on USB so VARA's audio is what transmits."
+
+# USB (mode code 01) on FIL1. Written first: choosing the mode turns data
+# mode off on Icom radios, so the data mode goes second.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+# DATA mode on (D1), FIL1: DATA-USB.
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# The selected filter's width, step 27: SSB steps 10 to 40 are 600 Hz to
+# 3.6 kHz in 100 Hz steps, so 27 is 2.3 kHz. Written once DATA-USB FIL1 is
+# selected, so it lands on FIL1.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "27"
+
+# USB MOD Level 102 of 255: 40%.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+# DATA MOD: USB (03h), the computer's audio.
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "FT8"
+source = "LabLog, 2026-10-29: the VARA profile's audio path (DATA-USB on FIL1, USB MOD Level 40%, DATA MOD USB) with FIL1 widened to 3.0 kHz, per WSJT-X's user guide (make-qso.adoc: radio filters set to widest available passband, up to 5 kHz). Chosen as the recommended option; brian asked for recommended choices to be taken."
+
+# USB (mode code 01) on FIL1, then DATA mode on (D1), FIL1: DATA-USB, as
+# the VARA profile does. WSJT-X also asks for it itself (Mode: Data/Pkt).
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1's width, step 34: 600 Hz + (34 - 10) x 100 Hz = 3.0 kHz. WSJT-X's
+# guide says to use the widest filter, up to about 5 kHz. This is the same
+# slot VARA uses; VARA's profile writes 2.3 kHz back when VarAC starts.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "34"
+
+# USB MOD Level 102 of 255 (40%) and DATA MOD on USB, as for VARA: the
+# computer's audio is what transmits.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "JS8"
+source = "LabLog, the same as FT8 (JS8Call is built on WSJT-X), 2026-10-29: the VARA profile's audio path (DATA-USB on FIL1, USB MOD Level 40%, DATA MOD USB) with FIL1 widened to 3.0 kHz, per WSJT-X's user guide (make-qso.adoc: radio filters set to widest available passband, up to 5 kHz). Chosen as the recommended option; brian asked for recommended choices to be taken."
+
+# USB (mode code 01) on FIL1, then DATA mode on (D1), FIL1: DATA-USB, as
+# the VARA profile does. WSJT-X also asks for it itself (Mode: Data/Pkt).
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1's width, step 34: 600 Hz + (34 - 10) x 100 Hz = 3.0 kHz. WSJT-X's
+# guide says to use the widest filter, up to about 5 kHz. This is the same
+# slot VARA uses; VARA's profile writes 2.3 kHz back when VarAC starts.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "34"
+
+# USB MOD Level 102 of 255 (40%) and DATA MOD on USB, as for VARA: the
+# computer's audio is what transmits.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "fldigi"
+source = "Claude for brian, 2026-10-29, a starting point for brian to confirm at FieldLab: the VARA profile above (DATA-USB FIL1 2.3 kHz, USB MOD Level 40%, DATA MOD USB, all set by brian at the radio), plus AGC FAST and NB, NR and both notches off, as K0PIR gives for PSK and RTTY on the IC-7300 (k0pir.us/icom-7300-receiver-settings, k0pir.us/transmitter-settings-digital-operation)."
+
+# USB (mode code 01) on FIL1, then DATA on: DATA-USB, as for VARA.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# FIL1 2.3 kHz (step 27), written once DATA-USB FIL1 is selected.
+[[profiles.settings]]
+id = "filter_width"
+bytes = "27"
+
+# AGC FAST (01h). Written after the mode, so it lands on DATA-USB.
+[[profiles.settings]]
+id = "agc"
+bytes = "01"
+
+# Noise blanker, noise reduction, auto notch and manual notch all off
+# (00h), as K0PIR has them for digital modes.
+[[profiles.settings]]
+id = "noise_blanker"
+bytes = "00"
+
+[[profiles.settings]]
+id = "noise_reduction"
+bytes = "00"
+
+[[profiles.settings]]
+id = "auto_notch"
+bytes = "00"
+
+[[profiles.settings]]
+id = "manual_notch"
+bytes = "00"
+
+# USB MOD Level 102 of 255: 40%.
+[[profiles.settings]]
+id = "usb_mod_level"
+bytes = "01 02"
+
+# DATA MOD: USB (03h), the computer's audio.
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"

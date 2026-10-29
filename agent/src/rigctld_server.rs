@@ -55,7 +55,8 @@ use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
 use crate::rig::{
-    Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters, Vfo,
+    ControlPath, Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters,
+    Vfo,
 };
 
 /// The longest command line accepted.
@@ -130,6 +131,12 @@ pub trait Source: Send + Sync {
         Err("transmitting isn't allowed here".to_owned())
     }
 
+    /// `program` has connected to the server listening at `server`, and
+    /// nothing it asks is answered until this returns.
+    fn connected(&self, program: SocketAddr, server: SocketAddr) {
+        let _ = (program, server);
+    }
+
     /// `program` has disconnected: if it has the radio keyed, unkey it.
     fn gone(&self, program: SocketAddr) {
         let _ = program;
@@ -150,6 +157,10 @@ pub trait Source: Send + Sync {
 /// line under the note.
 fn refused_hint(tuning: Tuning, identity: &RadioIdentity) -> String {
     match tuning {
+        // A FlexRadio has no other VFO: split is a second slice.
+        Tuning::OtherFrequency(_) if identity.path == ControlPath::Flex => {
+            "\n-> In WSJT-X, Settings > Radio > Split Operation: None avoids this.".to_owned()
+        }
         Tuning::Frequency(_) | Tuning::OtherFrequency(_) => format!(
             "\n-> The {} {} most likely has no band there. A program offering that band \
              (WSJT-X shows \"Rig Control Error\" and reconnects) should have it removed \
@@ -697,7 +708,7 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let accepting = {
             let stop = Arc::clone(&stop);
-            thread::spawn(move || accept(&listener, &source, &stop))
+            thread::spawn(move || accept(&listener, address, &source, &stop))
         };
         Ok(Self {
             address,
@@ -722,7 +733,12 @@ impl Drop for Server {
     }
 }
 
-fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBool>) {
+fn accept(
+    listener: &TcpListener,
+    address: SocketAddr,
+    source: &Arc<dyn Source>,
+    stop: &Arc<AtomicBool>,
+) {
     let clients = Arc::new(AtomicUsize::new(0));
     while !stop.load(Ordering::SeqCst) {
         source.watch();
@@ -737,6 +753,7 @@ fn accept(listener: &TcpListener, source: &Arc<dyn Source>, stop: &Arc<AtomicBoo
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
+                    source.connected(peer, address);
                     let _ = serve(stream, peer, source.as_ref(), &stop);
                     source.gone(peer);
                     clients.fetch_sub(1, Ordering::SeqCst);
@@ -1155,7 +1172,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, respond};
+    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, refused_hint, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
@@ -1164,6 +1181,25 @@ mod tests {
         TxMeters,
     };
     use crate::rigdef;
+
+    #[test]
+    fn a_flexradio_refusing_the_other_vfo_is_told_as_split() {
+        let identity = |path| RadioIdentity {
+            maker: "FlexRadio".to_owned(),
+            model: "FLEX-6600".to_owned(),
+            path,
+        };
+        let split = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Flex),
+        );
+        assert!(split.contains("Split Operation: None"), "{split}");
+        let band = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Civ),
+        );
+        assert!(band.contains("no band there"), "{band}");
+    }
 
     /// The program the tests speak as.
     const PROGRAM: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_001));
@@ -1972,5 +2008,35 @@ mod tests {
         }
         assert!(!transmitting(&bench), "unkeyed by the server's watch");
         drop(server);
+    }
+    #[test]
+    fn answers_fldigi_as_hamlib_asks_for_it() {
+        // fldigi 4.1.23 (src/rigcontrol/hamlib.cxx) opens Hamlib's NET rigctl,
+        // reads the frequency and mode, unkeys, then tunes, changes mode and
+        // keys with PTT on data (its HAMLIBPTTONDATA default). These are the
+        // lines Hamlib 4.5.5 sent for those calls, captured on the wire.
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Shared::with_transmit(Box::new(radio), MINUTE);
+        let say = |line| as_program(&shared, PROGRAM, line);
+        assert_eq!(say("\\get_powerstat"), "1\n");
+        assert_eq!(say("\\chk_vfo"), "0\n");
+        assert!(say("\\dump_state").ends_with("done\n"));
+        assert_eq!(say("v"), "VFOA\n");
+        assert_eq!(say("f"), "14074000\n");
+        assert_eq!(say("s"), "0\nVFOA\n");
+        assert_eq!(say("m"), "PKTUSB\n0\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("F 7074000.000000"), "RPRT 0\n");
+        assert_eq!(say("f"), "7074000\n");
+        assert_eq!(say("M PKTUSB 0"), "RPRT 0\n");
+        assert_eq!(say("M USB 2400"), "RPRT 0\n");
+        assert!(say("m").starts_with("USB\n"));
+        assert_eq!(say("T 3"), "RPRT 0\n");
+        assert_eq!(say("t"), "1\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("t"), "0\n");
     }
 }
