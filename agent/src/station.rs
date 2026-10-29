@@ -1167,7 +1167,7 @@ fn vara(station: &crate::audio_windows::Station) {
         Ok(true) => {
             println!(
                 "VARA: running, so its sound devices were left alone (it keeps its settings \
-                 while it runs).\n  -> Close VARA, then start the Agent again."
+                 while it runs).\n  -> Close VARA: the Agent sets it up as soon as it closes."
             );
             return;
         }
@@ -1254,6 +1254,22 @@ struct Programs {
 }
 
 impl Programs {
+    /// The radio `station` serves, with serial number `serial` if known,
+    /// telling programs apart the way Windows can.
+    fn for_station(shared: &Arc<Shared>, serial: Option<&str>, definition: &Definition) -> Self {
+        Self::new(
+            LabRadio {
+                shared: Arc::clone(shared),
+                serial: serial.unwrap_or_default().to_owned(),
+                definition: definition.clone(),
+                records: records_folder(),
+                going_on: Arc::new((Mutex::new(0), Condvar::new())),
+            },
+            serial.is_some(),
+            Box::new(program_id::identify),
+        )
+    }
+
     fn new(lab: LabRadio, enrollable: bool, identify: Identify) -> Self {
         Self {
             lab,
@@ -1463,6 +1479,83 @@ impl Source for Programs {
     }
 }
 
+/// The programs whose settings the Agent sets up, by executable, and the
+/// names they are shown by.
+#[cfg(any(windows, test))]
+const SET_UP_PROGRAMS: [(&str, &str); 5] = [
+    ("vara.exe", "VARA"),
+    ("wsjtx.exe", "WSJT-X"),
+    ("js8call.exe", "JS8Call"),
+    ("fldigi.exe", "fldigi"),
+    ("mmsstv.exe", "MMSSTV"),
+];
+
+/// How often the Agent looks for a program that has closed.
+#[cfg(windows)]
+const LOOK_FOR_CLOSED: Duration = Duration::from_secs(5);
+
+/// Which of the programs the Agent sets up are open, looked at every
+/// [`LOOK_FOR_CLOSED`].
+#[cfg(windows)]
+struct ProgramsOpen {
+    open: HashSet<&'static str>,
+    looked: std::time::Instant,
+}
+
+#[cfg(windows)]
+impl ProgramsOpen {
+    fn now() -> Self {
+        Self {
+            open: open_programs(&tasklist()),
+            looked: std::time::Instant::now(),
+        }
+    }
+
+    /// The name of a program that was open when last looked and is closed
+    /// now, if one is (and it's time to look again).
+    fn closed_since(&mut self) -> Option<&'static str> {
+        if self.looked.elapsed() < LOOK_FOR_CLOSED {
+            return None;
+        }
+        self.looked = std::time::Instant::now();
+        let list = tasklist();
+        if list.is_empty() {
+            return None;
+        }
+        let now = open_programs(&list);
+        let closed = self.open.difference(&now).next().copied();
+        self.open = now;
+        closed
+    }
+}
+
+/// Windows' list of running programs, as `tasklist` writes it in CSV, or
+/// nothing when it can't be read.
+#[cfg(windows)]
+fn tasklist() -> String {
+    std::process::Command::new("tasklist")
+        .args(["/NH", "/FO", "CSV"])
+        .output()
+        .map(|listed| String::from_utf8_lossy(&listed.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The programs the Agent sets up that `tasklist`'s CSV `list` shows
+/// running, by the names they are shown by.
+#[cfg(any(windows, test))]
+fn open_programs(list: &str) -> HashSet<&'static str> {
+    let images: HashSet<String> = list
+        .lines()
+        .filter_map(|line| line.split(',').next())
+        .map(|image| image.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    SET_UP_PROGRAMS
+        .iter()
+        .filter(|(image, _)| images.contains(*image))
+        .map(|(_, name)| *name)
+        .collect()
+}
+
 /// Tells the operator how programs on this computer reach the radio.
 fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     println!(
@@ -1559,17 +1652,7 @@ fn run_found<P: Port + Send + 'static>(
         let _ = (&sound, &on_air);
         println!("Audio: carried on Windows only.");
     }
-    let programs = Programs::new(
-        LabRadio {
-            shared: Arc::clone(&shared),
-            serial: found.serial.clone().unwrap_or_default(),
-            definition: definition.clone(),
-            records: records_folder(),
-            going_on: Arc::new((Mutex::new(0), Condvar::new())),
-        },
-        found.serial.is_some(),
-        Box::new(program_id::identify),
-    );
+    let programs = Programs::for_station(&shared, found.serial.as_deref(), &definition);
     let server = rigctld_server::Server::start(listen, Arc::new(programs) as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
@@ -1588,10 +1671,22 @@ fn run_found<P: Port + Send + 'static>(
     let mut last = std::time::Instant::now();
     #[cfg(windows)]
     let mut was_on_air = false;
+    #[cfg(windows)]
+    let mut open = ProgramsOpen::now();
     crate::show_until_stopped(shared.as_ref(), &heard, running, || {
         offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
+            // A program open when the Agent started keeps its settings
+            // while it runs and writes them as it closes, so the Agent sets
+            // it up right after it closes, ready for its next start.
+            if let Some(closed) = open.closed_since() {
+                crate::print_event(&format!(
+                    "{closed} closed, so the Agent sets up the programs that are closed now."
+                ));
+                vara(station);
+                crate::programs::set_up(station, server.address());
+            }
             for error in station.errors.try_iter() {
                 crate::print_event(&format!("sound device error: {error}"));
             }
@@ -1801,7 +1896,7 @@ mod tests {
 
     use super::{
         DRIVE_ASK, Desk, DriveTried, LabRadio, Programs, Typed, compared, compared_all,
-        drive_offer, lab_locked, lab_plan, restore_plan, startup_command, typed,
+        drive_offer, lab_locked, lab_plan, open_programs, restore_plan, startup_command, typed,
     };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
@@ -1914,6 +2009,17 @@ mod tests {
         assert!(note_with("Lab profile").contains("couldn't tell which program"));
         assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("30"));
         let _ = std::fs::remove_dir_all(&records);
+    }
+
+    #[test]
+    fn reads_which_programs_are_open_from_windows_list() {
+        let list = "\"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\r\n\
+                    \"VARA.exe\",\"4120\",\"Console\",\"1\",\"30,112 K\"\r\n\
+                    \"wsjtx.exe\",\"5004\",\"Console\",\"1\",\"80,000 K\"\r\n";
+        let open = open_programs(list);
+        assert_eq!(open.len(), 2);
+        assert!(open.contains("VARA") && open.contains("WSJT-X"));
+        assert!(open_programs("").is_empty());
     }
 
     #[test]
