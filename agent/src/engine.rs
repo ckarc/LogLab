@@ -215,9 +215,28 @@ struct KeptAnswer {
     created: bool,
 }
 
+/// Who programs at this station log as, as the Engine says.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StationInfo {
+    /// The station's name.
+    pub station: String,
+    /// Who is signed in at it, if anyone.
+    pub operator: Option<String>,
+    /// The call QSOs logged there are made as.
+    pub station_call: Option<String>,
+    /// The operation the operator chose, if any.
+    pub operation: Option<String>,
+    /// The station's 6-character grid square, if the Engine knows it.
+    pub grid: Option<String>,
+    /// Where the grid came from: "gps" (measured) or "saved".
+    pub grid_source: Option<String>,
+}
+
 /// The Agent's link to the Engine.
+#[derive(Clone)]
 pub struct Uplink {
     url: String,
+    station_url: String,
     qsos_url: String,
     settings_url: String,
     lab_stock_url: String,
@@ -251,6 +270,7 @@ impl Uplink {
             .into();
         Ok(Self {
             url: format!("{base}/api/v1/agent/rig"),
+            station_url: format!("{base}/api/v1/agent/station"),
             qsos_url: format!("{base}/api/v1/agent/qsos"),
             settings_url: format!("{base}/api/v1/agent/radio-settings"),
             lab_stock_url: format!("{base}/api/v1/agent/lab-stock"),
@@ -266,6 +286,27 @@ impl Uplink {
     /// The Engine refused the key, or could not be reached.
     pub fn send(&self, report: &Report<'_>) -> Result<(), SendError> {
         self.put(&self.url, report)
+    }
+
+    /// Who programs at this station log as, and where it is.
+    ///
+    /// # Errors
+    ///
+    /// The Engine refused the key, can't be reached, or sent something that
+    /// isn't an answer to this.
+    pub fn station(&self) -> Result<StationInfo, SendError> {
+        let mut response = self
+            .http
+            .get(&self.station_url)
+            .header("Authorization", &self.authorization)
+            .call()
+            .map_err(failed)?;
+        response
+            .body_mut()
+            .with_config()
+            .limit(MAX_ANSWER)
+            .read_json()
+            .map_err(|error| SendError::Unreachable(format!("the Engine's answer: {error}")))
     }
 
     /// Hand the Engine one QSO from the journal.
@@ -717,6 +758,20 @@ mod tests {
             uplink.propose_lab_stock(&record(None), &settings).is_err(),
             "no serial, no proposal"
         );
+    }
+
+    #[test]
+    fn asks_who_programs_log_as() {
+        let (engine, handle) = engine_once(
+            "200 OK",
+            r#"{"station":"fieldlab-1","operator":"K9KSU","station_call":"W0CK","operation":"Field Day","grid":"EM18bm","grid_source":"gps"}"#,
+        );
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let info = uplink.station().unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(info.station_call.as_deref(), Some("W0CK"));
+        assert_eq!(info.grid.as_deref(), Some("EM18bm"));
+        let (first, _) = handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(first, "GET /api/v1/agent/station HTTP/1.1");
     }
 
     #[test]
