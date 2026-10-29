@@ -42,7 +42,14 @@ program that asks (see "Sharing a radio" below).
   and antennas; the transmitter's power, mic, DAX, filter, processor, VOX
   and monitor) and keeps them as its as-received record, as for any other
   radio. The Agent writes none of them until `check-writes --flex ADDRESS`
-  has run on a real FlexRadio. Not yet tried on a real FlexRadio.
+  has run on a real FlexRadio. `station --flex ADDRESS` (or `--flex any`,
+  which listens 3 s for the radio's own discovery broadcast on UDP port
+  4992 and takes the one FlexRadio it hears) runs the whole station on a
+  FlexRadio: its settings record, kept by the radio's serial number,
+  setups, and programs tuning and keying it. The station never takes a
+  FlexRadio on its own; `--flex` is the operator's choice, as a FlexRadio
+  on the network may be another station's. `--flex-pretend` tries it
+  without a radio. Not yet tried on a real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
