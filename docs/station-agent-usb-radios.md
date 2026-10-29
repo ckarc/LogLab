@@ -458,6 +458,22 @@ CI-V driver at address A2h; nothing in it is checked on a real IC-9700 yet,
 so the Agent records its settings but writes none until `check-writes` has
 been run on one.
 
+[`agent/rigs/yaesu/ftdx10.toml`](../agent/rigs/yaesu/ftdx10.toml) is the first
+Yaesu CAT definition (`family = "yaesu-cat"`), driven by the Agent's own CAT
+driver (`agent/src/cat_radio.rs`). CAT is text, so a CAT definition writes a
+command as it is sent without its semicolon (`RG0`), a menu item as its group,
+page and item (`01 04 17` is `EX010417`), and a value's length in `digits`.
+The Agent keeps a value of digits as BCD bytes, as an Icom radio sends its
+values, so ranges, records and profiles mean the same for both. A CAT link has
+no addresses; it says its `stop_bits`, whether RTS is held on (`rts = "on"`,
+refused for CI-V), and what the radio answers to `ID` (`identity.answer`).
+Settings are read only with commands on the Agent's list of CAT commands that
+only ask, and Yaesu's menu group 05 (clock, loads, saves and resets) is
+refused. A radio whose one USB bridge has more ports than its control port
+names its control port's USB `interface` (the FTDX10's Enhanced COM Port is
+0); the Agent never opens the other, whose RTS and DTR key the radio. Nothing
+in the FTDX10 file is checked on a real radio yet.
+
 ## Working with no internet
 
 Everything here works on a station network with no internet (Principle V):
