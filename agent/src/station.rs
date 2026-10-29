@@ -932,6 +932,8 @@ fn drive_offer(
     if peak.tuning {
         return None;
     }
+    // Without ALC on its scale there is nothing to go by.
+    let alc = peak.alc?;
     let meters = definition.meters.as_ref()?;
     let id = meters.drive.as_ref()?;
     let setting = definition.settings.iter().find(|s| &s.id == id)?;
@@ -946,16 +948,16 @@ fn drive_offer(
         .and_then(|id| definition.settings.iter().find(|s| &s.id == id))
         .and_then(|power| level_percent(shared, power))
         .map(|(_, percent)| percent);
-    let (target, why) = if peak.alc > rigctld_server::ALC_HIGHEST {
+    let (target, why) = if alc > rigctld_server::ALC_HIGHEST {
         tried.too_high = Some(now);
         let step = now.saturating_sub(DRIVE_STEP);
         let target = match tried.too_low {
             Some(floor) if step <= floor && floor < now => (floor + now).div_ceil(2),
             _ => step,
         };
-        (target, format!("ALC peaked at {}% of its scale", peak.alc))
+        (target, format!("ALC peaked at {alc}% of its scale"))
     } else if let Some(set) = set_power
-        && peak.alc <= ALC_LOW
+        && alc <= ALC_LOW
         && peak.power >= POWER_SOME
         && peak.readings >= READINGS_FOR_LOW
         && u32::from(peak.power) * 10 < set * POWER_SHORT_TENTHS
@@ -969,8 +971,8 @@ fn drive_offer(
         (
             target,
             format!(
-                "Po reached {}% with the radio set to {set}% and ALC at {}%",
-                peak.power, peak.alc
+                "Po reached {}% with the radio set to {set}% and ALC at {alc}%",
+                peak.power
             ),
         )
     } else {

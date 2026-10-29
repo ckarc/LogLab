@@ -242,8 +242,9 @@ pub struct TxMeters {
     pub power: u16,
     /// SWR, in tenths (15 is 1.5).
     pub swr_tenths: u16,
-    /// ALC, in percent of its scale.
-    pub alc: u16,
+    /// ALC, in percent of its scale; `None` for a radio whose ALC meter
+    /// the Agent can't put on that scale.
+    pub alc: Option<u16>,
     /// Whether the radio's own antenna tuner was tuning: its carrier, not
     /// a program's audio, made the readings.
     pub tuning: bool,
