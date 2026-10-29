@@ -37,6 +37,8 @@ mod journal;
 #[cfg(any(windows, test))]
 mod mmsstv;
 mod pairing;
+#[cfg(test)]
+mod pe_exports;
 mod pretend;
 #[cfg(windows)]
 mod programs;

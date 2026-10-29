@@ -3,9 +3,8 @@
 
 //! Setting up the programs on this computer that use the radio, so each
 //! works through the Agent with nothing typed in: WSJT-X and `JS8Call` (see
-//! `qt_settings`), fldigi (see `fldigi`), and MMSSTV's receive audio (see
-//! `mmsstv`). VARA is set up the same way (see `vara`, called from
-//! `station`).
+//! `qt_settings`), fldigi (see `fldigi`), and MMSSTV (see `mmsstv`). VARA is
+//! set up the same way (see `vara`, called from `station`).
 //!
 //! A program that is running is left alone, because each writes its own
 //! settings when it closes and would undo the change; the Agent says to
@@ -61,12 +60,49 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
     {
-        say("MMSSTV", &path, mmsstv::set(&path, RECEIVE_CABLE_OUT));
-        println!(
-            "  MMSSTV receives through the Agent; it can't transmit through it yet (it keys \
-             a radio only through a COM port)."
-        );
+        set_up_mmsstv(&path, station.transmit_cable.as_deref());
     }
+}
+
+/// Sets MMSSTV up, its settings file at `path`: receiving, and transmitting
+/// through `transmit_cable` when there is one and this Agent carries the
+/// PTT plugin (see `mmsstv`).
+fn set_up_mmsstv(path: &Path, transmit_cable: Option<&str>) {
+    let folder = path.parent().unwrap_or_else(|| Path::new("."));
+    let transmits = match (transmit_cable, mmsstv::PLUGIN) {
+        (Some(_), Some(plugin)) => match mmsstv::install(folder, plugin) {
+            Ok(written) => {
+                if written {
+                    println!(
+                        "MMSSTV: put LabLog's PTT plugin in {}, so MMSSTV keys the radio \
+                         through the Agent.",
+                        folder.join(mmsstv::PLUGIN_FILE).display()
+                    );
+                }
+                true
+            }
+            Err(why) => {
+                println!("MMSSTV: can't transmit through the Agent ({why}).");
+                false
+            }
+        },
+        (None, _) => {
+            println!("MMSSTV: can't transmit through the Agent (no transmit cable).");
+            false
+        }
+        (Some(_), None) => {
+            println!(
+                "MMSSTV: this Agent was built without LabLog's PTT plugin for MMSSTV, so \
+                 MMSSTV receives only (use the Agent from CI's Windows build)."
+            );
+            false
+        }
+    };
+    let wanted = mmsstv::Wanted {
+        input: RECEIVE_CABLE_OUT,
+        output: transmit_cable.filter(|_| transmits),
+    };
+    say("MMSSTV", path, mmsstv::set(path, &wanted));
 }
 
 /// Whether `app` (executable `image`) is closed, saying why not if it isn't.

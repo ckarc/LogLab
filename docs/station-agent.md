@@ -256,7 +256,9 @@ How it behaves:
   - **A program that disconnects while keyed is unkeyed** at once, crashed or
     closed.
   - **A time limit.** After 60 seconds keyed at once (`--tx-limit SECONDS`,
-    1 to 600), the Agent unkeys the radio and says why.
+    1 to 600), the Agent unkeys the radio and says why. MMSSTV, through
+    LabLog's plugin, gets 330 seconds: a slow-scan TV picture takes up to
+    about five minutes to send.
   - **If unkeying fails,** the Agent says the radio may still be
     transmitting, refuses every request to transmit, and tries again every
     second until it is unkeyed. Stopping the Agent unkeys too.

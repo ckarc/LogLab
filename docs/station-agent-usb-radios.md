@@ -327,11 +327,22 @@ program's file, is touched.
 | VARA | `VARA.ini` next to `VARA.exe` | `[Soundcard]` input and output device |
 | WSJT-X, JS8Call | `%LOCALAPPDATA%\<app>\<app>.ini` | `[Configuration]` `SoundInName`, `SoundOutName`, `Rig` (Hamlib NET rigctl), `CATNetworkPort`, `PTTMethod` (CAT) |
 | fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device; Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
-| MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input only, for now |
+| MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input and output, `PTT=LabLog`, `PTTLock=1`; `[RADIO]` `PortName=NONE` if it named a COM port. Also puts `LabLog.fsk` next to `Mmsstv.exe` |
 
-MMSSTV keys a radio only through a COM port, so it receives through the
-Agent but can't transmit through it until the Agent offers it a virtual COM
-port (step 8).
+MMSSTV has no Hamlib or network radio control; it keys a radio through a COM
+port. But when the PTT port it is given isn't one Windows can open, it loads
+a plugin named `<name>.fsk` from its own folder and keys through that
+(MMSSTV's source, `Comm.cpp`: `CComm::Open` and `CEXTFSK`). So no virtual
+COM port is needed: LabLog's own plugin, `LabLog.fsk` (`agent/mmsstv-ptt`,
+a 32-bit DLL because MMSSTV is 32-bit), asks the Agent to key and unkey with
+the same `rigctld` commands WSJT-X uses. The Agent carries the plugin inside
+its own executable and writes it out. If MMSSTV closes or crashes while
+transmitting, its connection drops and the Agent unkeys the radio. An SSTV
+picture takes up to about five minutes to send (PD290: 289 s, from MMSSTV's
+`sstv.cpp` timings; Scottie 1 and Martin 1 about two), so the plugin says
+it is MMSSTV (`\lablog_program MMSSTV`, the Agent's one command of its own)
+and the Agent's time limit for it is 330 s; every other program keeps the
+usual limit.
 
 **When a program complains: the fix.** The Agent sees every request a
 program makes and what became of it, so when one is refused it says why,

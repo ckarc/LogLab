@@ -28,7 +28,9 @@
 //!   program asks, the request is refused, and a request to stop is never
 //!   passed to a radio the Agent didn't key;
 //! - a program that disconnects while keyed is unkeyed;
-//! - the radio is unkeyed once it has been keyed longer than the time limit;
+//! - the radio is unkeyed once it has been keyed longer than the time limit
+//!   (longer for a program that sends slow-scan TV pictures, see
+//!   [`program_limit`]);
 //! - if unkeying fails, the Agent says the radio may still be transmitting
 //!   and keeps trying to unkey it; and
 //! - the Agent never keys a radio on its own: not on a timer, not as a
@@ -43,7 +45,13 @@
 //! `rigctld` and its network client, read in Hamlib's source
 //! (<https://github.com/Hamlib/Hamlib>, LGPL-2.1-or-later), as Principle XVI
 //! allows. No Hamlib code is in LabLog.
+//!
+//! One command is LabLog's own: `\lablog_program NAME`, with which a
+//! program LabLog wrote says which program it speaks for (LabLog's PTT
+//! plugin for MMSSTV sends `\lablog_program MMSSTV`). Hamlib's own programs
+//! never send it.
 
+use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
@@ -83,6 +91,20 @@ const RPRT_NOT_AVAILABLE: i32 = -11;
 const RPRT_INVALID: i32 = -1;
 /// "Protocol error": a line too long or not text.
 const RPRT_PROTOCOL: i32 = -8;
+
+/// The time limit for a program that sends slow-scan TV pictures. MMSSTV's
+/// longest picture, PD290, is 308 lines of 937.28 ms (`sstv.cpp`,
+/// `CSSTVSET::GetTiming` and `GetBitmapSize`, github.com/n5ac/mmsstv): 289
+/// seconds, before its start tones and any ID. Scottie 1 and Martin 1, the
+/// usual ones, take 110 and 114 seconds.
+const SSTV_LIMIT: Duration = Duration::from_secs(330);
+
+/// The time limit a program named `name` (by `\lablog_program`) needs, if
+/// longer than anyone's: MMSSTV's pictures take up to five minutes to send.
+#[must_use]
+pub fn program_limit(name: &str) -> Option<Duration> {
+    name.eq_ignore_ascii_case("MMSSTV").then_some(SSTV_LIMIT)
+}
 
 /// Hamlib's mode bits for the modes the rig model has (`RIG_MODE_*`).
 const ALL_MODES: u64 = 0x1DBF;
@@ -128,6 +150,13 @@ pub trait Source: Send + Sync {
     fn transmit(&self, program: SocketAddr, on: bool) -> Result<(), String> {
         let _ = (program, on);
         Err("transmitting isn't allowed here".to_owned())
+    }
+
+    /// `program` says (`\lablog_program`) it speaks for the program `name`.
+    /// Whether that changes anything.
+    fn named(&self, program: SocketAddr, name: &str) -> bool {
+        let _ = (program, name);
+        false
     }
 
     /// `program` has disconnected: if it has the radio keyed, unkey it.
@@ -374,6 +403,9 @@ pub struct Shared {
     notes: Mutex<Option<Sender<String>>>,
     keyed: Mutex<Option<Keyed>>,
     limit: Duration,
+    /// Longer time limits for connected programs that need them (see
+    /// [`program_limit`]).
+    longer: Mutex<HashMap<SocketAddr, Duration>>,
     on_air: Arc<AtomicBool>,
     /// The meters' peaks during the last transmission that had any.
     last_peak: Mutex<Option<TxMeters>>,
@@ -388,6 +420,7 @@ impl Shared {
             notes: Mutex::new(None),
             keyed: Mutex::new(None),
             limit,
+            longer: Mutex::new(HashMap::new()),
             on_air: Arc::new(AtomicBool::new(false)),
             last_peak: Mutex::new(None),
         }
@@ -596,7 +629,12 @@ impl Source for Shared {
     }
 
     fn transmit(&self, program: SocketAddr, on: bool) -> Result<(), String> {
-        let limit = self.limit;
+        let limit = self
+            .longer
+            .lock()
+            .ok()
+            .and_then(|longer| longer.get(&program).copied())
+            .map_or(self.limit, |longer| longer.max(self.limit));
         self.keying(|radio, keyed| {
             if on {
                 key(radio, keyed, program, limit)
@@ -608,7 +646,29 @@ impl Source for Shared {
         .unwrap_or_else(|| Err("transmitting isn't allowed here".to_owned()))
     }
 
+    fn named(&self, program: SocketAddr, name: &str) -> bool {
+        let Some(limit) = program_limit(name) else {
+            return false;
+        };
+        if !self.can_transmit() || limit <= self.limit {
+            return false;
+        }
+        let Ok(mut longer) = self.longer.lock() else {
+            return false;
+        };
+        longer.insert(program, limit);
+        drop(longer);
+        self.note(&format!(
+            "{program} is {name}: it may transmit for up to {} at once",
+            seconds(limit)
+        ));
+        true
+    }
+
     fn gone(&self, program: SocketAddr) {
+        if let Ok(mut longer) = self.longer.lock() {
+            longer.remove(&program);
+        }
         self.keying(|radio, keyed| {
             if keyed.as_ref().is_some_and(|now| now.by == program) {
                 let (_, note) = unkey(radio, keyed, "the program disconnected while transmitting");
@@ -620,9 +680,9 @@ impl Source for Shared {
     }
 
     fn watch(&self) {
-        let limit = self.limit;
         self.keying(|radio, keyed| match keyed.as_ref() {
             Some(now) if Instant::now() >= now.unkey_at => {
+                let limit = now.unkey_at.saturating_duration_since(now.since);
                 let why = if now.stuck {
                     "trying again to unkey the radio".to_owned()
                 } else {
@@ -859,6 +919,15 @@ pub fn respond(line: &str, program: SocketAddr, source: &dyn Source) -> Reply {
         "\\dump_state" => Get::DumpState,
         "1" | "\\dump_caps" => Get::DumpCaps,
         "T" | "\\set_ptt" => return Reply::Text(ptt(word, command, extended, program, source)),
+        "\\lablog_program" => {
+            let name = command.split_whitespace().nth(1).unwrap_or_default();
+            let code = if source.named(program, name) {
+                RPRT_OK
+            } else {
+                RPRT_NOT_AVAILABLE
+            };
+            return Reply::Text(result(extended, word, code));
+        }
         _ if source.can_tune() && tuning_command(word) => {
             return Reply::Text(tune(word, command, extended, source));
         }
@@ -1848,6 +1917,53 @@ mod tests {
         assert!(heard[1].contains("--tx-limit"), "{heard:?}");
         // The program may key it again, by asking.
         assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+    }
+
+    #[test]
+    fn mmsstv_may_transmit_a_whole_picture_and_only_it() {
+        let limit = Duration::from_millis(200);
+        let (radio, bench, heard) = keyable(limit);
+        assert_eq!(
+            as_program(&radio, PROGRAM, "\\lablog_program MMSSTV"),
+            "RPRT 0\n"
+        );
+        assert_eq!(
+            as_program(&radio, OTHER, "\\lablog_program WSJT-X"),
+            "RPRT -11\n",
+            "no longer limit for anything else"
+        );
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        std::thread::sleep(limit + Duration::from_millis(50));
+        radio.watch();
+        assert!(transmitting(&bench), "a picture takes minutes");
+        assert_eq!(as_program(&radio, PROGRAM, "T 0"), "RPRT 0\n");
+        assert_eq!(as_program(&radio, OTHER, "T 1"), "RPRT 0\n");
+        std::thread::sleep(limit + Duration::from_millis(50));
+        radio.watch();
+        assert!(!transmitting(&bench), "everyone else keeps the limit");
+        // A program that goes is forgotten: its address may be reused.
+        radio.gone(PROGRAM);
+        assert_eq!(as_program(&radio, PROGRAM, "T 1"), "RPRT 0\n");
+        std::thread::sleep(limit + Duration::from_millis(50));
+        radio.watch();
+        assert!(!transmitting(&bench));
+        let heard: Vec<String> = heard.try_iter().collect();
+        assert!(
+            heard[0].contains("is MMSSTV: it may transmit for up to 330 s at once"),
+            "{heard:?}"
+        );
+        // An operator's --tx-limit longer than that already covers it.
+        assert_eq!(super::program_limit("mmsstv"), Some(super::SSTV_LIMIT));
+        let (patient, _, _) = keyable(Duration::from_mins(10));
+        assert_eq!(
+            as_program(&patient, PROGRAM, "\\lablog_program MMSSTV"),
+            "RPRT -11\n"
+        );
+        // A read-only radio keys nothing, for anyone.
+        match respond("+\\lablog_program MMSSTV", PROGRAM, &*pretend_ic_7300()) {
+            Reply::Text(text) => assert_eq!(text, "lablog_program:\nRPRT -11\n"),
+            Reply::Quit => unreachable!(),
+        }
     }
 
     #[test]
