@@ -1734,6 +1734,21 @@ fn vara_proxy(
     let path = vara::find()?;
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let clients = vara::clients_port(&text, vara::original(&path).as_deref());
+    // Only Winlink Express needs the Agent between it and VARA. Without it,
+    // VARA stays on its own port, as VarAC has always found it.
+    if crate::winlink::find().is_none() {
+        if vara::command_port(&text) == Some(MOVED_COMMAND_PORT) && vara::running() == Ok(false) {
+            match vara::set_command_port(&path, clients) {
+                Ok(_) => println!(
+                    "VARA: command port put back to {clients} in {} (Winlink Express isn't \
+                     installed, so the Agent doesn't stand between VARA and its client).",
+                    path.display()
+                ),
+                Err(why) => println!("VARA: its command port wasn't put back ({why})."),
+            }
+        }
+        return None;
+    }
     if vara::command_port(&text) != Some(MOVED_COMMAND_PORT) {
         match vara::running() {
             Ok(false) => match vara::set_command_port(&path, MOVED_COMMAND_PORT) {
