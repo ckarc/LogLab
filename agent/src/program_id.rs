@@ -100,6 +100,46 @@ pub fn setup_for(executable: &str) -> Option<&'static str> {
     }
 }
 
+/// Where `VarAC` keeps its QSO log, `VarAC_qso_log.adi`, beside its
+/// executable, when `executable` is `VarAC`'s.
+#[must_use]
+pub fn varac_log(executable: &str) -> Option<String> {
+    let (folder, name) = executable.rsplit_once(['\\', '/'])?;
+    let separator = if executable.contains('\\') { '\\' } else { '/' };
+    name.to_ascii_lowercase()
+        .starts_with("varac")
+        .then(|| format!("{folder}{separator}VarAC_qso_log.adi"))
+}
+
+/// Adds `log` to the list of QSO logs the Agent watches, the file `list`
+/// (one path a line), unless it is there already. Returns whether it was
+/// added.
+///
+/// # Errors
+///
+/// The list can't be written.
+pub fn list_qso_log(list: &std::path::Path, log: &str) -> Result<bool, String> {
+    let text = std::fs::read_to_string(list).unwrap_or_default();
+    if text
+        .lines()
+        .any(|line| line.trim().eq_ignore_ascii_case(log))
+    {
+        return Ok(false);
+    }
+    if let Some(folder) = list.parent() {
+        std::fs::create_dir_all(folder)
+            .map_err(|error| format!("{}: {error}", folder.display()))?;
+    }
+    let mut text = text;
+    if !text.is_empty() && !text.ends_with('\n') {
+        text.push_str("\r\n");
+    }
+    text.push_str(log);
+    text.push_str("\r\n");
+    std::fs::write(list, text).map_err(|error| format!("{}: {error}", list.display()))?;
+    Ok(true)
+}
+
 /// The process id and executable of the program that connected from
 /// `program` to the Agent listening at `server`.
 ///
@@ -217,7 +257,7 @@ mod windows_api {
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
-    use super::{Row, owner, rows, setup_for};
+    use super::{Row, list_qso_log, owner, rows, setup_for, varac_log};
 
     /// One row as Windows writes it: words in this computer's order,
     /// addresses and ports in network order.
@@ -259,6 +299,24 @@ mod tests {
         // A table cut short keeps only whole rows.
         assert_eq!(rows(&table[..table.len() - 1]).len(), 2);
         assert!(rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn lists_varacs_qso_log_once() {
+        assert_eq!(
+            varac_log(r"C:\VarAC\VarAC.exe").as_deref(),
+            Some(r"C:\VarAC\VarAC_qso_log.adi")
+        );
+        assert_eq!(varac_log(r"C:\WSJT\wsjtx\bin\wsjtx.exe"), None);
+        let folder = std::env::temp_dir().join(format!("lablog-qsologs-{}", std::process::id()));
+        let list = folder.join("records").join("qso-logs.txt");
+        let log = r"C:\VarAC\VarAC_qso_log.adi";
+        assert_eq!(list_qso_log(&list, log), Ok(true));
+        assert_eq!(list_qso_log(&list, log), Ok(false), "listed once");
+        assert_eq!(list_qso_log(&list, r"D:\other.adi"), Ok(true));
+        let text = std::fs::read_to_string(&list).unwrap_or_default();
+        assert_eq!(text.lines().count(), 2);
+        let _ = std::fs::remove_dir_all(&folder);
     }
 
     #[test]

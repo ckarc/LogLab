@@ -1439,6 +1439,15 @@ impl Source for Programs {
             ));
             return;
         };
+        if let Some(log) = program_id::varac_log(&exe) {
+            match program_id::list_qso_log(&self.lab.records.join("qso-logs.txt"), &log) {
+                Ok(true) => self.note(&format!(
+                    "QSO log: VarAC's log {log} is now watched for QSOs to send to LabLog."
+                )),
+                Ok(false) => {}
+                Err(why) => self.note(&format!("QSO log: VarAC's log not listed ({why}).")),
+            }
+        }
         let why_not = self.not_now(pid, &short, name);
         if let Ok(mut connected) = self.connected.lock() {
             connected.insert(program, pid);
