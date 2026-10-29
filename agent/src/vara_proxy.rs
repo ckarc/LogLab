@@ -160,7 +160,7 @@ impl Proxy {
                 accept(&data, &stop, |client, _| {
                     let stop = Arc::clone(&stop);
                     thread::spawn(move || {
-                        if let Ok(vara) = TcpStream::connect(("127.0.0.1", vara_data)) {
+                        if let Ok(vara) = connect_vara(vara_data, &stop) {
                             pipe_both_ways(&client, &vara, &stop);
                         }
                     });
@@ -190,6 +190,29 @@ fn accept(listener: &TcpListener, stop: &AtomicBool, mut take: impl FnMut(TcpStr
                 }
             }
             Ok(_) | Err(_) => thread::sleep(TICK),
+        }
+    }
+}
+
+/// How long the proxy waits for VARA to listen. A program such as `VarAC`
+/// starts VARA itself and connects at once; reaching VARA directly, it is
+/// refused until VARA listens and tries again, so the proxy, which takes the
+/// connection at once, waits for VARA in its place rather than dropping it.
+const VARA_STARTS_WITHIN: Duration = Duration::from_secs(30);
+/// How often the proxy tries VARA while it starts.
+const TRY_VARA_EVERY: Duration = Duration::from_millis(250);
+
+/// Connects to VARA's `port` on this computer, trying again until VARA
+/// listens, for at most [`VARA_STARTS_WITHIN`] or until `stop`.
+fn connect_vara(port: u16, stop: &AtomicBool) -> std::io::Result<TcpStream> {
+    let since = std::time::Instant::now();
+    loop {
+        match TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return Ok(stream),
+            Err(error) if since.elapsed() >= VARA_STARTS_WITHIN || stop.load(Ordering::SeqCst) => {
+                return Err(error);
+            }
+            Err(_) => thread::sleep(TRY_VARA_EVERY),
         }
     }
 }
@@ -248,14 +271,17 @@ impl Session {
     }
 
     fn run(self, client: &TcpStream) {
-        let vara = match TcpStream::connect(("127.0.0.1", self.ports.vara)) {
+        let vara = match connect_vara(self.ports.vara, &self.stop) {
             Ok(vara) => vara,
             Err(error) => {
                 self.note(&format!(
-                    "a program ({}) connected, but VARA isn't on port {} ({error})\n\
+                    "a program ({}) connected, but VARA didn't answer on port {} within {} s \
+                     ({error})\n\
                      -> Start VARA (Winlink Express starts it when \"Automatically launch \
                      VARA\" is on), then connect again.",
-                    self.peer, self.ports.vara
+                    self.peer,
+                    self.ports.vara,
+                    VARA_STARTS_WITHIN.as_secs()
                 ));
                 return;
             }
@@ -575,6 +601,48 @@ mod tests {
             .write_all(b"hello")
             .unwrap_or_else(|e| unreachable!("{e}"));
         assert_eq!(read_exactly(&mut data, 5), b"hello");
+    }
+
+    #[test]
+    fn waits_for_vara_to_start_instead_of_dropping_the_client() {
+        let (rigctld, _) = pretend_rigctld();
+        // VARA isn't listening yet: its ports are free, and taken a moment
+        // after the client connects.
+        let (first, second) = bind_pair();
+        let vara_port = first.local_addr().map_or(0, |address| address.port());
+        drop((first, second));
+        let (notes, _heard) = mpsc::channel();
+        let mut started = None;
+        for _ in 0..200 {
+            let (a, b) = bind_pair();
+            let clients = a.local_addr().map_or(0, |address| address.port());
+            drop((a, b));
+            if let Ok(proxy) = Proxy::start(
+                &Ports {
+                    clients,
+                    vara: vara_port,
+                    rigctld,
+                },
+                Arc::new(|_, _, _| false),
+                notes.clone(),
+            ) {
+                started = Some((proxy, clients));
+                break;
+            }
+        }
+        let Some((_proxy, clients)) = started else {
+            unreachable!("the proxy found no ports")
+        };
+        let mut client =
+            TcpStream::connect(("127.0.0.1", clients)).unwrap_or_else(|e| unreachable!("{e}"));
+        thread::sleep(Duration::from_millis(700));
+        let vara =
+            TcpListener::bind(("127.0.0.1", vara_port)).unwrap_or_else(|e| unreachable!("{e}"));
+        let (mut vara, _) = vara.accept().unwrap_or_else(|e| unreachable!("{e}"));
+        client
+            .write_all(b"VERSION\r")
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(read_exactly(&mut vara, 8), b"VERSION\r");
     }
 
     #[test]
