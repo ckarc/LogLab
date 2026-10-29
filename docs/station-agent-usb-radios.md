@@ -245,8 +245,14 @@ Lab Stock is kept on the Engine and managed in LabLog, behind a gate (brian,
   definition marks writable and checked on a real radio, and not the clock.
   A model with none checked yet (the IC-9700, until `check-writes` runs on
   one) has nothing to propose.
-- **Filter widths.** Like any reading, a Lab Stock has the selected filter's
-  width only, not FIL1, FIL2 and FIL3 each.
+- **Every filter's width.** The radio reads and sets only the selected
+  filter's width (`1A 03`), so `stock save` asks a yes, then chooses FIL1,
+  FIL2 and FIL3 in turn on the mode the radio is on, reads each width, and
+  puts the radio back on the filter it was on, reading it again to be sure
+  (brian, 2026-10-27: back exactly as found). `stock` sets each filter's
+  width the same way, last, on the Lab Stock's mode, then selects the Lab
+  Stock's filter. In data mode the filter is chosen with `1A 06`, since `06`
+  turns data mode off. Widths are kept for the Lab Stock's mode only.
 
 ## Virtual radios (personalities)
 

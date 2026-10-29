@@ -28,6 +28,7 @@ mod civ_serial;
 mod driver;
 mod engine;
 mod enrollment;
+mod filter_widths;
 #[cfg(any(windows, test))]
 mod fldigi;
 mod flex;

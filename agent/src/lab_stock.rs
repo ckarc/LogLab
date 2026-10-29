@@ -12,6 +12,7 @@
 //! (Principle X, first exception). Auto mode never answers for it.
 
 use crate::engine::{LabStock, StockSetting};
+use crate::filter_widths::{self, FilterWidth};
 use crate::restore::{self, Plan};
 use crate::rigdef::Definition;
 use crate::settings_record::{self, Record};
@@ -21,9 +22,30 @@ const MAX_SHOWN: usize = 200;
 
 /// The settings of `record` a Lab Stock holds: every one the Agent may
 /// write, that a real radio took when written back, that doesn't change by
-/// itself (the clock), and that the radio said what it has.
+/// itself (the clock), and that the radio said what it has; then each
+/// filter's width on the selected mode, from `widths`.
 #[must_use]
-pub fn from_record(record: &Record, definition: &Definition) -> Vec<StockSetting> {
+pub fn from_record(
+    record: &Record,
+    definition: &Definition,
+    widths: &[FilterWidth],
+) -> Vec<StockSetting> {
+    let mut settings = checked(record, definition);
+    if settings.is_empty() {
+        return settings;
+    }
+    settings.extend(widths.iter().map(|w| StockSetting {
+        id: FilterWidth::id(w.filter),
+        label: FilterWidth::label(w.filter),
+        bytes: crate::civ::hex(&w.width),
+        shown: Some(filter_widths::shown(definition, &w.width)),
+    }));
+    settings
+}
+
+/// The settings of `record` that a Lab Stock holds by themselves.
+#[must_use]
+pub fn checked(record: &Record, definition: &Definition) -> Vec<StockSetting> {
     record
         .settings
         .iter()
@@ -59,15 +81,27 @@ pub fn name(stock: &LabStock) -> String {
 /// setting the Agent may not write is only listed.
 #[must_use]
 pub fn plan(stock: &LabStock, now: &Record, definition: &Definition) -> Plan {
-    restore::plan(
+    let mut plan = restore::plan(
         &name(stock),
         stock
             .settings
             .iter()
+            .filter(|s| FilterWidth::filter_of(&s.id).is_none())
             .map(|s| (s.id.as_str(), s.label.as_str(), Some(s.bytes.as_str()))),
         now,
         definition,
-    )
+    );
+    plan.filters = stock
+        .settings
+        .iter()
+        .filter_map(|s| {
+            let filter = FilterWidth::filter_of(&s.id)?;
+            let width = restore::parse_hex(&s.bytes)?;
+            let shown = filter_widths::shown(definition, &width);
+            Some((FilterWidth { filter, width }, shown))
+        })
+        .collect();
+    plan
 }
 
 #[cfg(test)]
@@ -136,7 +170,7 @@ mod tests {
         if let Some(clock) = &clock {
             entries.push(entry(clock, Some("12 00")));
         }
-        let stock = from_record(&record(entries), &definition);
+        let stock = from_record(&record(entries), &definition, &[]);
         let ids: Vec<&str> = stock.iter().map(|s| s.id.as_str()).collect();
         assert_eq!(ids, vec![writable.as_str()]);
         assert_eq!(stock[0].bytes, "03");
@@ -151,7 +185,7 @@ mod tests {
             .iter()
             .map(|s| entry(&s.id, Some("00")))
             .collect();
-        let stock = from_record(&record(entries), &definition);
+        let stock = from_record(&record(entries), &definition, &[]);
         let wanted = definition
             .settings
             .iter()
@@ -195,5 +229,84 @@ mod tests {
             .map(|p| (p.setting.id.as_str(), p.to.as_slice()))
             .collect();
         assert_eq!(put, vec![("data_mod", &[0x03][..])]);
+    }
+
+    #[test]
+    fn putting_it_on_sets_each_filters_width_and_selects_the_lab_stocks_filter() {
+        use crate::civ_pretend::PretendCiv;
+        use crate::civ_radio::{CivRadio, PretendPort};
+        use crate::filter_widths::{self, FilterWidth};
+        use crate::rig::Exposes;
+
+        let definition = ic7300();
+        let mut radio = CivRadio::find(
+            PretendPort::new(PretendCiv::new(&definition), 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let now = crate::settings_record::read(
+            &mut radio,
+            Some("PRETEND"),
+            std::time::UNIX_EPOCH,
+            "test",
+        );
+        let setting = |id: &str, bytes: &str| StockSetting {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            bytes: bytes.to_owned(),
+            shown: None,
+        };
+        // DATA-USB on FIL2, FIL1 2.4 kHz, FIL2 1.8 kHz, FIL3 500 Hz.
+        let stock = LabStock {
+            id: 5,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            settings: vec![
+                setting("mode_and_filter", "01 02"),
+                setting("data_mode_and_filter", "01 02"),
+                setting("filter_width_fil1", "28"),
+                setting("filter_width_fil2", "22"),
+                setting("filter_width_fil3", "09"),
+            ],
+        };
+        let plan = plan(&stock, &now, &definition);
+        assert_eq!(plan.filters.len(), 3);
+        assert!(
+            plan.lines().iter().any(|line| line.starts_with("  FIL3: ")),
+            "{:?}",
+            plan.lines()
+        );
+        let done =
+            crate::restore::apply(&mut radio, &plan, "PRETEND", std::time::UNIX_EPOCH, "test");
+        assert!(
+            done.changes.iter().all(|d| d.outcome == "put back"),
+            "{:?}",
+            done.changes
+        );
+        let widths = filter_widths::read(&mut radio).unwrap_or_default();
+        assert_eq!(
+            widths,
+            vec![
+                FilterWidth {
+                    filter: 1,
+                    width: vec![0x28]
+                },
+                FilterWidth {
+                    filter: 2,
+                    width: vec![0x22]
+                },
+                FilterWidth {
+                    filter: 3,
+                    width: vec![0x09]
+                },
+            ]
+        );
+        let data = definition
+            .settings
+            .iter()
+            .find(|s| s.id == "data_mode_and_filter")
+            .cloned()
+            .unwrap_or_else(|| unreachable!());
+        assert_eq!(radio.read_exposed(&data).unwrap_or_default(), [0x01, 0x02]);
     }
 }
