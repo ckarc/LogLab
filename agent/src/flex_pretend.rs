@@ -169,7 +169,10 @@ impl State {
         match words.as_slice() {
             ["info"] => answer(
                 0,
-                &format!("model=\"{}\",name=\"Pretend\",callsign=\"\"", self.model),
+                &format!(
+                    "model=\"{}\",chassis_serial=\"PRETEND-6600\",name=\"Pretend\",callsign=\"\"",
+                    self.model
+                ),
             ),
             ["sub", "slice", "all"] => status(self.slice_status()) + &answer(0, ""),
             ["sub", "tx", "all"] => {
