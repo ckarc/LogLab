@@ -342,10 +342,12 @@ mod tests {
     use std::path::PathBuf;
 
     fn scratch(name: &str) -> PathBuf {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_nanos());
         let dir = std::env::temp_dir().join(format!(
-            "loglab-qso-logs-{name}-{}-{:?}",
-            std::process::id(),
-            std::time::SystemTime::now()
+            "loglab-qso-logs-{name}-{}-{nanos}",
+            std::process::id()
         ));
         let _ = std::fs::create_dir_all(&dir);
         dir
