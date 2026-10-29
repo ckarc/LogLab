@@ -8,7 +8,8 @@
 //! The grid comes from, in order:
 //!
 //! 1. **FieldLab's GPS**, measured: the trailer's fix, read from FieldLab's
-//!    MQTT bus (`--mqtt`, or `$LABLOG_MQTT`, as the Engine takes it), topic
+//!    MQTT bus (`--mqtt`, else `$LABLOG_MQTT` as the Engine takes it, else
+//!    [`FIELDLAB_BROKER`]), topic
 //!    `fieldlab/location`, `{"lat", "lon", "alt", "ts"}`, published by
 //!    FieldLab's kiosk (see the Engine's `fieldlab.py`); or the same fix as
 //!    the Engine passes it on (`grid_source` "gps", see `carrier`). A fix
@@ -33,6 +34,11 @@ use crate::engine::StationInfo;
 
 /// FieldLab's GPS fix, on its bus.
 pub const LOCATION_TOPIC: &str = "fieldlab/location";
+/// FieldLab's MQTT broker, the bus the Agent reads with no `--mqtt` and no
+/// `$LABLOG_MQTT`: the kiosk box (reached on port 1883 from FL-1,
+/// 2026-10-29). Off FieldLab's network it just isn't reached, which is
+/// said once.
+pub const FIELDLAB_BROKER: &str = "10.73.10.10";
 /// MQTT's own port, when `--mqtt` names none.
 pub const MQTT_PORT: u16 = 1883;
 /// How often the bus is read.
@@ -102,6 +108,8 @@ impl SendsAs {
 pub struct Stated {
     /// FieldLab's MQTT broker: host and port.
     pub mqtt: Option<(String, u16)>,
+    /// `--mqtt none`: read no bus, not even [`FIELDLAB_BROKER`].
+    pub no_bus: bool,
     /// `--call`, checked, in capitals.
     pub call: Option<String>,
     /// `--grid`, checked, in capitals.
@@ -488,6 +496,7 @@ mod tests {
     fn gps_beats_a_stated_grid_which_beats_a_saved_one() {
         let stated = Stated {
             mqtt: None,
+            no_bus: false,
             call: Some("W0CY".to_owned()),
             grid: Some("EM18CT".to_owned()),
         };
