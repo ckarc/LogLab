@@ -1928,12 +1928,20 @@ pub fn run(
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     let typing = start_typing(Arc::clone(&running));
     let mut stated = stated.clone();
-    if stated.mqtt.is_none() {
-        // FieldLab's broker, as the Engine takes it.
+    if stated.no_bus {
+        stated.mqtt = None;
+    } else if stated.mqtt.is_none() {
+        // FieldLab's broker, as the Engine takes it, else FieldLab's own.
         stated.mqtt = std::env::var("LABLOG_MQTT")
             .ok()
             .filter(|broker| !broker.trim().is_empty())
-            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok());
+            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok())
+            .or_else(|| {
+                Some((
+                    crate::sends_as::FIELDLAB_BROKER.to_owned(),
+                    crate::sends_as::MQTT_PORT,
+                ))
+            });
     }
     let _whereabouts = crate::sends_as::Whereabouts::start(stated, records_folder());
     // A radio unplugged, turned off or swapped for another is looked for

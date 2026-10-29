@@ -162,7 +162,9 @@ Usage:
                                        WSJT-X, JS8Call and fldigi send:
                                        the grid from FieldLab's GPS on its
                                        MQTT broker (--mqtt, or
-                                       $LABLOG_MQTT), else --grid, else
+                                       $LABLOG_MQTT, else 10.73.10.10;
+                                       --mqtt none reads none), else
+                                       --grid, else
                                        LabLog's; the call from LabLog,
                                        else --call;
                                        quit, or its input closing, stops it
@@ -509,6 +511,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             "--key-file" => key_file = Some(value),
             "--station" => station = Some(value),
             "--kenwood" => kenwood = Some(value),
+            "--mqtt" if value == "none" => stated.no_bus = true,
             "--mqtt" => stated.mqtt = Some(sends_as::broker(&value)?),
             "--grid" => {
                 stated.grid = Some(sends_as::checked_grid(&value).ok_or_else(|| {
@@ -1711,6 +1714,7 @@ mod tests {
             parse(&args("station --mqtt 10.73.10.10 --grid em18ct --call w0cy")),
             Ok(Command::Station { stated, .. }) if stated == sends_as::Stated {
                 mqtt: Some(("10.73.10.10".to_owned(), 1883)),
+                no_bus: false,
                 call: Some("W0CY".to_owned()),
                 grid: Some("EM18CT".to_owned()),
             }
@@ -1718,6 +1722,10 @@ mod tests {
         assert!(parse(&args("station --grid EM1")).is_err());
         assert!(parse(&args("station --call 12")).is_err());
         assert!(parse(&args("station --mqtt kiosk:x")).is_err());
+        assert!(matches!(
+            parse(&args("station --mqtt none")),
+            Ok(Command::Station { stated, .. }) if stated.no_bus && stated.mqtt.is_none()
+        ));
     }
 
     #[test]
