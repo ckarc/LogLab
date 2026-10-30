@@ -31,6 +31,7 @@ from typing import Final, Literal
 
 LIFETIME: Final = timedelta(minutes=10)
 MAX_WAITING: Final = 20
+MAX_HOSTS: Final = 256
 # No 0/O, 1/I/L, 5/S or 2/Z, so a code read off a screen is typed right.
 _ALPHABET: Final = "34679ACDEFGHJKMNPQRTUVWXY"
 CODE_LENGTH: Final = 6
@@ -147,3 +148,32 @@ class PairingDesk:
 
 
 __all__ = ["CODE_LENGTH", "LIFETIME", "MAX_WAITING", "Pairing", "PairingDesk", "PairingError"]
+
+
+class AgentHosts:
+    """Which station's Agent last spoke from each network address.
+
+    The sign-in page asks it which station the computer it runs on is, so an
+    operator at FL-1 never has to type ``fl-1``. Only an Agent holding an
+    approved key is heard, and only in memory: a restart forgets, and the
+    Agent's next report (every few seconds) tells it again. At most
+    :data:`MAX_HOSTS` addresses are kept, the oldest dropped first.
+    """
+
+    def __init__(self) -> None:
+        """Know no address yet."""
+        self._lock = threading.Lock()
+        self._stations: dict[str, str] = {}
+
+    def heard(self, host: str, station: str) -> None:
+        """The Agent of ``station`` spoke from ``host``."""
+        with self._lock:
+            self._stations.pop(host, None)
+            self._stations[host] = station
+            while len(self._stations) > MAX_HOSTS:
+                del self._stations[next(iter(self._stations))]
+
+    def station(self, host: str) -> str | None:
+        """The station whose Agent last spoke from ``host``, if any."""
+        with self._lock:
+            return self._stations.get(host)

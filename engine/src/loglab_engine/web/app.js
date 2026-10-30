@@ -1702,6 +1702,14 @@
     $("#sign-in-form .error").textContent = message;
     const station = $("#sign-in-form [name=station]");
     if (!station.value) station.value = localStorage.getItem("loglab.station") || "";
+    // The station whose Agent runs on this computer, as the Engine heard it,
+    // wins over the one remembered: the operator is sitting at it.
+    fetch("/api/v1/station-here")
+      .then((response) => (response.ok ? response.json() : null))
+      .then((here) => {
+        if (here && here.station && document.activeElement !== station) station.value = here.station;
+      })
+      .catch(() => { /* no Engine just now: the remembered station stands */ });
     $("#sign-in-form [name=callsign]").focus();
   }
 
