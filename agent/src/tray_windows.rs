@@ -678,8 +678,13 @@ impl Tray {
                 }
             }
             said @ (Said::Program(_) | Said::Other(_)) => {
-                if let Said::Program(text) = &said {
-                    tray::track_programs(text, &mut self.programs);
+                if let Said::Program(text) = &said
+                    && let Some(gone) = tray::track_programs(text, &mut self.programs)
+                {
+                    self.face.notify(&format!(
+                        "{}{gone} is no longer using the radio.",
+                        self.model
+                    ));
                 }
                 let text = match &said {
                     Said::Program(text) | Said::Other(text) => text.clone(),
