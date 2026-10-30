@@ -23,7 +23,7 @@
 /// Where `station`'s output is kept, beside the Agent.
 pub const LOG_NAME: &str = "loglab-agent.log";
 
-/// The log as "Open log" shows it, newest first, beside the log.
+/// The log as "Open log" shows it, newest first, in Windows' temp folder.
 pub const LOG_VIEW_NAME: &str = "loglab-agent-newest-first.txt";
 
 /// How long a line stays in the log: older lines are dropped each time the

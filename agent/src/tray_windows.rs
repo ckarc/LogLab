@@ -773,9 +773,11 @@ pub fn run(options: &[String]) -> Result<(), String> {
             }
             nwg::Event::OnMenuItemSelected => {
                 if handle == tray.face.log.handle {
-                    // The log is written oldest first, so a line is never
-                    // lost; Open log shows a copy with the newest first.
-                    let view = tray.log.with_file_name(tray::LOG_VIEW_NAME);
+                    // Adding a line at the top would rewrite the whole log
+                    // for every line, so the log is written oldest first and
+                    // Open log shows it newest first from Windows' temp
+                    // folder, a throwaway view rather than a second log.
+                    let view = std::env::temp_dir().join(tray::LOG_VIEW_NAME);
                     let log = std::fs::read_to_string(&tray.log).unwrap_or_default();
                     let shown = if std::fs::write(&view, tray::newest_first(&log)).is_ok() {
                         view
