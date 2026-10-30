@@ -5,17 +5,21 @@
 
 from __future__ import annotations
 
+import io
 import json
+import time
 from datetime import date
 from typing import TYPE_CHECKING
 
 import pytest
 
+from loglab_engine.cli import engine as engine_cli
 from loglab_engine.fieldlab import FACTS_TOPIC, LOCATION_TOPIC, FieldLabBus, GpsFix, parse_fix
 from loglab_engine.mqtt import MqttError
 from loglab_engine.reference.refresh import Refresher
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from datetime import datetime
     from pathlib import Path
 
@@ -142,3 +146,39 @@ def test_the_license_lists_are_not_fetched_while_held() -> None:
     report = refresher.run_once()
     assert report.problems == [held]
     assert report.imported == []
+
+
+def _now_facts(*wans: str) -> bytes:
+    return json.dumps(
+        {"ts": time.time() - 5, "uplink": {"wans": list(wans), "names": NAMES}}
+    ).encode()
+
+
+def _no_bus() -> bytes | None:
+    raise MqttError("connection refused")
+
+
+@pytest.mark.parametrize(
+    ("read", "code", "said"),
+    [
+        (lambda: _now_facts("wan1", "wan2"), 0, "shop (Shop)\n"),
+        (lambda: _now_facts("wan2"), 1, "starlink (Starlink)\n"),
+        (lambda: _now_facts("wan3"), 1, "metered (Phone tether)\n"),
+        (_now_facts, 1, "none\n"),
+        (lambda: None, 1, "no fresh word from the gateway\n"),
+        (_no_bus, 1, "FieldLab's bus: connection refused\n"),
+    ],
+)
+def test_uplink_says_yes_only_on_the_shop_link(
+    read: Callable[[], bytes | None], code: int, said: str
+) -> None:
+    """``lablog-engine uplink``: the kiosk's updater checks for updates only on the shop link."""
+    out = io.StringIO()
+    assert engine_cli._uplink(("10.73.10.10", 1883), out, read) == code
+    assert out.getvalue() == said
+
+
+def test_uplink_with_no_broker_says_no() -> None:
+    """With no broker named, nothing says it is the shop link."""
+    out = io.StringIO()
+    assert engine_cli._uplink(None, out) == 1

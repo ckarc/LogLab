@@ -21,8 +21,13 @@ docker compose -f /opt/lablog/deploy/kiosk/compose.yaml exec engine lablog-opera
   the Docker volume `lablog_db`.
 - The Engine reads the kiosk's MQTT broker on 127.0.0.1:1883 for the GPS fix
   and which internet link is up, so it downloads nothing over Starlink.
-- To update: `git -C /opt/lablog pull` then `install.sh` again (needs
-  internet to build). Migrations run as the Engine starts.
+- It updates itself: cron runs `autoupdate.sh` every 5 minutes. While the
+  gateway says the internet is the shop link (never Starlink or the phone
+  tether), it pulls a newer `main` and rebuilds and restarts the Engine when
+  the Engine changed (migrations run as it starts). Otherwise it waits and
+  LabLog keeps running. A failed build leaves the running Engine alone.
+  What it did: `~/.local/state/lablog-kiosk/autoupdate.log`. To stop it,
+  remove its line with `crontab -e`.
 - Logs: `docker compose -f /opt/lablog/deploy/kiosk/compose.yaml logs engine`.
 
 FieldLab PCs need no settings for it: the Station Agent links to this Engine
