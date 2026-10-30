@@ -1871,23 +1871,33 @@ def get_status() -> StatusOut:
     )
 
 
+def _station_here(request: Request) -> str | None:
+    """The station whose Agent, holding an approved key, speaks from the asking address."""
+    hosts: AgentHosts = request.app.state.agent_hosts
+    if request.client is None:
+        return None
+    return hosts.station(request.client.host, time.monotonic())
+
+
 @api.get("/station-here")
 def station_here(request: Request) -> StationHereOut:
     """The station whose Station Agent runs on the computer asking, for the sign-in page.
 
-    No sign-in needed: it is part of signing in (Principle XXI). It names
-    only the station whose Agent, holding an approved key, last spoke from
-    the same network address, so a browser on FL-1 learns ``fl-1``.
+    No sign-in needed: it is part of signing in (Principle XXI). A browser
+    on FL-1 learns ``fl-1``, and signing in there is at ``fl-1``.
     """
-    hosts: AgentHosts = request.app.state.agent_hosts
-    host = request.client.host if request.client is not None else None
-    return StationHereOut(station=hosts.station(host) if host else None)
+    return StationHereOut(station=_station_here(request))
 
 
 @api.post("/sessions", status_code=status.HTTP_201_CREATED)
-def sign_in(body: SignIn, conn: Conn) -> SessionOut:
-    """Sign in at a station. Send the token as ``Authorization: Bearer`` from then on."""
-    session = IdentityStore(conn).sign_in(body.callsign, body.secret, body.station)
+def sign_in(body: SignIn, conn: Conn, request: Request) -> SessionOut:
+    """Sign in at a station. Send the token as ``Authorization: Bearer`` from then on.
+
+    On a computer whose Station Agent is linked, the station is the Agent's,
+    whatever was sent: the operator is sitting at that radio.
+    """
+    station = _station_here(request) or body.station
+    session = IdentityStore(conn).sign_in(body.callsign, body.secret, station)
     out = _session_out(conn, session.actor)
     return out.model_copy(update={"token": session.token, "expires_at": session.expires_at})
 
@@ -2634,7 +2644,7 @@ def _agent_station(
     station = AgentKeyStore(conn).authenticate(key.strip())
     if request.client is not None:
         hosts: AgentHosts = request.app.state.agent_hosts
-        hosts.heard(request.client.host, station)
+        hosts.heard(request.client.host, station, time.monotonic())
     return station
 
 

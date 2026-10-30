@@ -1702,12 +1702,15 @@
     $("#sign-in-form .error").textContent = message;
     const station = $("#sign-in-form [name=station]");
     if (!station.value) station.value = localStorage.getItem("loglab.station") || "";
-    // The station whose Agent runs on this computer, as the Engine heard it,
-    // wins over the one remembered: the operator is sitting at it.
+    // On a computer whose Agent is linked, the station is the Agent's: the
+    // Engine signs in there whatever is typed, so the box shows it, locked.
     fetch("/api/v1/station-here")
       .then((response) => (response.ok ? response.json() : null))
       .then((here) => {
-        if (here && here.station && document.activeElement !== station) station.value = here.station;
+        const known = Boolean(here && here.station);
+        if (known) station.value = here.station;
+        station.readOnly = known;
+        station.title = known ? "This computer's station, from its Station Agent" : "";
       })
       .catch(() => { /* no Engine just now: the remembered station stands */ });
     $("#sign-in-form [name=callsign]").focus();
