@@ -693,8 +693,11 @@ impl Tray {
                         std::thread::spawn(move || boxed(&text, false));
                     }
                     Some(_) => self.face.notify(&text),
-                    None if said.needs_a_look() => self.face.notify(&text),
-                    None => {}
+                    None => {
+                        if let Some(balloon) = said.balloon() {
+                            self.face.notify(&format!("{}{balloon}", self.model));
+                        }
+                    }
                 }
             }
         }
