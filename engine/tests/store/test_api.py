@@ -83,6 +83,8 @@ def test_the_web_client_is_served_with_a_strict_policy(client: TestClient) -> No
     assert client.get("/static/profile.css").status_code == 200
     assert client.get("/static/lab-stock.js").status_code == 200
     assert client.get("/static/lab-stock.css").status_code == 200
+    assert client.get("/static/lab-profiles.js").status_code == 200
+    assert client.get("/static/lab-profiles.css").status_code == 200
 
 
 @pytest.mark.parametrize(
