@@ -12,6 +12,10 @@ RUN apt-get update \
 RUN pip install --no-cache-dir uv==0.11.32
 
 WORKDIR /app
+# The dependencies first, in their own layer, so an update that changes only
+# LabLog's code downloads nothing more over Starlink.
+COPY engine/pyproject.toml engine/uv.lock engine/README.md /app/
+RUN uv sync --locked --no-dev --no-install-project
 COPY engine/ /app/
 RUN uv sync --locked --no-dev
 ENV PATH=/app/.venv/bin:$PATH
