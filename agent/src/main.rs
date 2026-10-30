@@ -19,36 +19,51 @@ mod audio;
 #[cfg(windows)]
 mod audio_windows;
 mod auto_mode;
+mod carrier;
+mod cat_pretend;
+mod cat_radio;
 mod civ;
 mod civ_demo;
 mod civ_pretend;
 mod civ_radio;
 mod civ_serial;
 #[cfg(any(windows, test))]
+mod com0com;
+#[cfg(any(windows, test))]
 mod driver;
 mod engine;
 mod enrollment;
+mod filter_widths;
 #[cfg(any(windows, test))]
 mod fldigi;
 mod flex;
+mod flex_pretend;
+mod flex_settings;
 mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;
 mod journal;
 #[cfg(any(windows, test))]
+mod kenwood_cat;
+mod lab_stock;
+#[cfg(any(windows, test))]
 mod mmsstv;
+mod mqtt;
 mod pairing;
 mod pretend;
 mod profiles;
 mod program_id;
 #[cfg(windows)]
 mod programs;
+mod qso_logs;
 #[cfg(any(windows, test))]
 mod qt_settings;
 mod restore;
 mod rig;
 mod rigctld_server;
 mod rigdef;
+mod sends_as;
+mod serial_radio;
 #[cfg(any(windows, test))]
 mod settings_file;
 mod settings_record;
@@ -59,6 +74,10 @@ mod tray;
 mod tray_windows;
 #[cfg(any(windows, test))]
 mod vara;
+#[cfg(any(windows, test))]
+mod vara_proxy;
+#[cfg(any(windows, test))]
+mod winlink;
 mod write_check;
 mod wsjtx;
 
@@ -72,10 +91,13 @@ use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use cat_pretend::{PretendCat, PretendCatPort};
+use cat_radio::CatRadio;
 use civ_pretend::PretendCiv;
 use civ_radio::{CivRadio, PretendPort};
 use engine::{Handed, RadioReport, Report, SendError, Uplink};
 use flex::FlexRadio;
+use flex_pretend::PretendFlex;
 use hamlib::{HamlibRadio, Launch, Source};
 use journal::Journal;
 use pretend::PretendRadio;
@@ -108,7 +130,8 @@ Usage:
                                        definition lists; keep the first
                                        reading as its as-received record,
                                        and compare later ones against it
-                                       (--civ or --civ-pretend only)
+                                       (--civ, --cat, --flex, or their
+                                       -pretend, only)
   loglab-agent serve RADIO [--listen 127.0.0.1:4532] [--allow-tuning]
                     [--allow-transmit [--tx-limit SECONDS]]
                                        be a virtual radio for programs like
@@ -118,10 +141,12 @@ Usage:
                                        lets a program key the radio, one at
                                        a time, for at most 60 seconds at
                                        once (--tx-limit, up to 600); both
-                                       --civ or --civ-pretend only
+                                       --civ, --cat, --flex, or their
+                                       -pretend, only
   loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS]
                     [--engine URL --key-file FILE [--station NAME]]
+                    [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]
                                        everything programs on this computer
                                        need to use the radio: finds it and
                                        its port, checks its settings, carries
@@ -133,6 +158,15 @@ Usage:
                                        with --engine, keeps the radio's
                                        settings there for every computer:
                                        type keep NAME to keep a setup;
+                                       sets the call and grid square
+                                       WSJT-X, JS8Call and fldigi send:
+                                       the grid from FieldLab's GPS on its
+                                       MQTT broker (--mqtt, or
+                                       $LABLOG_MQTT, else 10.73.10.10;
+                                       --mqtt none reads none), else
+                                       --grid, else
+                                       LabLog's; the call from LabLog,
+                                       else --call;
                                        quit, or its input closing, stops it
   loglab-agent tray [station's options]
                                        station in the background, with an
@@ -141,7 +175,7 @@ Usage:
                                        at station, and a Yes/No box asks
                                        before the radio is changed
                                        (Windows only)
-  loglab-agent check-writes [--civ PORT]
+  loglab-agent check-writes [--civ PORT | --flex ADDRESS]
                                        find out which of the radio's
                                        settings the Agent can set: writes
                                        each one's own value back and reads
@@ -170,6 +204,12 @@ RADIO is one of:
                                        speed and the radio by itself
   --civ-pretend                        the same driver, talking to a pretend
                                        IC-7300
+  --cat PORT                           a Yaesu radio (FTDX10) on a serial
+                                       port, through the Agent's own CAT
+                                       driver; RTS is held on, as Yaesu's
+                                       CAT port uses it for flow control
+  --cat-pretend                        the same driver, talking to a pretend
+                                       FTDX10
   --hamlib-model N --device PORT [--baud N] [--rigctld-program PATH]
                                        start Hamlib's rigctld for a radio
                                        (3073 is the Icom IC-7300)
@@ -177,7 +217,11 @@ RADIO is one of:
                                        use a rigctld already running here
   --flex ADDRESS                       a FlexRadio on the network, by its IP
                                        address or name (port 4992 unless
-                                       given, as in 192.168.1.20:4992)
+                                       given, as in 192.168.1.20:4992),
+                                       through its SmartSDR API; serve may
+                                       tune and key its transmit slice
+  --flex-pretend                       the same driver, talking to a pretend
+                                       FLEX-6600 on this computer
 
 With --station, an Agent whose key file is empty or missing asks to join as
 that station, shows a code, and waits for an administrator to approve it in
@@ -203,8 +247,14 @@ enum RadioChoice {
     CivPretend,
     /// The Agent's own CI-V driver, on a real serial port (`COM5`).
     Civ(String),
+    /// The Agent's own CAT driver, talking to a pretend FTDX10.
+    CatPretend,
+    /// The Agent's own CAT driver, on a real serial port.
+    Cat(String),
     Hamlib(HamlibChoice),
     Flex(String),
+    /// The FlexRadio driver, talking to a pretend FlexRadio.
+    FlexPretend,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -246,6 +296,13 @@ enum Command {
         /// ask to join as if it has no key, to keep the radio's settings
         /// there.
         engine: Option<(String, String, Option<String>)>,
+        /// A COM port to answer on as a Kenwood TS-2000, for Winlink
+        /// Express: one end of a com0com pair. Without it, where Winlink
+        /// Express is installed, the Agent finds a com0com pair itself.
+        kenwood: Option<String>,
+        /// FieldLab's bus, and the call and grid the programs send where
+        /// nothing better is known (see `sends_as`).
+        stated: sends_as::Stated,
     },
     /// `on`, `off` or `status`, and for `on`, the `station` options the
     /// tray runs it with.
@@ -255,6 +312,8 @@ enum Command {
     /// Write each changeable setting's own value back, on this port or
     /// whichever the radio is on.
     CheckWrites(Option<String>),
+    /// `check-writes --flex ADDRESS`.
+    CheckWritesFlex(String),
     Run {
         engine: String,
         key_file: String,
@@ -295,9 +354,10 @@ struct Options {
     engine: Option<String>,
     key_file: Option<String>,
     station: Option<String>,
-    pretend: bool,
-    civ_pretend: bool,
+    /// The pretend radios asked for.
+    pretends: Vec<RadioChoice>,
     civ: Option<String>,
+    cat: Option<String>,
     model: Option<u32>,
     device: Option<String>,
     baud: Option<u32>,
@@ -361,12 +421,10 @@ fn parse(args: &[String]) -> Result<Command, String> {
     let mut options = Options::default();
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
-        if flag == "--pretend" {
-            options.pretend = true;
-            continue;
-        }
-        if flag == "--civ-pretend" {
-            options.civ_pretend = true;
+        if let Some(pretend) = pretend_flag(flag) {
+            if !options.pretends.contains(&pretend) {
+                options.pretends.push(pretend);
+            }
             continue;
         }
         if flag == "--allow-tuning" {
@@ -391,6 +449,7 @@ fn parse(args: &[String]) -> Result<Command, String> {
             "--rigctld-program" => options.program = Some(value),
             "--flex" => options.flex = Some(value),
             "--civ" => options.civ = Some(value),
+            "--cat" => options.cat = Some(value),
             "--journal" => options.journal = Some(value),
             "--records" => options.records = Some(value),
             "--tx-limit" => options.tx_limit = Some(number(flag, &value)?),
@@ -418,7 +477,8 @@ fn parse(args: &[String]) -> Result<Command, String> {
     command(verb, options, radio)
 }
 
-/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS]`.
+/// `station [--civ PORT] [--listen ADDRESS] [--tx-limit SECONDS] [--kenwood PORT]
+/// [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]`.
 fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
     let mut pretend = false;
@@ -427,6 +487,8 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut engine = None;
     let mut key_file = None;
     let mut station = None;
+    let mut kenwood = None;
+    let mut stated = sends_as::Stated::default();
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
         if flag == "--civ-pretend" {
@@ -448,6 +510,22 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             "--engine" => engine = Some(value),
             "--key-file" => key_file = Some(value),
             "--station" => station = Some(value),
+            "--kenwood" => kenwood = Some(value),
+            "--mqtt" if value == "none" => stated.no_bus = true,
+            "--mqtt" => stated.mqtt = Some(sends_as::broker(&value)?),
+            "--grid" => {
+                stated.grid = Some(sends_as::checked_grid(&value).ok_or_else(|| {
+                    format!(
+                        "--grid needs a 4- or 6-character grid square like EM18ct, not {value:?}"
+                    )
+                })?);
+            }
+            "--call" => {
+                stated.call = Some(
+                    sends_as::checked_call(&value)
+                        .ok_or_else(|| format!("--call needs a call like W0CY, not {value:?}"))?,
+                );
+            }
             _ => return Err(format!("unknown option {flag:?} for station")),
         }
     }
@@ -470,6 +548,8 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
         listen,
         limit,
         engine,
+        kenwood,
+        stated,
     })
 }
 
@@ -477,10 +557,15 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
 fn station_tool_command(verb: &str, rest: &[String]) -> Result<Command, String> {
     match (verb, rest) {
         ("check-writes", []) => Ok(Command::CheckWrites(None)),
+        ("check-writes", [flag, address]) if flag == "--flex" => {
+            Ok(Command::CheckWritesFlex(address.clone()))
+        }
         ("check-writes", [flag, port]) if flag == "--civ" => {
             Ok(Command::CheckWrites(Some(port.clone())))
         }
-        ("check-writes", _) => Err("check-writes takes only --civ PORT".to_owned()),
+        ("check-writes", _) => {
+            Err("check-writes takes only --civ PORT or --flex ADDRESS".to_owned())
+        }
         ("startup", [what]) if matches!(what.as_str(), "on" | "off" | "status") => {
             Ok(Command::Startup(what.clone(), Vec::new()))
         }
@@ -546,11 +631,9 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     if options.tx_limit.is_some() && allowed != Allowed::Transmitting {
         return Err("--tx-limit goes with --allow-transmit".to_owned());
     }
-    if allowed != Allowed::Reading
-        && !matches!(radio, RadioChoice::CivPretend | RadioChoice::Civ(_))
-    {
+    if allowed != Allowed::Reading && !radio.is_own_driver() {
         return Err(format!(
-            "{} works only with the Agent's own CI-V driver (--civ PORT or --civ-pretend) for now",
+            "{} works only with the Agent's own drivers (--civ PORT, --cat PORT, --flex ADDRESS, or their -pretend) for now",
             allowed.flag()
         ));
     }
@@ -604,29 +687,39 @@ fn command(verb: &str, options: Options, radio: RadioChoice) -> Result<Command, 
     }
 }
 
+/// The pretend radio a flag names, if it names one.
+fn pretend_flag(flag: &str) -> Option<RadioChoice> {
+    Some(match flag {
+        "--pretend" => RadioChoice::Pretend,
+        "--civ-pretend" => RadioChoice::CivPretend,
+        "--cat-pretend" => RadioChoice::CatPretend,
+        "--flex-pretend" => RadioChoice::FlexPretend,
+        _ => return None,
+    })
+}
+
 fn radio_choice(options: &mut Options) -> Result<RadioChoice, String> {
     let hamlib = options.model.is_some() || options.device.is_some() || options.rigctld.is_some();
     let chosen = [
-        options.pretend,
-        options.civ_pretend,
         options.civ.is_some(),
+        options.cat.is_some(),
         hamlib,
         options.flex.is_some(),
     ];
-    if chosen.iter().filter(|c| **c).count() > 1 {
+    if chosen.iter().filter(|c| **c).count() + options.pretends.len() > 1 {
         return Err(
-            "choose one radio: --pretend, --civ-pretend, --civ, a Hamlib radio, or --flex"
+            "choose one radio: --pretend, --civ-pretend, --civ, --cat-pretend, --cat, a Hamlib radio, --flex or --flex-pretend"
                 .to_owned(),
         );
     }
-    if options.pretend {
-        return Ok(RadioChoice::Pretend);
-    }
-    if options.civ_pretend {
-        return Ok(RadioChoice::CivPretend);
+    if let Some(pretend) = options.pretends.pop() {
+        return Ok(pretend);
     }
     if let Some(port) = options.civ.take() {
         return Ok(RadioChoice::Civ(port));
+    }
+    if let Some(port) = options.cat.take() {
+        return Ok(RadioChoice::Cat(port));
     }
     if let Some(address) = options.flex.take() {
         return Ok(RadioChoice::Flex(address));
@@ -672,17 +765,77 @@ fn civ_serial_radio(port: &str) -> Result<CivRadio<civ_serial::SerialPort>, rig:
     CivRadio::find(port, &definitions)
 }
 
-/// The Agent's own CI-V driver, the only one that can tune or key a radio.
-fn civ_keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
+/// The CAT driver, finding a pretend FTDX10 that listens at 9600 baud, so
+/// the speed search has to work to find it.
+fn cat_pretend_radio() -> Result<CatRadio<PretendCatPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let ftdx10 = definitions
+        .iter()
+        .find(|d| d.model == "FTDX10")
+        .ok_or_else(|| rig::RadioError("the FTDX10 definition is not built in".to_owned()))?;
+    let port = PretendCatPort::new(PretendCat::new(ftdx10), 9600);
+    CatRadio::find(port, &definitions)
+}
+
+/// The CAT driver on a real serial port: 2 stop bits and RTS on, as the
+/// Yaesu definitions ask.
+fn cat_serial_radio(port: &str) -> Result<CatRadio<civ_serial::SerialPort>, rig::RadioError> {
+    let definitions = rigdef::built_in().map_err(rig::RadioError)?;
+    let yaesu = definitions
+        .iter()
+        .find(|d| d.family == rigdef::YAESU_CAT)
+        .ok_or_else(|| rig::RadioError("no Yaesu definition is built in".to_owned()))?;
+    let port = civ_serial::SerialPort::open_for(port, yaesu).map_err(rig::RadioError)?;
+    CatRadio::find(port, &definitions)
+}
+
+impl RadioChoice {
+    /// Whether the radio is reached through one of the Agent's own drivers,
+    /// the only ones that can tune or key a radio or read its settings: its
+    /// serial drivers, and the FlexRadio's.
+    fn is_own_driver(&self) -> bool {
+        matches!(
+            self,
+            Self::Civ(_)
+                | Self::CivPretend
+                | Self::Cat(_)
+                | Self::CatPretend
+                | Self::Flex(_)
+                | Self::FlexPretend
+        )
+    }
+}
+
+/// The FlexRadio driver, talking to a pretend FLEX-6600 on this computer.
+fn flex_pretend_radio() -> Result<FlexRadio, rig::RadioError> {
+    let pretend = PretendFlex::start("FLEX-6600", true)
+        .map_err(|error| rig::RadioError(format!("can't start the pretend FlexRadio: {error}")))?;
+    FlexRadio::open(pretend.address())
+}
+
+/// The Agent's own driver for the radio chosen, if it is one of them.
+fn serial_radio(
+    choice: &RadioChoice,
+) -> Result<Box<dyn serial_radio::SerialRadio>, rig::RadioError> {
     Ok(match choice {
         RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
+        RadioChoice::Cat(port) => Box::new(cat_serial_radio(port)?),
+        RadioChoice::CatPretend => Box::new(cat_pretend_radio()?),
+        RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
+        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
         _ => {
             return Err(rig::RadioError(
-                "only the Agent's own CI-V driver can tune or key a radio".to_owned(),
+                "only the Agent's own drivers (CI-V, CAT and FlexRadio) can tune or key a radio or read its settings"
+                    .to_owned(),
             ));
         }
     })
+}
+
+/// The Agent's own drivers, the only ones that can tune or key a radio.
+fn keyable(choice: &RadioChoice) -> Result<Box<dyn rig::Keyable + Send>, rig::RadioError> {
+    Ok(serial_radio(choice)?)
 }
 
 fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> {
@@ -690,7 +843,10 @@ fn open(choice: &RadioChoice) -> Result<Box<dyn Radio + Send>, rig::RadioError> 
         RadioChoice::Pretend => Box::new(PretendRadio::new()),
         RadioChoice::CivPretend => Box::new(civ_pretend_radio()?),
         RadioChoice::Civ(port) => Box::new(civ_serial_radio(port)?),
+        RadioChoice::CatPretend => Box::new(cat_pretend_radio()?),
+        RadioChoice::Cat(port) => Box::new(cat_serial_radio(port)?),
         RadioChoice::Flex(address) => Box::new(FlexRadio::open(address)?),
+        RadioChoice::FlexPretend => Box::new(flex_pretend_radio()?),
         RadioChoice::Hamlib(HamlibChoice::Start(launch)) => {
             Box::new(HamlibRadio::open(&Source::Started(launch.clone()))?)
         }
@@ -1068,10 +1224,10 @@ fn serve(
 ) -> Result<(), String> {
     let (notes, heard) = mpsc::channel();
     let shared: Arc<dyn rigctld_server::Source> = if let Some(limit) = transmit_limit {
-        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
+        let radio = keyable(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::with_transmit(radio, limit).with_notes(notes))
     } else if allow_tuning {
-        let radio = civ_keyable(choice).map_err(|error| error.to_string())?;
+        let radio = keyable(choice).map_err(|error| error.to_string())?;
         Arc::new(rigctld_server::Shared::with_tuning(radio).with_notes(notes))
     } else {
         let radio = open(choice).map_err(|error| error.to_string())?;
@@ -1162,23 +1318,11 @@ fn print_event(event: &str) {
 /// Read a radio's menu settings, keep the first reading as its as-received
 /// record, and report (Principles X and XIV).
 fn record(choice: &RadioChoice, dir: &Path) -> Result<(), String> {
-    match choice {
-        RadioChoice::CivPretend => record_from(
-            &mut civ_pretend_radio().map_err(|error| error.to_string())?,
-            dir,
-        ),
-        RadioChoice::Civ(port) => record_from(
-            &mut civ_serial_radio(port).map_err(|error| error.to_string())?,
-            dir,
-        ),
-        _ => Err(
-            "only the Agent's own CI-V driver can read settings: use --civ PORT or --civ-pretend"
-                .to_owned(),
-        ),
-    }
+    let mut radio = serial_radio(choice).map_err(|error| error.to_string())?;
+    record_from(radio.as_mut(), dir)
 }
 
-fn record_from<P: civ_radio::Port>(radio: &mut CivRadio<P>, dir: &Path) -> Result<(), String> {
+fn record_from(radio: &mut dyn serial_radio::SerialRadio, dir: &Path) -> Result<(), String> {
     let now = settings_record::read(
         radio,
         None,
@@ -1294,6 +1438,8 @@ fn main() -> ExitCode {
             listen,
             limit,
             engine,
+            kenwood,
+            stated,
         }) => station::run(
             port.as_deref(),
             pretend,
@@ -1302,10 +1448,15 @@ fn main() -> ExitCode {
             engine.as_ref().map(|(engine, key_file, station)| {
                 (engine.as_str(), key_file.as_str(), station.as_deref())
             }),
+            kenwood.as_deref(),
+            &stated,
         ),
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
         Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
+        Ok(Command::CheckWritesFlex(address)) => FlexRadio::open(&address)
+            .map_err(|error| error.to_string())
+            .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None)),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1340,6 +1491,7 @@ fn main() -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::{Command, HamlibChoice, RadioChoice, VERSION, Wsjtx, banner, parse};
+    use crate::sends_as;
     use std::time::Duration;
 
     use crate::hamlib::Launch;
@@ -1430,6 +1582,16 @@ mod tests {
         );
         assert!(parse(&args("read --civ")).is_err(), "needs a port");
         assert!(parse(&args("read --civ COM5 --civ-pretend")).is_err());
+        assert_eq!(
+            parse(&args("read --cat COM7")),
+            Ok(Command::Read(RadioChoice::Cat("COM7".to_owned())))
+        );
+        assert_eq!(
+            parse(&args("read --cat-pretend")),
+            Ok(Command::Read(RadioChoice::CatPretend))
+        );
+        assert!(parse(&args("read --cat COM7 --civ COM5")).is_err());
+        assert!(parse(&args("serve --cat COM7 --allow-transmit")).is_ok());
         assert!(parse(&args("read --civ COM5 --hamlib-model 3073 --device COM5")).is_err());
     }
 
@@ -1439,6 +1601,26 @@ mod tests {
             parse(&args("read --flex 192.168.1.20")),
             Ok(Command::Read(RadioChoice::Flex("192.168.1.20".to_owned())))
         );
+        assert_eq!(
+            parse(&args("read --flex-pretend")),
+            Ok(Command::Read(RadioChoice::FlexPretend))
+        );
+        assert_eq!(
+            parse(&args("read --flex-pretend --flex-pretend")),
+            Ok(Command::Read(RadioChoice::FlexPretend))
+        );
+        // A FlexRadio may be tuned and keyed, through its API.
+        assert!(matches!(
+            parse(&args("serve --flex 192.168.1.20 --allow-transmit")),
+            Ok(Command::Serve {
+                radio: RadioChoice::Flex(_),
+                transmit_limit: Some(_),
+                ..
+            })
+        ));
+        assert!(parse(&args("serve --flex-pretend --allow-tuning")).is_ok());
+        assert!(parse(&args("read --flex-pretend --cat-pretend")).is_err());
+        assert!(parse(&args("read --flex-pretend --flex 10.0.0.2")).is_err());
     }
 
     #[test]
@@ -1527,6 +1709,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_where_the_station_is() {
+        assert!(matches!(
+            parse(&args("station --mqtt 10.73.10.10 --grid em18ct --call w0cy")),
+            Ok(Command::Station { stated, .. }) if stated == sends_as::Stated {
+                mqtt: Some(("10.73.10.10".to_owned(), 1883)),
+                no_bus: false,
+                call: Some("W0CY".to_owned()),
+                grid: Some("EM18CT".to_owned()),
+            }
+        ));
+        assert!(parse(&args("station --grid EM1")).is_err());
+        assert!(parse(&args("station --call 12")).is_err());
+        assert!(parse(&args("station --mqtt kiosk:x")).is_err());
+        assert!(matches!(
+            parse(&args("station --mqtt none")),
+            Ok(Command::Station { stated, .. }) if stated.no_bus && stated.mqtt.is_none()
+        ));
+    }
+
+    #[test]
     fn reads_station() {
         assert_eq!(
             parse(&args("station")),
@@ -1536,6 +1738,8 @@ mod tests {
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
                 engine: None,
+                kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(
@@ -1548,6 +1752,8 @@ mod tests {
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
                 engine: None,
+                kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(
@@ -1564,6 +1770,8 @@ mod tests {
                     "station.key".to_owned(),
                     None
                 )),
+                kenwood: None,
+                stated: sends_as::Stated::default(),
             })
         );
         assert_eq!(
@@ -1593,6 +1801,10 @@ mod tests {
             })
         ));
         assert!(parse(&args("station --civ-pretend --civ COM5")).is_err());
+        assert!(matches!(
+            parse(&args("station --civ COM5 --kenwood CNCB0")),
+            Ok(Command::Station { kenwood: Some(port), .. }) if port == "CNCB0"
+        ));
         assert!(parse(&args("startup")).is_err());
         assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
         assert_eq!(
@@ -1600,6 +1812,11 @@ mod tests {
             Ok(Command::CheckWrites(Some("COM5".to_owned())))
         );
         assert!(parse(&args("check-writes --pretend")).is_err());
+        assert_eq!(
+            parse(&args("check-writes --flex 192.168.1.20")),
+            Ok(Command::CheckWritesFlex("192.168.1.20".to_owned()))
+        );
+        assert!(parse(&args("check-writes --flex")).is_err());
         assert!(parse(&args("startup maybe")).is_err());
         for refused in [
             "station --tx-limit 0",

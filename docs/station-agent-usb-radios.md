@@ -190,10 +190,20 @@ confirms it, and records the restore like any other change it makes to a
 radio. (Principle X, amended in constitution 3.0.0.)
 
 **Setups per program, applied by themselves.** The lab keeps one known-good
-profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV), in
-`agent/profiles/` and built into the Agent, so it is locked: only a new build
-replaces it, and the Agent never saves a radio's settings over it (decided by
-brian, 2026-10-28). When a program connects to the virtual radio, the Agent
+profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV). It
+is locked: only an administrator replaces it, and the Agent never saves a
+radio's settings over it (decided by brian, 2026-10-28). Each has a default
+in `agent/profiles/`, built into the Agent. An administrator replaces one in
+LabLog, with no new build (brian, 2026-10-30): Menu, Admin, Lab Profiles,
+pick the station and program, **Read this radio** (that station's Agent
+reads every setting it may write and changes nothing; the settings changed
+on the radio since the Agent started or last put a profile on come ticked),
+then **Update the default profile**. The Agent fetches LabLog's profiles
+every 30 seconds and keeps a copy in its records folder
+(`lab-profiles-icom-ic-7300.json`), so with LabLog out of reach it uses the
+newest it heard of, and the built-in one only for a program LabLog has none
+for. Every version is kept in LabLog, and an earlier one can be used again.
+When a program connects to the virtual radio, the Agent
 tells which program it is from the process that owns the connection
 (Windows' `GetExtendedTcpTable` and the process's executable; `VarAC.exe`
 means VARA, since VarAC is the program that drives the radio for VARA) and,
@@ -218,6 +228,42 @@ lab's profile names are locked, so `keep VARA` is refused and the tray keeps
   its profile is on (up to 15 seconds), and nothing is written while a
   program has the radio keyed.
 
+**Lab Stock.** Each radio model also has one everyday baseline, its Lab
+Stock: every setting the Agent may write, the way the lab wants a radio of
+that model left between users. The per-program profiles sit on top of it.
+Lab Stock is kept on the Engine and managed in LabLog, behind a gate (brian,
+2026-10-29: "any changes to the labstock settings should be gated"):
+
+- **Proposing.** `stock save` at the Agent's console (or the tray's Lab Stock
+  menu, "Send settings as a Lab Stock proposal") sends the radio's settings
+  to the Engine as a proposal. A proposal changes nothing.
+- **The gate.** In LabLog, Admin then Lab Stock, an administrator sees each
+  proposal and exactly which settings it changes against the Lab Stock now,
+  and approves or refuses it, once. The newest approval is the model's Lab
+  Stock. The database refuses a decision from anyone but a signed-in
+  administrator, and a station key can never approve. Approving is refused
+  if the Lab Stock changed since the administrator compared it. Going back to
+  an earlier one is a new proposal that needs its own approval. Every
+  proposal and decision is kept (Principle VII; migration
+  `0022_lab_stock`).
+- **Putting it on.** `stock` (the tray's "Put Lab Stock on") shows what
+  putting the approved Lab Stock on would change and waits for the
+  operator's yes, even in auto mode; then the restore path writes it (mode
+  and filter first, only checked settings, read back, recorded in
+  `records`). (Principle X, first exception.)
+- **Only checked settings.** A proposal holds only settings the rig
+  definition marks writable and checked on a real radio, and not the clock.
+  A model with none checked yet (the IC-9700, until `check-writes` runs on
+  one) has nothing to propose.
+- **Every filter's width.** The radio reads and sets only the selected
+  filter's width (`1A 03`), so `stock save` asks a yes, then chooses FIL1,
+  FIL2 and FIL3 in turn on the mode the radio is on, reads each width, and
+  puts the radio back on the filter it was on, reading it again to be sure
+  (brian, 2026-10-27: back exactly as found). `stock` sets each filter's
+  width the same way, last, on the Lab Stock's mode, then selects the Lab
+  Stock's filter. In data mode the filter is chosen with `1A 06`, since `06`
+  turns data mode off. Widths are kept for the Lab Stock's mode only.
+
 ## Virtual radios (personalities)
 
 | Personality | What it is | Who uses it |
@@ -235,10 +281,23 @@ What each program supports, briefly:
   the rig model and the rigctld personality must handle.
 - **VarAC** speaks rigctld.
 - **Winlink Express** controls the radio through its own built-in drivers over
-  a COM port only, and keys PTT itself. It gets a virtual COM port.
+  a COM port only. It will get a virtual COM port for tuning. Until then the
+  Agent keys for it (below), and the operator sets the dial frequency.
 - **VARA** never tunes the radio; its client (Winlink Express or VarAC) does.
-  VARA's own PTT is turned off so only the client keys, through the Agent.
-  Only one client connects to VARA at a time.
+  VARA doesn't key the radio either: it sends `PTT ON` and `PTT OFF` to its
+  client on its TCP command port, and the client keys (Pat's VARA modem,
+  github.com/n8jja/Pat-Vara, `vara.go`). So the Agent moves VARA's command
+  port to 8310 in `VARA.ini` (`[Setup]` `TCP Command Port`; the data port is
+  always one more, per varanny's README) and listens on the ports VARA's
+  clients already use, 8300 and 8301, passing every byte through. When VARA
+  says `PTT ON`, the Agent keys the radio through its own rigctld server, as
+  one more program under the same rules. A client that already has its own
+  connection to the rigctld server, such as VarAC, keys for itself, and the
+  Agent leaves it to. In Winlink Express, the Agent sets the VARA radio
+  setup (`RMS Express.ini`, `[Vara]`) to `Model=Manual`,
+  `Control Port=NONE` and `PTT Port=EXTERNAL`, Winlink Express's own
+  defaults, read from version 1.8.6.0, so it never opens the radio's COM
+  port. Only one client connects to VARA at a time.
 - **N1MM Logger+** can reach a radio over TCP when told it is a particular
   radio model, so it needs no virtual COM port.
 - **N3FJP** is fed through its API, so it never touches the radio at all.
@@ -333,7 +392,7 @@ program's file, is touched.
 |---|---|---|
 | VARA | `VARA.ini` next to `VARA.exe` | `[Soundcard]` input and output device |
 | WSJT-X, JS8Call | `%LOCALAPPDATA%\<app>\<app>.ini` | `[Configuration]` `SoundInName`, `SoundOutName`, `Rig` (Hamlib NET rigctl), `CATNetworkPort`, `PTTMethod` (CAT), `DataMode` (Data/Pkt), `Polling` (1, only if missing or 0) |
-| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device; Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
+| fldigi | `%USERPROFILE%\fldigi.files\fldigi_def.xml` | PortAudio input and output device, by the 31-character name PortAudio gives the cable's MME device (fldigi opens the first device with exactly that name); Hamlib on (model 2, NET rigctl) at the virtual radio, PTT by Hamlib; flrig and RigCAT off |
 | MMSSTV | `Mmsstv.ini` next to `Mmsstv.exe` | `[Define]` `SoundDevice` input only, for now |
 
 MMSSTV keys a radio only through a COM port, so it receives through the
@@ -414,6 +473,10 @@ Each file says:
 - **Identity**: maker, model, protocol family, and how the radio identifies
   itself (for Icom, its default CI-V address).
 - **USB layout**: which serial ports and sound device the radio presents.
+  A radio with more than one serial port behind its USB names its control
+  port by how its USB serial number ends (`number_ends_with = "A"` for the
+  IC-9700's USB (A)); the Agent never opens the others, which may carry data
+  the radio transmits.
 - **Link**: the baud rates to try, the default address, echo behavior.
 - **Modes**: the radio's mode codes, mapped to the rig model's modes.
 - **Commands**: the protocol commands the driver uses for each rig-model
@@ -449,6 +512,26 @@ the Agent, so there is one source of truth.
 
 [`agent/rigs/icom/ic-7300.toml`](../agent/rigs/icom/ic-7300.toml) is the first
 definition and the model for the rest.
+[`agent/rigs/icom/ic-9700.toml`](../agent/rigs/icom/ic-9700.toml) uses the same
+CI-V driver at address A2h; nothing in it is checked on a real IC-9700 yet,
+so the Agent records its settings but writes none until `check-writes` has
+been run on one.
+
+[`agent/rigs/yaesu/ftdx10.toml`](../agent/rigs/yaesu/ftdx10.toml) is the first
+Yaesu CAT definition (`family = "yaesu-cat"`), driven by the Agent's own CAT
+driver (`agent/src/cat_radio.rs`). CAT is text, so a CAT definition writes a
+command as it is sent without its semicolon (`RG0`), a menu item as its group,
+page and item (`01 04 17` is `EX010417`), and a value's length in `digits`.
+The Agent keeps a value of digits as BCD bytes, as an Icom radio sends its
+values, so ranges, records and profiles mean the same for both. A CAT link has
+no addresses; it says its `stop_bits`, whether RTS is held on (`rts = "on"`,
+refused for CI-V), and what the radio answers to `ID` (`identity.answer`).
+Settings are read only with commands on the Agent's list of CAT commands that
+only ask, and Yaesu's menu group 05 (clock, loads, saves and resets) is
+refused. A radio whose one USB bridge has more ports than its control port
+names its control port's USB `interface` (the FTDX10's Enhanced COM Port is
+0); the Agent never opens the other, whose RTS and DTR key the radio. Nothing
+in the FTDX10 file is checked on a real radio yet.
 
 ## Working with no internet
 
@@ -482,7 +565,12 @@ Each step is its own pull request, with tests and a demonstration
    one. *Receiving is done (`rx-audio`): the radio's audio into a VB-Audio
    cable, with clock-drift correction. Sending comes with transmitting.*
 8. **VARA with Winlink Express and VarAC**: the virtual COM port and the
-   audio latency work.
+   audio latency work. *Keying for Winlink Express is done, without a COM
+   port: the Agent stands between VARA and its client and keys on VARA's
+   `PTT ON`. The Kenwood TS-2000 personality is built (`station --kenwood
+   PORT`), for Winlink Express to tune through a com0com pair, and the
+   Agent finds the pair itself where Winlink Express is installed, and
+   installs com0com with one pair when there is none.*
 9. **N3FJP** through its API.
 10. **IC-9700 and FTDX10** definitions (the FTDX10 adds the Yaesu CAT driver).
 11. **N1MM Logger+** through the CAT-over-TCP personality.

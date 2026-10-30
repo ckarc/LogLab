@@ -75,6 +75,28 @@ pub fn owner(rows: &[Row], program: SocketAddr, server: SocketAddr) -> Option<u3
         .map(|row| row.pid)
 }
 
+/// Whether the program on the far end of the connection from `program` to
+/// the Agent listening at `server` also has a connection open to `port` on
+/// this computer: for VARA's client, whether it keys the radio through the
+/// Agent's radio server itself (see `vara_proxy`).
+#[must_use]
+pub fn also_connected(rows: &[Row], program: SocketAddr, server: SocketAddr, port: u16) -> bool {
+    owner(rows, program, server).is_some_and(|pid| {
+        rows.iter()
+            .any(|row| row.pid == pid && row.remote.0.is_loopback() && row.remote.1 == port)
+    })
+}
+
+/// Whether the program that connected from `program` to the Agent's VARA
+/// proxy at `server` keys the radio through the Agent's radio server, on
+/// `rigctld_port`, itself. Unknown (Windows won't say) counts as no.
+#[cfg(windows)]
+#[must_use]
+pub fn keys_itself(program: SocketAddr, server: SocketAddr, rigctld_port: u16) -> bool {
+    windows_api::tcp_table()
+        .is_ok_and(|table| also_connected(&rows(&table), program, server, rigctld_port))
+}
+
 /// The program setup for a process, by its executable's name or path:
 /// `VarAC` means VARA. Case doesn't matter, as on Windows.
 #[must_use]
@@ -85,7 +107,9 @@ pub fn setup_for(executable: &str) -> Option<&'static str> {
         .unwrap_or(executable)
         .to_ascii_lowercase();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);
-    if stem.starts_with("varac") || stem == "vara" || stem == "varahf" {
+    // The Agent itself connects to its radio server only from its VARA
+    // proxy, keying for VARA's client (Winlink Express): VARA.
+    if stem.starts_with("varac") || stem == "vara" || stem == "varahf" || stem == "loglab-agent" {
         Some("VARA")
     } else if stem == "wsjtx" {
         Some("FT8")
@@ -217,7 +241,7 @@ mod windows_api {
 mod tests {
     use std::net::{Ipv4Addr, SocketAddr};
 
-    use super::{Row, owner, rows, setup_for};
+    use super::{Row, also_connected, owner, rows, setup_for};
 
     /// One row as Windows writes it: words in this computer's order,
     /// addresses and ports in network order.
@@ -270,5 +294,47 @@ mod tests {
         assert_eq!(setup_for("fldigi.exe"), Some("fldigi"));
         assert_eq!(setup_for("Mmsstv.exe"), Some("SSTV"));
         assert_eq!(setup_for(r"C:\Program Files\N1MM\N1MMLogger.net.exe"), None);
+        // The Agent's own VARA proxy, keying for Winlink Express.
+        assert_eq!(setup_for(r"C:\LabLog\loglab-agent.exe"), Some("VARA"));
+    }
+
+    #[test]
+    fn tells_a_vara_client_that_keys_through_the_radio_server_itself() {
+        let home = Ipv4Addr::LOCALHOST;
+        let read = vec![
+            // VarAC: to VARA's proxy and to the radio server.
+            Row {
+                local: (home, 50402),
+                remote: (home, 8300),
+                pid: 4100,
+            },
+            Row {
+                local: (home, 50410),
+                remote: (home, 4532),
+                pid: 4100,
+            },
+            // Winlink Express: to VARA's proxy only.
+            Row {
+                local: (home, 50500),
+                remote: (home, 8300),
+                pid: 5200,
+            },
+            // The Agent's own ends.
+            Row {
+                local: (home, 8300),
+                remote: (home, 50402),
+                pid: 7000,
+            },
+            Row {
+                local: (home, 4532),
+                remote: (home, 50410),
+                pid: 7000,
+            },
+        ];
+        let proxy: SocketAddr = "127.0.0.1:8300".parse().unwrap_or_else(|_| unreachable!());
+        let at = |port: u16| SocketAddr::from((home, port));
+        assert!(also_connected(&read, at(50402), proxy, 4532));
+        assert!(!also_connected(&read, at(50500), proxy, 4532));
+        assert!(!also_connected(&read, at(59999), proxy, 4532));
     }
 }

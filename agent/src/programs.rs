@@ -4,8 +4,10 @@
 //! Setting up the programs on this computer that use the radio, so each
 //! works through the Agent with nothing typed in: WSJT-X and `JS8Call` (see
 //! `qt_settings`), fldigi (see `fldigi`), and MMSSTV's receive audio (see
-//! `mmsstv`). VARA is set up the same way (see `vara`, called from
-//! `station`).
+//! `mmsstv`), and Winlink Express's VARA radio setup (see `winlink`). VARA is
+//! set up the same way (see `vara`, called from
+//! `station`). The call and grid square each program sends are the ones
+//! the station keeps up to date (see `sends_as`).
 //!
 //! A program that is running is left alone, because each writes its own
 //! settings when it closes and would undo the change; `station` sets it
@@ -19,12 +21,14 @@ use crate::audio::RECEIVE_CABLE_OUT;
 use crate::audio_windows::{Station, device_names};
 use crate::settings_file::{self, Change, Outcome};
 use crate::vara::as_vara_names_it;
-use crate::{fldigi, mmsstv, qt_settings};
+use crate::{fldigi, mmsstv, qt_settings, winlink};
 
 /// Sets up every program found, for the radio at `radio` and the audio
-/// `station` carries.
-pub fn set_up(station: &Station, radio: SocketAddr) {
+/// `station` carries; `tuning` says whether Winlink Express tunes the
+/// radio through the Agent's virtual Kenwood.
+pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>) {
     let (recording, playing) = device_names();
+    let sends = crate::sends_as::current();
     for (app, image) in [("WSJT-X", "wsjtx.exe"), ("JS8Call", "js8call.exe")] {
         let Some(path) = qt_settings::find(app) else {
             continue;
@@ -40,11 +44,14 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
                 input.as_deref(),
                 &recording,
             )),
-            output: station
-                .transmit_cable
-                .as_deref()
-                .map(|cable| as_vara_names_it(cable, output.as_deref(), &playing)),
+            output: Some(as_vara_names_it(
+                transmit_to(station),
+                output.as_deref(),
+                &playing,
+            )),
             radio,
+            call: sends.call.clone(),
+            grid: sends.grid().map(str::to_owned),
         };
         say(app, &path, qt_settings::set(&path, &wanted));
     }
@@ -52,11 +59,18 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
         && closed("fldigi", "fldigi.exe")
     {
         let wanted = fldigi::Wanted {
-            input: Some(RECEIVE_CABLE_OUT.to_owned()),
-            output: station.transmit_cable.clone(),
+            input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
+            output: Some(fldigi::mme_name(transmit_to(station))),
             radio,
+            call: sends.call.clone(),
+            grid: sends.grid().map(str::to_owned),
         };
         say("fldigi", &path, fldigi::set(&path, &wanted));
+    }
+    if let Some(path) = winlink::find()
+        && closed("Winlink Express", winlink::IMAGE)
+    {
+        say("Winlink Express", &path, winlink::set(&path, tuning));
     }
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
@@ -67,6 +81,16 @@ pub fn set_up(station: &Station, radio: SocketAddr) {
              a radio only through a COM port)."
         );
     }
+}
+
+/// Where a program plays its transmit audio: the transmit cable, or
+/// without one, straight into the radio's own USB sound device, so it
+/// doesn't transmit silence (as VARA does, see `station`).
+fn transmit_to(station: &Station) -> &str {
+    station
+        .transmit_cable
+        .as_deref()
+        .unwrap_or(&station.radio_playing)
 }
 
 /// Whether `app` (executable `image`) is closed, saying why not if it isn't.

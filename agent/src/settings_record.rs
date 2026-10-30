@@ -374,6 +374,13 @@ pub fn shown(definition: &Definition, id: &str, bytes: Option<&str>) -> String {
             Value::Unread { .. } => text.to_owned(),
             value => value.text(),
         },
+        // A FlexRadio's raw values are its own words (`DIGU`, `ANT1`).
+        (Some(_), Some(parsed)) if definition.family == crate::flex_settings::FAMILY => {
+            String::from_utf8(parsed)
+                .ok()
+                .filter(|words| words.bytes().all(|b| b.is_ascii_graphic() || b == b' '))
+                .unwrap_or_else(|| text.to_owned())
+        }
         _ => text.to_owned(),
     }
 }
@@ -471,16 +478,21 @@ pub fn report(
     definition: &Definition,
 ) -> Vec<String> {
     let mut lines = Vec::new();
+    // A radio with no link address (Yaesu CAT) is named without one.
+    let at = if record.address == 0 {
+        String::new()
+    } else {
+        format!(" at {:02X}h", record.address)
+    };
     match as_received {
         None => lines.push(format!(
-            "As received: {} {} at {:02X}h, read {} on {}",
-            record.maker, record.model, record.address, record.read_utc, record.computer
+            "As received: {} {}{at}, read {} on {}",
+            record.maker, record.model, record.read_utc, record.computer
         )),
         Some(first) => lines.push(format!(
-            "{} {} at {:02X}h, read {} on {} (as received {} on {})",
+            "{} {}{at}, read {} on {} (as received {} on {})",
             record.maker,
             record.model,
-            record.address,
             record.read_utc,
             record.computer,
             first.read_utc,
@@ -494,7 +506,15 @@ pub fn report(
         .max()
         .unwrap_or(0);
     for entry in &record.settings {
-        lines.push(format!("  {:width$}  {}", entry.label, entry.text()));
+        lines.push(format!(
+            "  {:width$}  {}",
+            entry.label,
+            if entry.value == Value::Raw {
+                shown(definition, &entry.id, entry.bytes.as_deref())
+            } else {
+                entry.text()
+            }
+        ));
     }
     let unread = record
         .settings

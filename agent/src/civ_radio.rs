@@ -190,6 +190,13 @@ impl<P: Port> CivRadio<P> {
     ///
     /// No known radio answered at any speed, or the port failed.
     pub fn find(mut port: P, definitions: &[Definition]) -> Result<Self, RadioError> {
+        // Only Icom radios: another family's radio isn't asked in CI-V.
+        let icom: Vec<Definition> = definitions
+            .iter()
+            .filter(|d| d.family == rigdef::ICOM_CIV)
+            .cloned()
+            .collect();
+        let definitions = icom.as_slice();
         let mut speeds: Vec<u32> = Vec::new();
         for definition in definitions {
             for baud in &definition.baud_rates {
@@ -248,6 +255,7 @@ impl<P: Port> CivRadio<P> {
     }
 
     /// The definition of the radio that answered.
+    #[cfg(test)]
     pub fn definition(&self) -> &Definition {
         &self.definition
     }
@@ -514,7 +522,7 @@ impl<P: Port> Keyable for CivRadio<P> {
         Ok(Some(TxMeters {
             power,
             swr_tenths,
-            alc,
+            alc: Some(alc),
             tuning,
             readings: 0,
         }))
@@ -735,6 +743,23 @@ mod tests {
     }
 
     #[test]
+    fn tells_an_ic_9700_from_an_ic_7300_by_its_address() {
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        for model in ["IC-7300", "IC-9700"] {
+            let definition = definitions
+                .iter()
+                .find(|d| d.model == model)
+                .unwrap_or_else(|| unreachable!("{model} is built in"));
+            let port = PretendPort::new(PretendCiv::new(definition), 115_200);
+            let mut radio =
+                CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+            assert_eq!(radio.identity().model, model);
+            let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+            assert_eq!(reading.mode, Some(Mode::DataUsb), "{model}");
+        }
+    }
+
+    #[test]
     fn says_when_no_radio_answers() {
         let definition = ic_7300();
         let port = PretendPort::new(PretendCiv::new(&definition), 1200);
@@ -881,7 +906,7 @@ mod tests {
             Some(TxMeters {
                 power: 0,
                 swr_tenths: 10,
-                alc: 0,
+                alc: Some(0),
                 ..TxMeters::default()
             }),
             "receiving: every meter at the bottom"
@@ -896,7 +921,7 @@ mod tests {
             Some(TxMeters {
                 power: 100,
                 swr_tenths: 20,
-                alc: 33,
+                alc: Some(33),
                 ..TxMeters::default()
             })
         );

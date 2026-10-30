@@ -55,7 +55,8 @@ use std::time::{Duration, Instant};
 
 use crate::hamlib::mode_from_hamlib;
 use crate::rig::{
-    Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters, Vfo,
+    ControlPath, Exposes, Keyable, Mode, Radio, RadioIdentity, Reading, Tunable, Tuning, TxMeters,
+    Vfo,
 };
 
 /// The longest command line accepted.
@@ -156,6 +157,10 @@ pub trait Source: Send + Sync {
 /// line under the note.
 fn refused_hint(tuning: Tuning, identity: &RadioIdentity) -> String {
     match tuning {
+        // A FlexRadio has no other VFO: split is a second slice.
+        Tuning::OtherFrequency(_) if identity.path == ControlPath::Flex => {
+            "\n-> In WSJT-X, Settings > Radio > Split Operation: None avoids this.".to_owned()
+        }
         Tuning::Frequency(_) | Tuning::OtherFrequency(_) => format!(
             "\n-> The {} {} most likely has no band there. A program offering that band \
              (WSJT-X shows \"Rig Control Error\" and reconnects) should have it removed \
@@ -224,10 +229,13 @@ const SWR_HIGHEST: u16 = 20;
 
 /// The transmit meters' peaks, in words, and what to do if one is too high.
 fn meter_note(peak: TxMeters) -> String {
+    let alc = peak
+        .alc
+        .map(|alc| format!(", ALC {alc}% of its scale"))
+        .unwrap_or_default();
     let mut note = format!(
-        "; peak Po {}%, ALC {}% of its scale, SWR {}.{}",
+        "; peak Po {}%{alc}, SWR {}.{}",
         peak.power,
-        peak.alc,
         peak.swr_tenths / 10,
         peak.swr_tenths % 10
     );
@@ -235,7 +243,7 @@ fn meter_note(peak: TxMeters) -> String {
         note.push_str(" (the radio's tuner was tuning, so they say nothing about the drive)");
         return note;
     }
-    if peak.alc > ALC_HIGHEST {
+    if peak.alc.is_some_and(|alc| alc > ALC_HIGHEST) {
         note.push_str(
             "\n-> ALC went over a third of its scale: lower the radio's USB MOD Level, or the \
              program's drive level, until it stays under.",
@@ -744,7 +752,10 @@ fn accept(
                     continue;
                 }
                 clients.fetch_add(1, Ordering::SeqCst);
-                source.note(&format!("a program connected ({peer})"));
+                source.note(&match crate::program_id::identify(peer, address) {
+                    Ok((_, exe)) => format!("a program connected ({peer}): {}", exe_name(&exe)),
+                    Err(_) => format!("a program connected ({peer})"),
+                });
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
@@ -759,6 +770,11 @@ fn accept(
             Err(_) => thread::sleep(TICK),
         }
     }
+}
+
+/// The file name of `exe`, a program's executable path: `VarAC.exe`.
+fn exe_name(exe: &str) -> &str {
+    exe.rsplit(['\\', '/']).next().unwrap_or(exe)
 }
 
 /// Answers one program, connected from `program`, until it leaves, sends
@@ -1167,7 +1183,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, respond};
+    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, refused_hint, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
@@ -1176,6 +1192,25 @@ mod tests {
         TxMeters,
     };
     use crate::rigdef;
+
+    #[test]
+    fn a_flexradio_refusing_the_other_vfo_is_told_as_split() {
+        let identity = |path| RadioIdentity {
+            maker: "FlexRadio".to_owned(),
+            model: "FLEX-6600".to_owned(),
+            path,
+        };
+        let split = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Flex),
+        );
+        assert!(split.contains("Split Operation: None"), "{split}");
+        let band = refused_hint(
+            Tuning::OtherFrequency(14_076_000),
+            &identity(ControlPath::Civ),
+        );
+        assert!(band.contains("no band there"), "{band}");
+    }
 
     /// The program the tests speak as.
     const PROGRAM: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 50_001));
@@ -1776,7 +1811,7 @@ mod tests {
             bench.meters = Some(TxMeters {
                 power: 100,
                 swr_tenths: 13,
-                alc: 50,
+                alc: Some(50),
                 ..TxMeters::default()
             });
         });
@@ -1809,7 +1844,7 @@ mod tests {
         let fine = TxMeters {
             power: 50,
             swr_tenths: 20,
-            alc: 33,
+            alc: Some(33),
             ..TxMeters::default()
         };
         assert_eq!(
@@ -1818,13 +1853,13 @@ mod tests {
         );
         let note = meter_note(TxMeters {
             swr_tenths: 21,
-            alc: 34,
+            alc: Some(34),
             ..fine
         });
         assert!(note.contains("ALC went over a third"), "{note}");
         assert!(note.contains("SWR went over 2.0"), "{note}");
         let note = meter_note(TxMeters {
-            alc: 65,
+            alc: Some(65),
             tuning: true,
             ..fine
         });
@@ -1984,5 +2019,35 @@ mod tests {
         }
         assert!(!transmitting(&bench), "unkeyed by the server's watch");
         drop(server);
+    }
+    #[test]
+    fn answers_fldigi_as_hamlib_asks_for_it() {
+        // fldigi 4.1.23 (src/rigcontrol/hamlib.cxx) opens Hamlib's NET rigctl,
+        // reads the frequency and mode, unkeys, then tunes, changes mode and
+        // keys with PTT on data (its HAMLIBPTTONDATA default). These are the
+        // lines Hamlib 4.5.5 sent for those calls, captured on the wire.
+        let definitions = rigdef::built_in().unwrap_or_else(|error| unreachable!("{error}"));
+        let port = PretendPort::new(PretendCiv::new(&definitions[0]), 115_200);
+        let radio =
+            CivRadio::find(port, &definitions).unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Shared::with_transmit(Box::new(radio), MINUTE);
+        let say = |line| as_program(&shared, PROGRAM, line);
+        assert_eq!(say("\\get_powerstat"), "1\n");
+        assert_eq!(say("\\chk_vfo"), "0\n");
+        assert!(say("\\dump_state").ends_with("done\n"));
+        assert_eq!(say("v"), "VFOA\n");
+        assert_eq!(say("f"), "14074000\n");
+        assert_eq!(say("s"), "0\nVFOA\n");
+        assert_eq!(say("m"), "PKTUSB\n0\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("F 7074000.000000"), "RPRT 0\n");
+        assert_eq!(say("f"), "7074000\n");
+        assert_eq!(say("M PKTUSB 0"), "RPRT 0\n");
+        assert_eq!(say("M USB 2400"), "RPRT 0\n");
+        assert!(say("m").starts_with("USB\n"));
+        assert_eq!(say("T 3"), "RPRT 0\n");
+        assert_eq!(say("t"), "1\n");
+        assert_eq!(say("T 0"), "RPRT 0\n");
+        assert_eq!(say("t"), "0\n");
     }
 }

@@ -47,7 +47,7 @@ const IDLE: Duration = Duration::from_millis(200);
 /// How long after `station` stops on its own before it is started again.
 const RESTART: Duration = Duration::from_secs(30);
 /// The longest log kept before it is moved aside, in bytes.
-const LOG_MOST: u64 = 2_000_000;
+const LOG_MOST: usize = 2_000_000;
 /// Windows' tooltip holds at most 127 characters.
 const TIP_MOST: usize = 120;
 
@@ -216,12 +216,24 @@ fn start_station(
     Ok(Station { child, typing })
 }
 
-/// The log beside the Agent, opened to add to, after moving a long one
-/// aside.
+/// The log beside the Agent, opened to add to, after dropping lines older
+/// than `tray::LOG_KEEP` and, if it is still too long, its oldest lines.
+/// Nothing else is kept: no second log, and no stale Open log view.
 fn open_log(path: &Path) -> Option<File> {
-    if std::fs::metadata(path).is_ok_and(|meta| meta.len() > LOG_MOST) {
-        let _ = std::fs::rename(path, path.with_extension("log.old"));
+    if let Ok(log) = std::fs::read_to_string(path) {
+        let since = std::time::SystemTime::now()
+            .checked_sub(tray::LOG_KEEP)
+            .map(crate::settings_record::utc_text)
+            .unwrap_or_default();
+        let kept = tray::log_since(&log, &since);
+        let kept = tray::log_tail(&kept, LOG_MOST);
+        if kept.len() != log.len() {
+            let _ = std::fs::write(path, kept);
+        }
     }
+    // Earlier builds moved a long log aside to loglab-agent.log.old.
+    let _ = std::fs::remove_file(path.with_extension("log.old"));
+    let _ = std::fs::remove_file(std::env::temp_dir().join(tray::LOG_VIEW_NAME));
     OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
@@ -258,6 +270,9 @@ struct Face {
     lab_menu: nwg::Menu,
     enroll: nwg::MenuItem,
     leave_out: nwg::MenuItem,
+    stock_menu: nwg::Menu,
+    stock_put: nwg::MenuItem,
+    stock_save: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -368,10 +383,40 @@ impl Face {
             &face.lab_menu,
             &mut face.leave_out,
         )?;
+        face.stock_items()?;
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
         Ok(face)
+    }
+
+    /// The Lab Stock menu: put the model's Lab Stock on, or send the
+    /// radio's settings as a proposal.
+    fn stock_items(&mut self) -> Result<(), String> {
+        built(
+            nwg::Menu::builder()
+                .text("Lab Stock")
+                .parent(&self.menu)
+                .build(&mut self.stock_menu),
+        )?;
+        for (text, item) in [
+            (
+                "Put Lab Stock on (shows what changes, then asks)",
+                &mut self.stock_put,
+            ),
+            (
+                "Send settings as a Lab Stock proposal",
+                &mut self.stock_save,
+            ),
+        ] {
+            built(
+                nwg::MenuItem::builder()
+                    .text(text)
+                    .parent(&self.stock_menu)
+                    .build(item),
+            )?;
+        }
+        Ok(())
     }
 
     fn separator(&mut self) -> Result<(), String> {
@@ -418,6 +463,12 @@ impl Face {
         if handle == self.leave_out.handle {
             return Some(Choice::Enroll(false));
         }
+        if handle == self.stock_put.handle {
+            return Some(Choice::Stock { save: false });
+        }
+        if handle == self.stock_save.handle {
+            return Some(Choice::Stock { save: true });
+        }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
         }
@@ -451,6 +502,8 @@ struct Tray {
     light: Light,
     radio: String,
     model: String,
+    /// The programs connected to the radio: (where from, name).
+    programs: Vec<(String, String)>,
     /// The question waiting for a yes, and whether its box is showing.
     question: Option<u32>,
     box_open: bool,
@@ -565,6 +618,7 @@ impl Tray {
             }
             Incoming::Stopped(why) => {
                 self.station = None;
+                self.programs.clear();
                 self.light = Light::Waiting;
                 if self.quitting {
                     nwg::stop_thread_dispatch();
@@ -624,6 +678,9 @@ impl Tray {
                 }
             }
             said @ (Said::Program(_) | Said::Other(_)) => {
+                if let Said::Program(text) = &said {
+                    tray::track_programs(text, &mut self.programs);
+                }
                 let text = match &said {
                     Said::Program(text) | Said::Other(text) => text.clone(),
                     _ => String::new(),
@@ -687,6 +744,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
         light: Light::Waiting,
         radio: "starting".to_owned(),
         model: String::new(),
+        programs: Vec::new(),
         question: None,
         box_open: false,
         awaiting: None,
@@ -712,12 +770,23 @@ pub fn run(options: &[String]) -> Result<(), String> {
             nwg::Event::OnMousePress(nwg::MousePressEvent::MousePressLeftUp)
                 if handle == tray.face.icon.handle =>
             {
-                let status = format!("{}{}", tray.model, tray.radio);
+                let status = tray::status(&tray.model, &tray.radio, &tray.programs);
                 tray.face.notify(&status);
             }
             nwg::Event::OnMenuItemSelected => {
                 if handle == tray.face.log.handle {
-                    let _ = Command::new("notepad.exe").arg(&tray.log).spawn();
+                    // Adding a line at the top would rewrite the whole log
+                    // for every line, so the log is written oldest first and
+                    // Open log shows it newest first from Windows' temp
+                    // folder, a throwaway view rather than a second log.
+                    let view = std::env::temp_dir().join(tray::LOG_VIEW_NAME);
+                    let log = std::fs::read_to_string(&tray.log).unwrap_or_default();
+                    let shown = if std::fs::write(&view, tray::newest_first(&log)).is_ok() {
+                        view
+                    } else {
+                        tray.log.clone()
+                    };
+                    let _ = Command::new("notepad.exe").arg(shown).spawn();
                 } else if let Some(choice) = tray.face.chosen(handle, Tray::auto_on()) {
                     tray.choose(choice);
                 }
