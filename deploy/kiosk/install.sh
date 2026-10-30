@@ -10,7 +10,9 @@
 # The first run makes the database password (kept in deploy/kiosk/.env,
 # readable only by you), builds the Engine and starts it with PostgreSQL 16.
 # Later runs rebuild from the checkout as it is and restart the Engine; the
-# log is kept in the "lablog_db" volume and never touched.
+# log is kept in the "lablog_db" volume and never touched. It also has cron
+# run autoupdate.sh every five minutes, which keeps the box at the newest
+# main by itself while the internet is the shop link.
 # It needs internet only to build; LabLog then runs with none (Principle V).
 
 set -euo pipefail
@@ -26,6 +28,15 @@ fi
 
 docker compose build engine
 docker compose up -d
+
+# Keep it at the newest main by itself, on the shop link only (autoupdate.sh).
+if command -v crontab > /dev/null; then
+    { crontab -l 2> /dev/null | grep -vF "$here/autoupdate.sh"
+      echo "*/5 * * * * $here/autoupdate.sh"; } | crontab -
+    echo "Updates: checks for a newer LabLog every 5 minutes, on the shop link only."
+else
+    echo "Updates: this box has no cron, so run install.sh again to update."
+fi
 
 # Port 8073 open to FieldLab's network, when the box has a firewall on.
 if command -v ufw > /dev/null && sudo ufw status 2> /dev/null | grep -q '^Status: active'; then

@@ -9,6 +9,10 @@ no internet connection (Principle V). While it runs, it keeps the US and
 Canadian license lists and the POTA park list current whenever there is
 internet (unless given ``--no-license-refresh``).
 
+``lablog-engine uplink`` says which internet link FieldLab's gateway is
+using, from the kiosk's word on its MQTT bus, and exits 0 only on the shop
+link, so a script on the kiosk can leave Starlink and the phone tether alone.
+
 ``lablog-engine licenses status`` says how current those lists are;
 ``lablog-engine licenses import`` loads files downloaded elsewhere, for a
 station that is never online; ``lablog-engine licenses refresh`` downloads
@@ -16,13 +20,15 @@ whatever is newer now. ``lablog-engine parks status`` and ``lablog-engine
 parks import FILE`` do the same for the Parks on the Air park list
 (``all_parks_ext.csv`` from pota.app).
 
-Exit codes: 0 stopped normally, 2 refused or failed to start.
+Exit codes: 0 stopped normally, 2 refused or failed to start; for ``uplink``,
+0 the shop link, 1 any other link or no word from the gateway.
 """
 
 from __future__ import annotations
 
 import argparse
 import sys
+import time
 from datetime import UTC, datetime
 from functools import partial
 from pathlib import Path
@@ -33,10 +39,11 @@ import uvicorn
 
 from loglab_engine import __version__
 from loglab_engine.api import create_app
-from loglab_engine.callbook.profiles import gateway_or_address
+from loglab_engine.callbook.profiles import Network, gateway_or_address, gateway_uplink
 from loglab_engine.cli.operator import RefusedError, check_schema
 from loglab_engine.environment import setting
-from loglab_engine.fieldlab import FieldLabBus
+from loglab_engine.fieldlab import FACTS_TOPIC, FieldLabBus
+from loglab_engine.mqtt import MqttError, read_retained
 from loglab_engine.reference.licenses import LicenseFileError
 from loglab_engine.reference.refresh import HttpDownloads, Refresher
 from loglab_engine.store import connect, default_database
@@ -44,9 +51,12 @@ from loglab_engine.store.licenses import COUNTRY, ImportResult, Kind, LicenseSto
 from loglab_engine.store.parks import ParkImport, ParkStore
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Callable, Sequence
+
+    ReadFacts = Callable[[], bytes | None]
 
 EXIT_OK: Final = 0
+EXIT_NOT_SHOP: Final = 1
 EXIT_REFUSED: Final = 2
 DEFAULT_PORT: Final = 8073
 
@@ -95,6 +105,16 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="never download the FCC and ISED license lists or the POTA park list"
         " (load them with 'licenses import' and 'parks import')",
+    )
+    uplink = commands.add_parser(
+        "uplink", help="which internet link FieldLab's gateway uses; exit 0 only on the shop link"
+    )
+    uplink.add_argument(
+        "--mqtt",
+        type=_broker,
+        default=setting("MQTT"),
+        metavar="HOST[:PORT]",
+        help="FieldLab's MQTT broker (default: $LABLOG_MQTT)",
     )
     licenses = commands.add_parser("licenses", help="the US and Canadian license lists")
     actions = licenses.add_subparsers(dest="action", required=True)
@@ -207,6 +227,39 @@ def _parks(args: argparse.Namespace, database: str, out: TextIO) -> None:
         out.write(line + "\n")
 
 
+def _uplink(broker: tuple[str, int] | None, out: TextIO, read: ReadFacts | None = None) -> int:
+    """Say which link the gateway uses; :data:`EXIT_OK` only on the shop link."""
+    if broker is None:
+        out.write("no FieldLab broker given (--mqtt or $LABLOG_MQTT)\n")
+        return EXIT_NOT_SHOP
+    reader = read or (lambda: read_retained(*broker, FACTS_TOPIC, client_id="lablog-engine-uplink"))
+    try:
+        facts = reader()
+    except MqttError as error:
+        out.write(f"FieldLab's bus: {error}\n")
+        return EXIT_NOT_SHOP
+    seen = gateway_uplink(facts, time.time())
+    if seen is None:
+        out.write("no fresh word from the gateway\n")
+        return EXIT_NOT_SHOP
+    out.write(f"{seen.network.value}{f' ({seen.provider})' if seen.provider else ''}\n")
+    return EXIT_OK if seen.network is Network.SHOP else EXIT_NOT_SHOP
+
+
+def _schema_ready(database: str, err: TextIO) -> bool:
+    """Whether the database is reachable and its schema current; says why not."""
+    try:
+        with connect(database) as conn:
+            check_schema(conn)
+    except RefusedError as error:
+        err.write(f"refused: {error}\n")
+        return False
+    except psycopg.Error as error:
+        err.write(f"database error: {str(error).strip()}\n")
+        return False
+    return True
+
+
 def main(
     argv: Sequence[str] | None = None,
     out: TextIO = sys.stdout,
@@ -214,15 +267,10 @@ def main(
 ) -> int:
     """Run the command line and return its exit code."""
     args = _parser().parse_args(argv)
+    if args.command == "uplink":
+        return _uplink(args.mqtt, out)
     database = args.database or default_database()
-    try:
-        with connect(database) as conn:
-            check_schema(conn)
-    except RefusedError as error:
-        err.write(f"refused: {error}\n")
-        return EXIT_REFUSED
-    except psycopg.Error as error:
-        err.write(f"database error: {str(error).strip()}\n")
+    if not _schema_ready(database, err):
         return EXIT_REFUSED
     if args.command in {"licenses", "parks"}:
         try:
