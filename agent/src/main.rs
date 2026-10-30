@@ -32,6 +32,7 @@ mod com0com;
 #[cfg(any(windows, test))]
 mod driver;
 mod engine;
+mod engine_link;
 mod enrollment;
 mod filter_widths;
 #[cfg(any(windows, test))]
@@ -145,7 +146,7 @@ Usage:
                                        -pretend, only
   loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS]
-                    [--engine URL --key-file FILE [--station NAME]]
+                    [--engine URL --key-file FILE [--station NAME] | --engine none]
                     [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]
                                        everything programs on this computer
                                        need to use the radio: finds it and
@@ -155,9 +156,17 @@ Usage:
                                        programs like VarAC and WSJT-X tune
                                        and key it (as serve --allow-transmit)
                                        (it waits for the radio if it is off);
-                                       with --engine, keeps the radio's
-                                       settings there for every computer:
-                                       type keep NAME to keep a setup;
+                                       keeps the radio's settings in
+                                       LabLog for every computer (type
+                                       keep NAME to keep a setup): with no
+                                       --engine, FieldLab's, at
+                                       10.73.10.10:8073, as the station
+                                       named after this computer, joining
+                                       by itself (an administrator approves
+                                       it once in LabLog) with its key in
+                                       station.key beside the Agent; off
+                                       FieldLab's network, on this computer
+                                       instead; --engine none links to none;
                                        sets the call and grid square
                                        WSJT-X, JS8Call and fldigi send:
                                        the grid from FieldLab's GPS on its
@@ -292,10 +301,9 @@ enum Command {
         pretend: bool,
         listen: SocketAddr,
         limit: Duration,
-        /// The Engine's address, the station key's file, and the station to
-        /// ask to join as if it has no key, to keep the radio's settings
-        /// there.
-        engine: Option<(String, String, Option<String>)>,
+        /// The Engine that keeps the radio's settings, and more: FieldLab's
+        /// unless `--engine` says.
+        engine: engine_link::EngineLink,
         /// A COM port to answer on as a Kenwood TS-2000, for Winlink
         /// Express: one end of a com0com pair. Without it, where Winlink
         /// Express is installed, the Agent finds a com0com pair itself.
@@ -488,6 +496,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut key_file = None;
     let mut station = None;
     let mut kenwood = None;
+    let mut no_engine = false;
     let mut stated = sends_as::Stated::default();
     let mut words = rest.iter();
     while let Some(flag) = words.next() {
@@ -507,6 +516,7 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
                 })?;
             }
             "--tx-limit" => limit = tx_limit(number(flag, &value)?)?,
+            "--engine" if value == "none" => no_engine = true,
             "--engine" => engine = Some(value),
             "--key-file" => key_file = Some(value),
             "--station" => station = Some(value),
@@ -529,9 +539,17 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             _ => return Err(format!("unknown option {flag:?} for station")),
         }
     }
-    let engine = match (engine, key_file, station) {
-        (Some(engine), Some(key_file), station) => Some((engine, key_file, station)),
-        (None, None, None) => None,
+    let engine = match (no_engine, engine, key_file, station) {
+        (false, Some(engine), Some(key_file), station) => engine_link::EngineLink::Given {
+            engine,
+            key_file,
+            station,
+        },
+        (false, None, None, None) => engine_link::EngineLink::FieldLab,
+        (true, None, None, None) => engine_link::EngineLink::Off,
+        (true, ..) => {
+            return Err("--engine none takes no --key-file or --station".to_owned());
+        }
         _ => {
             return Err(
                 "station takes --engine and --key-file together, and --station only with them"
@@ -1445,9 +1463,7 @@ fn main() -> ExitCode {
             pretend,
             listen,
             limit,
-            engine.as_ref().map(|(engine, key_file, station)| {
-                (engine.as_str(), key_file.as_str(), station.as_deref())
-            }),
+            &engine,
             kenwood.as_deref(),
             &stated,
         ),
@@ -1723,6 +1739,12 @@ mod tests {
         assert!(parse(&args("station --call 12")).is_err());
         assert!(parse(&args("station --mqtt kiosk:x")).is_err());
         assert!(matches!(
+            parse(&args("station --engine none")),
+            Ok(Command::Station { engine, .. }) if engine == crate::engine_link::EngineLink::Off
+        ));
+        assert!(parse(&args("station --engine none --key-file k")).is_err());
+        assert!(parse(&args("station --key-file k")).is_err());
+        assert!(matches!(
             parse(&args("station --mqtt none")),
             Ok(Command::Station { stated, .. }) if stated.no_bus && stated.mqtt.is_none()
         ));
@@ -1737,7 +1759,7 @@ mod tests {
                 pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
-                engine: None,
+                engine: crate::engine_link::EngineLink::FieldLab,
                 kenwood: None,
                 stated: sends_as::Stated::default(),
             })
@@ -1751,7 +1773,7 @@ mod tests {
                 pretend: false,
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
-                engine: None,
+                engine: crate::engine_link::EngineLink::FieldLab,
                 kenwood: None,
                 stated: sends_as::Stated::default(),
             })
@@ -1765,11 +1787,11 @@ mod tests {
                 pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
-                engine: Some((
-                    "http://192.168.1.10:8073".to_owned(),
-                    "station.key".to_owned(),
-                    None
-                )),
+                engine: crate::engine_link::EngineLink::Given {
+                    engine: "http://192.168.1.10:8073".to_owned(),
+                    key_file: "station.key".to_owned(),
+                    station: None,
+                },
                 kenwood: None,
                 stated: sends_as::Stated::default(),
             })
