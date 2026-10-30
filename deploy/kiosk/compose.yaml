@@ -1,0 +1,50 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# LabLog on FieldLab's kiosk box: the Engine and its PostgreSQL 16.
+# Set up and updated by install.sh, which writes .env beside this file.
+#
+# Both use the box's own network: the Engine answers on port 8073 for
+# FieldLab's PCs, PostgreSQL only on 127.0.0.1:5432, and the Engine reads
+# the kiosk's MQTT broker (GPS fix, which internet link is up) on
+# 127.0.0.1:1883. Both start again with the box.
+name: lablog
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    network_mode: host
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
+    environment:
+      POSTGRES_USER: lablog
+      POSTGRES_PASSWORD: ${LABLOG_DB_PASSWORD:?run install.sh first}
+      POSTGRES_DB: loglab
+    volumes:
+      - db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-h", "127.0.0.1", "-U", "lablog", "-d", "loglab"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
+  engine:
+    build:
+      context: ../..
+      dockerfile: deploy/kiosk/Dockerfile
+    image: lablog-engine:local
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      LABLOG_DATABASE: "host=127.0.0.1 dbname=loglab user=lablog password=${LABLOG_DB_PASSWORD:?run install.sh first}"
+      LABLOG_MQTT: "127.0.0.1:1883"
+      LABLOG_SESSION_FILE: /state/session
+    volumes:
+      - state:/state
+
+volumes:
+  db:
+  state:

@@ -48,6 +48,7 @@ use std::time::Duration;
 use crate::auto_mode;
 use crate::civ_serial;
 use crate::engine::{KeptRadio, KeptReading, Uplink};
+use crate::engine_link::EngineLink;
 use crate::rig::{RadioIdentity, Reading, Tuning};
 use crate::rigctld_server::{self, Shared, Source};
 use crate::rigdef::{Definition, SettingSummary};
@@ -2147,15 +2148,16 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
 ///
 /// # Errors
 ///
-/// The radio isn't found, the virtual radio can't listen, or `engine` (the
-/// Engine's address, the key file, and the station to join as) doesn't
-/// make a link to the Engine.
+/// The radio isn't found, the virtual radio can't listen, or an Engine
+/// given with `--engine` (its address, the key file, and the station to
+/// join as) doesn't make a link. FieldLab's own Engine, linked to with no
+/// `--engine`, never stops the station (see `engine_link`).
 pub fn run(
     port: Option<&str>,
     pretend: bool,
     listen: SocketAddr,
     limit: Duration,
-    engine: Option<(&str, &str, Option<&str>)>,
+    engine: &EngineLink,
     kenwood: Option<&str>,
     stated: &crate::sends_as::Stated,
 ) -> Result<(), String> {
@@ -2183,25 +2185,68 @@ pub fn run(
     let _whereabouts = crate::sends_as::Whereabouts::start(stated, records_folder());
     // A radio unplugged, turned off or swapped for another is looked for
     // again, so any radio can be moved to this computer while the Agent runs.
+    let mut fieldlab = (*engine == EngineLink::FieldLab).then(|| {
+        crate::engine_link::FieldLab::new(
+            &records_folder()
+                .parent()
+                .map_or_else(|| ".".into(), std::path::Path::to_path_buf),
+        )
+    });
+    let joined = fieldlab.as_ref().map(crate::engine_link::FieldLab::joined);
     loop {
-        let uplink = engine
-            .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
-            .transpose()?;
+        let uplink = match engine {
+            EngineLink::Given {
+                engine,
+                key_file,
+                station,
+            } => Some(uplink(engine, key_file, station.as_deref(), &running)?),
+            EngineLink::FieldLab => fieldlab.as_mut().and_then(|link| link.uplink(&running)),
+            EngineLink::Off => None,
+        };
         let ended = if pretend {
             let found = Found {
                 radio: Box::new(crate::civ_pretend_radio().map_err(|error| error.to_string())?),
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
             };
-            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
+            run_found(
+                found,
+                listen,
+                limit,
+                Link {
+                    uplink,
+                    joined: joined.as_deref(),
+                },
+                &running,
+                &typing,
+                kenwood,
+            )?
         } else {
             let Some(found) = wait_for_radio(port, &running) else {
                 break;
             };
-            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
+            run_found(
+                found,
+                listen,
+                limit,
+                Link {
+                    uplink,
+                    joined: joined.as_deref(),
+                },
+                &running,
+                &typing,
+                kenwood,
+            )?
         };
-        if ended == Ended::Stopped {
-            break;
+        match ended {
+            Ended::Stopped => break,
+            Ended::Joined => {
+                crate::print_event(
+                    "LabLog: joined, so the Agent starts again with the link to LabLog.",
+                );
+                continue;
+            }
+            Ended::Lost => {}
         }
         crate::print_event(&format!(
             "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
@@ -2217,10 +2262,7 @@ pub fn run(
 /// the programs and the Engine, when there is one.
 fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate::carrier::Carrier> {
     let Some(uplink) = uplink else {
-        println!(
-            "QSOs: stay in each program's own log (start the Agent with --engine to send them \
-             to LabLog)."
-        );
+        println!("QSOs: stay in each program's own log (LabLog isn't linked).");
         return None;
     };
     let radio = Arc::clone(shared) as Arc<dyn Source>;
@@ -2237,11 +2279,12 @@ fn run_found(
     mut found: Found,
     listen: SocketAddr,
     limit: Duration,
-    uplink: Option<Uplink>,
+    link: Link<'_>,
     running: &AtomicBool,
     typing: &Typing,
     kenwood: Option<&str>,
 ) -> Result<Ended, String> {
+    let Link { uplink, joined } = link;
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -2312,13 +2355,15 @@ fn run_found(
     let mut watching = Watching::new(kenwood.clone());
     let serving = AtomicBool::new(true);
     let mut lost = Lost::default();
+    let mut relink = false;
     crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
         offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
             watching.watch(station, &on_air, server.address());
         }
-        if !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+        relink |= joined.is_some_and(|joined| joined.swap(false, Ordering::SeqCst));
+        if relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
             serving.store(false, Ordering::SeqCst);
         }
     });
@@ -2335,11 +2380,7 @@ fn run_found(
     if let Ok(mut slot) = typing.to_console.lock() {
         *slot = None;
     }
-    Ok(if running.load(Ordering::SeqCst) {
-        Ended::Lost
-    } else {
-        Ended::Stopped
-    })
+    Ok(Ended::after(running, relink))
 }
 
 /// How a station run ended.
@@ -2349,6 +2390,29 @@ enum Ended {
     Stopped,
     /// The radio stopped answering: unplugged, turned off, or swapped.
     Lost,
+    /// FieldLab's Engine let this station in, so it starts again linked.
+    Joined,
+}
+
+impl Ended {
+    /// Why the station stopped serving the radio: asked to, `relink`ed, or
+    /// else the radio was lost.
+    fn after(running: &AtomicBool, relink: bool) -> Self {
+        if !running.load(Ordering::SeqCst) {
+            Self::Stopped
+        } else if relink {
+            Self::Joined
+        } else {
+            Self::Lost
+        }
+    }
+}
+
+/// The station's link to the Engine for one radio: the link, if any, and
+/// for FieldLab's Engine, the flag that says joining has just saved a key.
+struct Link<'a> {
+    uplink: Option<Uplink>,
+    joined: Option<&'a AtomicBool>,
 }
 
 /// How long the radio may go unread before the Agent counts it gone and

@@ -17,3 +17,6 @@ agent/target/
 .DS_Store
 Thumbs.db
 .hypothesis/
+
+# Kiosk deploy secrets
+deploy/kiosk/.env
