@@ -23,6 +23,45 @@
 /// Where `station`'s output is kept, beside the Agent.
 pub const LOG_NAME: &str = "loglab-agent.log";
 
+/// The log as "Open log" shows it, newest first, beside the log.
+pub const LOG_VIEW_NAME: &str = "loglab-agent-newest-first.txt";
+
+/// How long a line stays in the log: older lines are dropped each time the
+/// tray starts `station`.
+pub const LOG_KEEP: std::time::Duration = std::time::Duration::from_hours(14 * 24);
+
+/// The lines of `log` written since `since` (UTC text, as each line starts
+/// with): older ones are dropped. A line that doesn't start with a time
+/// goes with the line before it.
+#[must_use]
+pub fn log_since(log: &str, since: &str) -> String {
+    let mut keep = true;
+    let mut kept = String::new();
+    for line in log.lines() {
+        if let Some(time) = line
+            .get(..20)
+            .filter(|time| time.ends_with('Z') && time.as_bytes()[10] == b'T')
+        {
+            keep = time >= since;
+        }
+        if keep {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
+}
+
+/// `log` with its newest line first.
+#[must_use]
+pub fn newest_first(log: &str) -> String {
+    let mut lines: Vec<&str> = log.lines().collect();
+    lines.reverse();
+    let mut text = lines.join("\r\n");
+    text.push_str("\r\n");
+    text
+}
+
 /// How long the tray waits for `station` to stop after quit before it
 /// ends it.
 pub const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -449,8 +488,8 @@ pub fn quoted(option: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, question_box, quoted,
-        restore_menu, status, track_programs,
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, log_since, newest_first,
+        question_box, quoted, restore_menu, status, track_programs,
     };
 
     /// Every event `lines` make, in order.
@@ -546,6 +585,25 @@ mod tests {
             classify("nothing is waiting for a yes."),
             Said::Other(_)
         ));
+    }
+
+    #[test]
+    fn keeps_two_weeks_of_log_newest_first() {
+        let log = "2026-10-01T00:00:00Z  old\n2026-10-01T00:00:00Z  old too\n\
+                   2026-10-29T22:48:12Z  Found: Icom IC-7300\n  continued\n\
+                   2026-10-30T00:17:11Z  radio: receiving\n";
+        let kept = log_since(log, "2026-10-16T00:31:00Z");
+        assert_eq!(
+            kept,
+            "2026-10-29T22:48:12Z  Found: Icom IC-7300\n  continued\n\
+             2026-10-30T00:17:11Z  radio: receiving\n"
+        );
+        assert_eq!(log_since(log, "2026-09-01T00:00:00Z"), log);
+        assert_eq!(
+            newest_first(&kept),
+            "2026-10-30T00:17:11Z  radio: receiving\r\n  continued\r\n\
+             2026-10-29T22:48:12Z  Found: Icom IC-7300\r\n"
+        );
     }
 
     #[test]

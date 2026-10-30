@@ -216,9 +216,19 @@ fn start_station(
     Ok(Station { child, typing })
 }
 
-/// The log beside the Agent, opened to add to, after moving a long one
-/// aside.
+/// The log beside the Agent, opened to add to, after dropping lines older
+/// than `tray::LOG_KEEP` and moving a long one aside.
 fn open_log(path: &Path) -> Option<File> {
+    if let Ok(log) = std::fs::read_to_string(path) {
+        let since = std::time::SystemTime::now()
+            .checked_sub(tray::LOG_KEEP)
+            .map(crate::settings_record::utc_text)
+            .unwrap_or_default();
+        let kept = tray::log_since(&log, &since);
+        if kept.len() != log.len() {
+            let _ = std::fs::write(path, kept);
+        }
+    }
     if std::fs::metadata(path).is_ok_and(|meta| meta.len() > LOG_MOST) {
         let _ = std::fs::rename(path, path.with_extension("log.old"));
     }
@@ -763,7 +773,16 @@ pub fn run(options: &[String]) -> Result<(), String> {
             }
             nwg::Event::OnMenuItemSelected => {
                 if handle == tray.face.log.handle {
-                    let _ = Command::new("notepad.exe").arg(&tray.log).spawn();
+                    // The log is written oldest first, so a line is never
+                    // lost; Open log shows a copy with the newest first.
+                    let view = tray.log.with_file_name(tray::LOG_VIEW_NAME);
+                    let log = std::fs::read_to_string(&tray.log).unwrap_or_default();
+                    let shown = if std::fs::write(&view, tray::newest_first(&log)).is_ok() {
+                        view
+                    } else {
+                        tray.log.clone()
+                    };
+                    let _ = Command::new("notepad.exe").arg(shown).spawn();
                 } else if let Some(choice) = tray.face.chosen(handle, Tray::auto_on()) {
                     tray.choose(choice);
                 }
