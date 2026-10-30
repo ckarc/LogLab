@@ -752,7 +752,10 @@ fn accept(
                     continue;
                 }
                 clients.fetch_add(1, Ordering::SeqCst);
-                source.note(&format!("a program connected ({peer})"));
+                source.note(&match crate::program_id::identify(peer, address) {
+                    Ok((_, exe)) => format!("a program connected ({peer}): {}", exe_name(&exe)),
+                    Err(_) => format!("a program connected ({peer})"),
+                });
                 let (source, stop, clients) =
                     (Arc::clone(source), Arc::clone(stop), Arc::clone(&clients));
                 thread::spawn(move || {
@@ -767,6 +770,11 @@ fn accept(
             Err(_) => thread::sleep(TICK),
         }
     }
+}
+
+/// The file name of `exe`, a program's executable path: `VarAC.exe`.
+fn exe_name(exe: &str) -> &str {
+    exe.rsplit(['\\', '/']).next().unwrap_or(exe)
 }
 
 /// Answers one program, connected from `program`, until it leaves, sends
