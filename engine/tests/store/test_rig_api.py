@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from loglab_engine.api import create_app
-from loglab_engine.pairing import LIFETIME, MAX_WAITING, PairingDesk
+from loglab_engine.pairing import LIFETIME, MAX_HOSTS, MAX_WAITING, AgentHosts, PairingDesk
 from loglab_engine.rig import STALE, RigBoard, RigState, adif_mode, band_for
 from loglab_engine.store import IdentityStore, NotAuthorizedError, Permission
 from loglab_engine.store.agent import AgentKeyStore
@@ -405,3 +405,30 @@ def test_requests_expire() -> None:
         "expired",
         None,
     )
+
+
+def test_the_sign_in_page_learns_the_station_of_the_agent_on_its_computer(
+    client: TestClient, agent: dict[str, str]
+) -> None:
+    """A browser on the Agent's computer is told the Agent's station, nobody else's."""
+    assert client.get("/api/v1/station-here").json() == {"station": None}
+    assert client.put("/api/v1/agent/rig", headers=agent, json=_report()).status_code == 204
+    # The test client asks from the same address the Agent spoke from.
+    assert client.get("/api/v1/station-here").json() == {"station": "fd-1"}
+    refused = {"Authorization": "Bearer nonsense"}
+    assert client.put("/api/v1/agent/rig", headers=refused, json=_report()).status_code == 401
+
+
+def test_agent_hosts_keep_the_latest_station_and_a_bounded_number() -> None:
+    """An address keeps the station heard last, and the oldest addresses go first."""
+    hosts = AgentHosts()
+    hosts.heard("10.73.10.56", "fl-1")
+    hosts.heard("10.73.10.57", "fl-2")
+    hosts.heard("10.73.10.56", "fl-1b")
+    assert hosts.station("10.73.10.56") == "fl-1b"
+    assert hosts.station("10.73.10.99") is None
+    for n in range(MAX_HOSTS):
+        hosts.heard(f"192.168.0.{n}", "x")
+    assert hosts.station("10.73.10.57") is None
+    assert hosts.station("10.73.10.56") is None
+    assert hosts.station(f"192.168.0.{MAX_HOSTS - 1}") == "x"
