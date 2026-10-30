@@ -490,6 +490,8 @@ struct Tray {
     light: Light,
     radio: String,
     model: String,
+    /// The programs connected to the radio: (where from, name).
+    programs: Vec<(String, String)>,
     /// The question waiting for a yes, and whether its box is showing.
     question: Option<u32>,
     box_open: bool,
@@ -604,6 +606,7 @@ impl Tray {
             }
             Incoming::Stopped(why) => {
                 self.station = None;
+                self.programs.clear();
                 self.light = Light::Waiting;
                 if self.quitting {
                     nwg::stop_thread_dispatch();
@@ -663,6 +666,9 @@ impl Tray {
                 }
             }
             said @ (Said::Program(_) | Said::Other(_)) => {
+                if let Said::Program(text) = &said {
+                    tray::track_programs(text, &mut self.programs);
+                }
                 let text = match &said {
                     Said::Program(text) | Said::Other(text) => text.clone(),
                     _ => String::new(),
@@ -726,6 +732,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
         light: Light::Waiting,
         radio: "starting".to_owned(),
         model: String::new(),
+        programs: Vec::new(),
         question: None,
         box_open: false,
         awaiting: None,
@@ -751,7 +758,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
             nwg::Event::OnMousePress(nwg::MousePressEvent::MousePressLeftUp)
                 if handle == tray.face.icon.handle =>
             {
-                let status = format!("{}{}", tray.model, tray.radio);
+                let status = tray::status(&tray.model, &tray.radio, &tray.programs);
                 tray.face.notify(&status);
             }
             nwg::Event::OnMenuItemSelected => {

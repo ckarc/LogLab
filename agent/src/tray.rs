@@ -259,6 +259,38 @@ pub fn classify(event: &str) -> Said {
     Said::Other(event.to_owned())
 }
 
+/// Keeps `programs`, the programs connected to the radio as (where from,
+/// name), up to date with one thing `station` said: `a program connected
+/// (127.0.0.1:61551): VarAC.exe` adds one, `a program disconnected (...)`
+/// takes it away. A program the Agent couldn't name is kept as "a program".
+pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) {
+    let first = event.lines().next().unwrap_or_default();
+    let peer = |rest: &str| rest.split(')').next().unwrap_or_default().to_owned();
+    if let Some(rest) = first.strip_prefix("a program connected (") {
+        let name = rest
+            .split_once("): ")
+            .map_or("a program", |(_, name)| name.trim());
+        programs.push((peer(rest), name.to_owned()));
+    } else if let Some(rest) = first.strip_prefix("a program disconnected (") {
+        let gone = peer(rest);
+        programs.retain(|(from, _)| *from != gone);
+    }
+}
+
+/// What the tray's light says when clicked: the radio, then which
+/// programs are using it, or that none is.
+#[must_use]
+pub fn status(model: &str, radio: &str, programs: &[(String, String)]) -> String {
+    let mut names: Vec<&str> = programs.iter().map(|(_, name)| name.as_str()).collect();
+    names.dedup();
+    let using = if names.is_empty() {
+        "No program is connected.".to_owned()
+    } else {
+        format!("Connected: {}.", names.join(", "))
+    };
+    format!("{model}{radio}\n{using}")
+}
+
 /// The text of a Yes/No box for a question.
 #[must_use]
 pub fn question_box(about: &str, yes_does: &str) -> String {
@@ -418,7 +450,7 @@ pub fn quoted(option: &str) -> Result<String, String> {
 mod tests {
     use super::{
         Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, question_box, quoted,
-        restore_menu,
+        restore_menu, status, track_programs,
     };
 
     /// Every event `lines` make, in order.
@@ -514,6 +546,36 @@ mod tests {
             classify("nothing is waiting for a yes."),
             Said::Other(_)
         ));
+    }
+
+    #[test]
+    fn says_which_programs_use_the_radio() {
+        let mut programs = Vec::new();
+        assert_eq!(
+            status(
+                "Icom IC-7300: ",
+                "14.265000 MHz DATA-USB, receiving",
+                &programs
+            ),
+            "Icom IC-7300: 14.265000 MHz DATA-USB, receiving\nNo program is connected."
+        );
+        track_programs(
+            "a program connected (127.0.0.1:61551): VarAC.exe",
+            &mut programs,
+        );
+        track_programs("a program connected (127.0.0.1:61560)", &mut programs);
+        assert_eq!(
+            status("", "receiving", &programs),
+            "receiving\nConnected: VarAC.exe, a program."
+        );
+        track_programs("a program disconnected (127.0.0.1:61551)", &mut programs);
+        track_programs("asked to tune to 14.074000 MHz: done", &mut programs);
+        assert_eq!(
+            programs,
+            vec![("127.0.0.1:61560".to_owned(), "a program".to_owned())]
+        );
+        track_programs("a program disconnected (127.0.0.1:61560)", &mut programs);
+        assert!(programs.is_empty());
     }
 
     #[test]
