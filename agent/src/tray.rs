@@ -231,17 +231,23 @@ pub enum Said {
 }
 
 impl Said {
-    /// Whether it tells the operator to do something (`->`), so it is
-    /// worth showing even when nobody asked.
+    /// What a balloon by the clock says about it when nobody asked, if
+    /// anything: only a program starting to use the radio and the radio
+    /// being lost (brian, 2026-10-30: which radio and which program is all
+    /// he needs to see). The rest is in the log; questions get a Yes/No box.
     #[must_use]
-    pub fn needs_a_look(&self) -> bool {
+    pub fn balloon(&self) -> Option<String> {
         match self {
-            Self::Program(text) | Self::Other(text) => {
-                text.lines().any(|line| line.trim_start().starts_with("->"))
-                    || text.contains("Auto mode:")
-                    || text.starts_with("Lab profile:")
+            Self::Program(text) => text
+                .lines()
+                .next()?
+                .strip_prefix("a program connected (")?
+                .split_once("): ")
+                .map(|(_, name)| format!("{} is using the radio.", name.trim())),
+            Self::Other(text) if text.starts_with("Radio lost") => {
+                text.lines().next().map(str::to_owned)
             }
-            _ => false,
+            _ => None,
         }
     }
 }
@@ -658,18 +664,35 @@ mod tests {
     }
 
     #[test]
-    fn knows_what_needs_a_look() {
-        let program = classify(
-            "asked to stop transmitting: unkeyed after 5.3 s; peak Po 100%, ALC 92%\n\
-             -> ALC went over a third of its scale.",
+    fn balloons_only_for_a_program_or_a_lost_radio() {
+        assert_eq!(
+            classify("a program connected (127.0.0.1:57447): VarAC.exe").balloon(),
+            Some("VarAC.exe is using the radio.".to_owned())
         );
-        assert!(matches!(program, Said::Program(_)));
-        assert!(program.needs_a_look());
-        assert!(!classify("a program connected (127.0.0.1:57447)").needs_a_look());
-        assert!(classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").needs_a_look());
-        assert!(!classify("Setups: kept on this computer.").needs_a_look());
-        assert!(
-            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").needs_a_look()
+        assert_eq!(
+            classify("a program connected (127.0.0.1:57447)").balloon(),
+            None
+        );
+        assert_eq!(
+            classify(
+                "asked to stop transmitting: unkeyed after 5.3 s; peak Po 100%, ALC 92%\n\
+                 -> ALC went over a third of its scale."
+            )
+            .balloon(),
+            None
+        );
+        assert_eq!(
+            classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").balloon(),
+            None
+        );
+        assert_eq!(
+            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").balloon(),
+            None
+        );
+        assert_eq!(
+            classify("Radio lost: it hasn't answered for 15 s (unplugged).\n-> Plug it in.")
+                .balloon(),
+            Some("Radio lost: it hasn't answered for 15 s (unplugged).".to_owned())
         );
     }
 
