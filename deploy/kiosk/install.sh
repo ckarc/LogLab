@@ -31,7 +31,7 @@ docker compose up -d
 
 # Keep it at the newest main by itself, on the shop link only (autoupdate.sh).
 if command -v crontab > /dev/null; then
-    { crontab -l 2> /dev/null | grep -vF "$here/autoupdate.sh"
+    { crontab -l 2> /dev/null | grep -vF "$here/autoupdate.sh" || true
       echo "*/5 * * * * $here/autoupdate.sh"; } | crontab -
     echo "Updates: checks for a newer LabLog every 5 minutes, on the shop link only."
 else
