@@ -23,6 +23,61 @@
 /// Where `station`'s output is kept, beside the Agent.
 pub const LOG_NAME: &str = "loglab-agent.log";
 
+/// The log as "Open log" shows it, newest first, in Windows' temp folder.
+pub const LOG_VIEW_NAME: &str = "loglab-agent-newest-first.txt";
+
+/// How long a line stays in the log: older lines are dropped each time the
+/// tray starts `station`.
+pub const LOG_KEEP: std::time::Duration = std::time::Duration::from_hours(14 * 24);
+
+/// The lines of `log` written since `since` (UTC text, as each line starts
+/// with): older ones are dropped. A line that doesn't start with a time
+/// goes with the line before it.
+#[must_use]
+pub fn log_since(log: &str, since: &str) -> String {
+    let mut keep = true;
+    let mut kept = String::new();
+    for line in log.lines() {
+        if let Some(time) = line
+            .get(..20)
+            .filter(|time| time.ends_with('Z') && time.as_bytes()[10] == b'T')
+        {
+            keep = time >= since;
+        }
+        if keep {
+            kept.push_str(line);
+            kept.push('\n');
+        }
+    }
+    kept
+}
+
+/// The newest lines of `log` that fit in half of `most` bytes, if `log` is
+/// longer than `most`; otherwise all of it.
+#[must_use]
+pub fn log_tail(log: &str, most: usize) -> &str {
+    if log.len() <= most {
+        return log;
+    }
+    let mut from = log.len() - most / 2;
+    while !log.is_char_boundary(from) {
+        from += 1;
+    }
+    log[from..]
+        .find('\n')
+        .map_or("", |end| &log[from + end + 1..])
+}
+
+/// `log` with its newest line first.
+#[must_use]
+pub fn newest_first(log: &str) -> String {
+    let mut lines: Vec<&str> = log.lines().collect();
+    lines.reverse();
+    let mut text = lines.join("\r\n");
+    text.push_str("\r\n");
+    text
+}
+
 /// How long the tray waits for `station` to stop after quit before it
 /// ends it.
 pub const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -184,6 +239,7 @@ impl Said {
             Self::Program(text) | Self::Other(text) => {
                 text.lines().any(|line| line.trim_start().starts_with("->"))
                     || text.contains("Auto mode:")
+                    || text.starts_with("Lab profile:")
             }
             _ => false,
         }
@@ -258,6 +314,38 @@ pub fn classify(event: &str) -> Said {
     Said::Other(event.to_owned())
 }
 
+/// Keeps `programs`, the programs connected to the radio as (where from,
+/// name), up to date with one thing `station` said: `a program connected
+/// (127.0.0.1:61551): VarAC.exe` adds one, `a program disconnected (...)`
+/// takes it away. A program the Agent couldn't name is kept as "a program".
+pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) {
+    let first = event.lines().next().unwrap_or_default();
+    let peer = |rest: &str| rest.split(')').next().unwrap_or_default().to_owned();
+    if let Some(rest) = first.strip_prefix("a program connected (") {
+        let name = rest
+            .split_once("): ")
+            .map_or("a program", |(_, name)| name.trim());
+        programs.push((peer(rest), name.to_owned()));
+    } else if let Some(rest) = first.strip_prefix("a program disconnected (") {
+        let gone = peer(rest);
+        programs.retain(|(from, _)| *from != gone);
+    }
+}
+
+/// What the tray's light says when clicked: the radio, then which
+/// programs are using it, or that none is.
+#[must_use]
+pub fn status(model: &str, radio: &str, programs: &[(String, String)]) -> String {
+    let mut names: Vec<&str> = programs.iter().map(|(_, name)| name.as_str()).collect();
+    names.dedup();
+    let using = if names.is_empty() {
+        "No program is connected.".to_owned()
+    } else {
+        format!("Connected: {}.", names.join(", "))
+    };
+    format!("{model}{radio}\n{using}")
+}
+
 /// The text of a Yes/No box for a question.
 #[must_use]
 pub fn question_box(about: &str, yes_does: &str) -> String {
@@ -277,6 +365,14 @@ pub enum Choice {
     Compare,
     /// Turn auto mode on or off.
     Auto(bool),
+    /// Enroll the radio in lab settings control, or leave it out.
+    Enroll(bool),
+    /// Put the model's Lab Stock on (after a yes), or (`true`) send the
+    /// radio's settings as a Lab Stock proposal.
+    Stock {
+        /// Send a proposal instead.
+        save: bool,
+    },
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -288,9 +384,24 @@ pub enum Choice {
     Quit,
 }
 
-/// The setups the tray offers to keep and put back, named for what the
-/// radio is set up for.
+/// The lab's profiles the tray offers to put back, named for what the
+/// radio is set up for. Locked: only a new build of the Agent changes them.
 pub const SETUPS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+
+/// The operator's own setups the tray offers to keep and put back, one
+/// beside each of the lab's.
+pub const MY_SETUPS: [&str; 5] = ["My VARA", "My FT8", "My JS8", "My fldigi", "My SSTV"];
+
+/// Every setup the tray's Restore menu offers, in its order, with the name
+/// shown and the name typed: the lab's profiles, then the operator's own.
+#[must_use]
+pub fn restore_menu() -> Vec<(String, &'static str)> {
+    SETUPS
+        .iter()
+        .map(|name| (format!("{name} (lab profile)"), *name))
+        .chain(MY_SETUPS.iter().map(|name| ((*name).to_owned(), *name)))
+        .collect()
+}
 
 impl Choice {
     /// The line typed at `station`'s console.
@@ -302,6 +413,9 @@ impl Choice {
             Self::Restore(name) => format!("restore {name}"),
             Self::Compare => "compare".to_owned(),
             Self::Auto(on) => format!("auto {}", if *on { "on" } else { "off" }),
+            Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
+            Self::Stock { save: false } => "stock".to_owned(),
+            Self::Stock { save: true } => "stock save".to_owned(),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -389,7 +503,10 @@ pub fn quoted(option: &str) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Choice, Grouper, Light, Said, classify, icon_file, question_box, quoted};
+    use super::{
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, log_since, log_tail,
+        newest_first, question_box, quoted, restore_menu, status, track_programs,
+    };
 
     /// Every event `lines` make, in order.
     fn grouped(lines: &[&str]) -> Vec<String> {
@@ -487,6 +604,60 @@ mod tests {
     }
 
     #[test]
+    fn keeps_two_weeks_of_log_newest_first() {
+        let log = "2026-10-01T00:00:00Z  old\n2026-10-01T00:00:00Z  old too\n\
+                   2026-10-29T22:48:12Z  Found: Icom IC-7300\n  continued\n\
+                   2026-10-30T00:17:11Z  radio: receiving\n";
+        let kept = log_since(log, "2026-10-16T00:31:00Z");
+        assert_eq!(
+            kept,
+            "2026-10-29T22:48:12Z  Found: Icom IC-7300\n  continued\n\
+             2026-10-30T00:17:11Z  radio: receiving\n"
+        );
+        assert_eq!(log_since(log, "2026-09-01T00:00:00Z"), log);
+        assert_eq!(log_tail(log, 1000), log);
+        assert_eq!(
+            log_tail(log, 80),
+            "2026-10-30T00:17:11Z  radio: receiving\n"
+        );
+        assert_eq!(
+            newest_first(&kept),
+            "2026-10-30T00:17:11Z  radio: receiving\r\n  continued\r\n\
+             2026-10-29T22:48:12Z  Found: Icom IC-7300\r\n"
+        );
+    }
+
+    #[test]
+    fn says_which_programs_use_the_radio() {
+        let mut programs = Vec::new();
+        assert_eq!(
+            status(
+                "Icom IC-7300: ",
+                "14.265000 MHz DATA-USB, receiving",
+                &programs
+            ),
+            "Icom IC-7300: 14.265000 MHz DATA-USB, receiving\nNo program is connected."
+        );
+        track_programs(
+            "a program connected (127.0.0.1:61551): VarAC.exe",
+            &mut programs,
+        );
+        track_programs("a program connected (127.0.0.1:61560)", &mut programs);
+        assert_eq!(
+            status("", "receiving", &programs),
+            "receiving\nConnected: VarAC.exe, a program."
+        );
+        track_programs("a program disconnected (127.0.0.1:61551)", &mut programs);
+        track_programs("asked to tune to 14.074000 MHz: done", &mut programs);
+        assert_eq!(
+            programs,
+            vec![("127.0.0.1:61560".to_owned(), "a program".to_owned())]
+        );
+        track_programs("a program disconnected (127.0.0.1:61560)", &mut programs);
+        assert!(programs.is_empty());
+    }
+
+    #[test]
     fn knows_what_needs_a_look() {
         let program = classify(
             "asked to stop transmitting: unkeyed after 5.3 s; peak Po 100%, ALC 92%\n\
@@ -497,13 +668,26 @@ mod tests {
         assert!(!classify("a program connected (127.0.0.1:57447)").needs_a_look());
         assert!(classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").needs_a_look());
         assert!(!classify("Setups: kept on this computer.").needs_a_look());
+        assert!(
+            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").needs_a_look()
+        );
     }
 
     #[test]
     fn types_what_the_menu_chose() {
-        assert_eq!(Choice::Keep("VARA").typed(), "keep VARA");
+        assert_eq!(Choice::Keep("My VARA").typed(), "keep My VARA");
+        let menu = restore_menu();
+        assert_eq!(menu.len(), 10);
+        assert_eq!(menu[0], ("VARA (lab profile)".to_owned(), "VARA"));
+        assert_eq!(menu[5], ("My VARA".to_owned(), "My VARA"));
+        for name in MY_SETUPS {
+            assert!(crate::engine::check_setup_name(name).is_ok(), "{name}");
+        }
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
+        assert_eq!(Choice::Enroll(false).typed(), "enroll off");
+        assert_eq!(Choice::Stock { save: false }.typed(), "stock");
+        assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(
             Choice::Answer {
                 number: 3,

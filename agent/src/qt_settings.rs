@@ -43,6 +43,12 @@
 //!   so turning the radio's knob wouldn't show. The settings box can't go
 //!   below 1, so 0 only comes from a file never saved from it. The Agent
 //!   sets a missing or 0 `Polling` to 1 and leaves any other alone.
+//! - `MyCall` and `MyGrid` are the call and grid square the program sends
+//!   (WSJT-X `Configuration.cpp` `read_settings`/`write_settings`; `JS8Call`
+//!   the same keys, lines 1844-1845 and 2118-2119). The settings box keeps
+//!   the grid in capitals (WSJT-X `MaidenheadLocatorValidator.cpp`,
+//!   `JS8Call` `Maidenhead.hpp`), so the Agent writes it that way. They are
+//!   written only where the Agent knows them (see `sends_as`).
 //!
 //! The maintainer decided (2026-10-27) the Agent sets these up itself, so a
 //! station works with nothing typed in, as it already does for VARA's sound
@@ -78,6 +84,10 @@ pub struct Wanted {
     pub output: Option<String>,
     /// The Agent's virtual radio.
     pub radio: SocketAddr,
+    /// The call the program sends, or `None` to leave it alone.
+    pub call: Option<String>,
+    /// The grid square the program sends, or `None` to leave it alone.
+    pub grid: Option<String>,
 }
 
 /// `value` as Qt's INI format writes a string, or `None` if it holds
@@ -150,6 +160,12 @@ pub fn with_station(text: &str, wanted: &Wanted) -> Result<(String, Vec<Change>)
     }
     if let Some(output) = &wanted.output {
         lines.push(("SoundOutName", device(output)?, output.clone()));
+    }
+    for (key, value) in [("MyCall", &wanted.call), ("MyGrid", &wanted.grid)] {
+        if let Some(value) = value {
+            let raw = encode(value).ok_or_else(|| format!("{value:?} isn't plain text"))?;
+            lines.push((key, raw, value.clone()));
+        }
     }
     lines.push(("Rig", RIG.to_owned(), RIG.to_owned()));
     let radio = wanted.radio.to_string();
@@ -228,7 +244,33 @@ mod tests {
             input: Some("CABLE Output (VB-Audio Virtual Cable)".to_owned()),
             output: Some("CABLE-A Input (VB-Audio Cable A)".to_owned()),
             radio: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
+            call: None,
+            grid: None,
         }
+    }
+
+    #[test]
+    fn sets_the_call_and_grid_only_when_known() {
+        let file = "[Configuration]\r\nMyCall=K9KSU\r\nMyGrid=EN52WA\r\n";
+        let mut here = wanted();
+        here.call = Some("W0CY".to_owned());
+        here.grid = Some("EM18CT".to_owned());
+        let (changed, diffs) =
+            with_station(file, &here).unwrap_or_else(|why| unreachable!("{why}"));
+        assert!(
+            changed.starts_with("[Configuration]\r\nMyCall=W0CY\r\nMyGrid=EM18CT\r\n"),
+            "{changed}"
+        );
+        let grid = diffs.iter().find(|change| change.key == "MyGrid");
+        assert_eq!(
+            grid.and_then(|change| change.before.as_deref()),
+            Some("EN52WA")
+        );
+        // Not known: the program's own are left alone.
+        let (kept, diffs) =
+            with_station(file, &wanted()).unwrap_or_else(|why| unreachable!("{why}"));
+        assert!(kept.contains("MyCall=K9KSU\r\nMyGrid=EN52WA\r\n"), "{kept}");
+        assert!(diffs.iter().all(|change| !change.key.starts_with("My")));
     }
 
     #[test]

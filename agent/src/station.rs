@@ -29,31 +29,36 @@
 //!    operator types `keep NAME`. `restore NAME` puts a setup back, only
 //!    after the operator types yes, only settings verified on a real radio,
 //!    and records it (Principle X).
+//! 7. With `--engine`, also carries what the programs and LabLog need from
+//!    each other (see `carrier`): each QSO the programs log goes to LabLog
+//!    through the Agent's journal, the radio's live state goes to LabLog's
+//!    entry screen, and the Agent says who LabLog will log QSOs as.
 //!
 //! Starting `station` is the operator's choice that programs on this
 //! computer may key the radio, as `--allow-transmit` is for `serve`
 //! (Principle IX).
 
+use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::time::Duration;
 
 use crate::auto_mode;
-use crate::civ_radio::{CivRadio, Port};
-use crate::civ_serial::{self, SerialPort};
+use crate::civ_serial;
 use crate::engine::{KeptRadio, KeptReading, Uplink};
-use crate::rig::{Radio, RadioError};
+use crate::rig::{RadioIdentity, Reading, Tuning};
 use crate::rigctld_server::{self, Shared, Source};
 use crate::rigdef::{Definition, SettingSummary};
+use crate::serial_radio::{self, SerialRadio};
 use crate::settings_record::Record;
 use crate::setups::Setups;
-use crate::{rigdef, settings_record};
+use crate::{enrollment, profiles, program_id, rigdef, settings_record};
 
 /// The radio, found and checked.
-struct Found<P: Port> {
-    radio: CivRadio<P>,
+struct Found {
+    radio: Box<dyn SerialRadio>,
     port: String,
     serial: Option<String>,
 }
@@ -62,11 +67,10 @@ struct Found<P: Port> {
 /// looks like a known radio's and answers as one. On Windows, a radio
 /// plugged in with no driver for its USB serial bridge gets one first (see
 /// `driver`).
-fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found<SerialPort>, String> {
+fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     let definitions = rigdef::built_in()?;
     if let Some(port) = port {
-        let opened = SerialPort::open(port)?;
-        let radio = CivRadio::find(opened, &definitions).map_err(|e| e.to_string())?;
+        let radio = serial_radio::find(port, serial_radio::usb_ids(port), &definitions)?;
         return Ok(Found {
             radio,
             port: port.to_owned(),
@@ -92,9 +96,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found<SerialPort>, S
     }
     let mut tried = Vec::new();
     for candidate in candidates {
-        let answered = SerialPort::open(&candidate.port).and_then(|opened| {
-            CivRadio::find(opened, &definitions).map_err(|error: RadioError| error.to_string())
-        });
+        let answered = serial_radio::find(&candidate.port, Some(candidate.ids), &definitions);
         match answered {
             Ok(radio) => {
                 return Ok(Found {
@@ -121,7 +123,7 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found<SerialPort>> {
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
         match find(port, running) {
@@ -155,7 +157,7 @@ pub(crate) fn records_folder() -> std::path::PathBuf {
 /// Reads the radio's settings, keeps the first reading of this radio as its
 /// as-received record, and says what changed since and what in them stops
 /// digital modes working. Returns the reading.
-fn check_settings<P: Port>(radio: &mut CivRadio<P>, serial: Option<&str>) -> Record {
+fn check_settings(radio: &mut dyn SerialRadio, serial: Option<&str>) -> Record {
     let definition = radio.definition().clone();
     let record = settings_record::read(
         radio,
@@ -350,6 +352,14 @@ enum Typed {
     Quit,
     /// Turn auto mode on or off on this computer, or (`None`) say which.
     Auto(Option<bool>),
+    /// Enroll this radio in lab settings control or leave it out, or
+    /// (`None`) say which.
+    Enroll(Option<bool>),
+    /// Show what putting the model's Lab Stock on would change, and wait
+    /// for a yes.
+    Stock,
+    /// Send the radio's settings to the Engine as a Lab Stock proposal.
+    StockSave,
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -391,6 +401,17 @@ fn typed(line: &str) -> Result<Typed, String> {
             "off" => Ok(Typed::Auto(Some(false))),
             _ => Err("auto takes on or off, like auto on".to_owned()),
         },
+        ("enroll", rest) => match rest.to_ascii_lowercase().as_str() {
+            "" => Ok(Typed::Enroll(None)),
+            "on" => Ok(Typed::Enroll(Some(true))),
+            "off" => Ok(Typed::Enroll(Some(false))),
+            _ => Err("enroll takes on or off, like enroll on".to_owned()),
+        },
+        ("stock", rest) => match rest.to_ascii_lowercase().as_str() {
+            "" => Ok(Typed::Stock),
+            "save" => Ok(Typed::StockSave),
+            _ => Err("stock takes save or nothing: stock, or stock save".to_owned()),
+        },
         ("help" | "?", "") => Ok(Typed::Help),
         _ => Err(format!("unknown command {line:?}")),
     }
@@ -401,7 +422,10 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          say), compare to see what differs from each setup, restore NAME to put \
                          one back, show NAME to read a setting (show DATA MOD, say), fix to \
                          fix what stops a job working, auto on to let the Agent make its \
-                         fixes without asking, or quit to stop the Agent.";
+                         fixes without asking, enroll on to put the lab's profiles on this \
+                         radio as programs start, stock to put the lab's Lab Stock on, stock \
+                         save to send the radio's settings as a Lab Stock proposal, or quit to \
+                         stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -447,6 +471,173 @@ fn restore_plan(
         now,
         definition,
     ))
+}
+
+/// What putting the lab's profile `name` on would change, if the lab has
+/// one by that name for this radio's model (saved in LabLog, as the copy in
+/// `records` has it, or built in): `restore VARA` puts the lab's VARA
+/// profile on, after a yes.
+fn lab_plan(
+    records: &std::path::Path,
+    now: &Record,
+    name: &str,
+    definition: &Definition,
+) -> Option<crate::restore::Plan> {
+    let profile = profiles::current(records, definition, name)?;
+    Some(crate::restore::plan(
+        &format!("{} lab profile", profile.name),
+        profile.kept(definition),
+        now,
+        definition,
+    ))
+}
+
+/// Why `keep NAME` is refused, when NAME is one of the lab's profiles for
+/// this radio's model: those are locked, and only an administrator changes
+/// them, in LabLog (brian's decisions, 2026-10-28 and 2026-10-30).
+fn lab_locked(records: &std::path::Path, definition: &Definition, name: &str) -> Option<String> {
+    let profile = profiles::current(records, definition, name)?;
+    Some(format!(
+        "setup {name} not kept: {} is the lab's locked profile for the {}, and only an \
+         administrator changes it, in LabLog (Menu, Admin, Lab Profiles: Read this radio, then \
+         Update the default).\n-> Keep your own under another name, like keep My {}; restore \
+         My {} puts it back.",
+        profile.name, definition.model, profile.name, profile.name
+    ))
+}
+
+/// What `stock` says: what putting the model's Lab Stock on would change,
+/// left waiting for a yes, or why it can't.
+fn stock(
+    setups: &dyn Setups,
+    definition: &Definition,
+    desk: &Desk,
+    now: Result<Record, String>,
+) -> String {
+    match now.and_then(|now| {
+        setups
+            .lab_stock(&now.maker, &now.model)
+            .map(|stock| (now, stock))
+    }) {
+        Ok((now, Some(stock))) => {
+            stock_offer(desk, crate::lab_stock::plan(&stock, &now, definition))
+        }
+        Ok((now, None)) => format!(
+            "Lab Stock: none approved for the {} yet, so nothing changed.\n-> stock save \
+             sends this radio's settings as a proposal; an administrator approves it in \
+             LabLog (Admin, Lab Stock).",
+            now.model
+        ),
+        Err(why) => format!("Lab Stock not put on: {why}"),
+    }
+}
+
+/// What `stock save` says: what sending the radio's settings as a Lab
+/// Stock proposal takes, left waiting for a yes, since reading each
+/// filter's width means choosing each filter in turn.
+fn stock_save(desk: &Desk, definition: &Definition, now: Result<Record, String>) -> String {
+    let record = match now {
+        Ok(record) => record,
+        Err(why) => return format!("Lab Stock proposal not sent: {why}"),
+    };
+    let settings = crate::lab_stock::checked(&record, definition);
+    if settings.is_empty() {
+        return format!(
+            "Lab Stock: nothing sent; none of the {}'s settings has been checked on a real \
+             radio yet, so a Lab Stock would put nothing on.",
+            record.model
+        );
+    }
+    let number = desk.ask(Asked::StockSave);
+    let about = if crate::filter_widths::can_choose(definition) {
+        format!(
+            "Lab Stock: sending this radio's {} settings as a proposal also reads each filter's \
+             width. The Agent chooses FIL1, FIL2 and FIL3 in turn on the mode the radio is on, \
+             then puts it back on the filter it is on now. Nothing else changes.",
+            settings.len()
+        )
+    } else {
+        format!(
+            "Lab Stock: the Agent reads this radio's {} settings and sends them as a proposal; \
+             it can't choose each filter on the {}, so filter widths other than the selected \
+             one aren't in it. Nothing on the radio changes.",
+            settings.len(),
+            record.model
+        )
+    };
+    let lines = [
+        about,
+        numbered(
+            "-> Type yes to read them and send the proposal; anything else sends nothing.",
+            number,
+        ),
+    ];
+    lines.join("\n")
+}
+
+/// Reads the radio's settings and each filter's width and sends them to
+/// the Engine as a Lab Stock proposal, after the operator's yes. It changes
+/// nothing until an administrator approves it.
+fn stock_send(
+    shared: &Shared,
+    setups: &dyn Setups,
+    definition: &Definition,
+    serial: &str,
+) -> String {
+    let read = shared
+        .settings(|radio| {
+            let record = settings_record::read(
+                radio,
+                Some(serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            );
+            let widths = if crate::filter_widths::can_choose(radio.definition()) {
+                crate::filter_widths::read(radio)?
+            } else {
+                Vec::new()
+            };
+            Ok::<_, String>((record, widths))
+        })
+        .and_then(|read| read);
+    let (record, widths) = match read {
+        Ok(read) => read,
+        Err(why) => return format!("Lab Stock proposal not sent: {why}"),
+    };
+    let settings = crate::lab_stock::from_record(&record, definition, &widths);
+    match setups.propose_lab_stock(&record, &settings) {
+        Ok(number) => format!(
+            "Lab Stock: sent the radio's {} settings{} to the Engine as proposal #{number} for \
+             the {}. It changes nothing until an administrator approves it in LabLog (Admin, \
+             Lab Stock).",
+            settings.len(),
+            if widths.is_empty() {
+                ""
+            } else {
+                ", with FIL1, FIL2 and FIL3's widths (the radio is back on the filter it was on),"
+            },
+            record.model
+        ),
+        Err(why) => format!("Lab Stock proposal not sent: {why}"),
+    }
+}
+
+/// Shows what putting the Lab Stock on would change and waits for the
+/// operator's yes: always a yes, even in auto mode (Principle X, first
+/// exception).
+fn stock_offer(desk: &Desk, plan: crate::restore::Plan) -> String {
+    let mut lines = plan.lines();
+    let count = plan.put.len() + plan.filters.len();
+    if count == 0 {
+        return lines.join("\n");
+    }
+    let ask = format!(
+        "-> Type yes to put {count} Lab Stock setting{} on the radio; anything else leaves it as it is.",
+        if count == 1 { "" } else { "s" }
+    );
+    let number = desk.wait_for_yes(plan);
+    lines.push(numbered(&ask, number));
+    lines.join("\n")
 }
 
 /// Puts a confirmed plan back on the radio and records it beside the
@@ -542,12 +733,28 @@ fn start_console(
     if desk.auto.load(Ordering::SeqCst) {
         println!("Auto mode: on, so the Agent makes its fixes without asking (auto off asks).");
     }
+    let enrolled = enrollment::load(&enrollment::path(&records_folder(), &desk.serial));
+    let lab_model = profiles::any_here(&records_folder(), &definition);
     let plan = crate::restore::fixes(record, &definition);
-    if !plan.put.is_empty() {
+    if lab_model && enrolled.is_none() {
+        // One question waits at a time, so the fix offer waits until fix
+        // is typed; enrolled, the lab's profile sets the rest anyway.
+        let number = desk.ask(Asked::Enroll);
         println!(
-            "{}",
-            desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
+            "{}\n{}",
+            enroll_about(&record.model, &desk.serial),
+            numbered(ENROLL_ASK, number)
         );
+    } else {
+        if lab_model {
+            println!("{}", enrollment::said(enrolled));
+        }
+        if !plan.put.is_empty() {
+            println!(
+                "{}",
+                desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
+            );
+        }
     }
     let (lines, typed_lines) = mpsc::channel();
     if let Ok(mut slot) = typing.to_console.lock() {
@@ -567,9 +774,21 @@ fn start_console(
     desk
 }
 
+/// What a question asks the operator.
+enum Asked {
+    /// To make this change to the radio.
+    Change(crate::restore::Plan),
+    /// Whether the radio is one of the lab's, to enroll in lab settings
+    /// control.
+    Enroll,
+    /// To read each filter's width and send the radio's settings as a Lab
+    /// Stock proposal.
+    StockSave,
+}
+
 /// What waits for the operator's yes, and its question number: shown last,
 /// taken by the next line they type, whatever it is (Principle X).
-type Waiting = Arc<Mutex<Option<(u32, crate::restore::Plan)>>>;
+type Waiting = Arc<Mutex<Option<(u32, Asked)>>>;
 
 /// The operator's side of the Agent: what waits for their yes, how many
 /// questions have been asked, whether auto mode is on, and the radio's
@@ -618,12 +837,43 @@ impl Desk {
     /// Leaves `plan` waiting for the operator's yes, in place of anything
     /// that was, and returns its question number.
     fn wait_for_yes(&self, plan: crate::restore::Plan) -> u32 {
+        self.ask(Asked::Change(plan))
+    }
+
+    /// Leaves `asked` waiting for the operator's answer, in place of
+    /// anything that was, and returns its question number.
+    fn ask(&self, asked: Asked) -> u32 {
         let number = self.asked.fetch_add(1, Ordering::SeqCst) + 1;
         if let Ok(mut slot) = self.waiting.lock() {
-            *slot = Some((number, plan));
+            *slot = Some((number, asked));
         }
         number
     }
+
+    /// Enrolls this radio in lab settings control, or leaves it out, and
+    /// says which it is.
+    fn enroll(&self, on: bool) -> String {
+        let path = enrollment::path(&records_folder(), &self.serial);
+        match enrollment::save(&path, on) {
+            Ok(()) => enrollment::said(Some(on)),
+            Err(error) => format!("Lab profile: enrollment not changed: {error}"),
+        }
+    }
+}
+
+/// The question asked once of each radio of a model the lab has profiles
+/// for, until it is answered.
+const ENROLL_ASK: &str = "-> Type yes to enroll it in lab settings control; no leaves it \
+                          alone for good (enroll on changes that later).";
+
+/// What the question to enroll a radio says first.
+fn enroll_about(model: &str, serial: &str) -> String {
+    format!(
+        "Lab profile: is this {model} (serial {serial}) a FieldLab radio? Enrolled, it gets \
+         the lab's profile for each program put on as that program starts (VARA for VarAC, \
+         say). Left out (no), such as a visitor's radio, the Agent never changes it on its own; \
+         the tray's Lab radio menu changes that later."
+    )
 }
 
 /// How to say yes, with the question's number, so an answer given to one
@@ -688,6 +938,8 @@ fn drive_offer(
     if peak.tuning {
         return None;
     }
+    // Without ALC on its scale there is nothing to go by.
+    let alc = peak.alc?;
     let meters = definition.meters.as_ref()?;
     let id = meters.drive.as_ref()?;
     let setting = definition.settings.iter().find(|s| &s.id == id)?;
@@ -702,16 +954,16 @@ fn drive_offer(
         .and_then(|id| definition.settings.iter().find(|s| &s.id == id))
         .and_then(|power| level_percent(shared, power))
         .map(|(_, percent)| percent);
-    let (target, why) = if peak.alc > rigctld_server::ALC_HIGHEST {
+    let (target, why) = if alc > rigctld_server::ALC_HIGHEST {
         tried.too_high = Some(now);
         let step = now.saturating_sub(DRIVE_STEP);
         let target = match tried.too_low {
             Some(floor) if step <= floor && floor < now => (floor + now).div_ceil(2),
             _ => step,
         };
-        (target, format!("ALC peaked at {}% of its scale", peak.alc))
+        (target, format!("ALC peaked at {alc}% of its scale"))
     } else if let Some(set) = set_power
-        && peak.alc <= ALC_LOW
+        && alc <= ALC_LOW
         && peak.power >= POWER_SOME
         && peak.readings >= READINGS_FOR_LOW
         && u32::from(peak.power) * 10 < set * POWER_SHORT_TENTHS
@@ -725,8 +977,8 @@ fn drive_offer(
         (
             target,
             format!(
-                "Po reached {}% with the radio set to {set}% and ALC at {}%",
-                peak.power, peak.alc
+                "Po reached {}% with the radio set to {set}% and ALC at {alc}%",
+                peak.power
             ),
         )
     } else {
@@ -754,6 +1006,7 @@ fn drive_offer(
             to,
         }],
         kept_back: Vec::new(),
+        filters: Vec::new(),
     };
     let about = format!(
         "{why}: {} {} from {} to {}.",
@@ -878,38 +1131,51 @@ fn after_unkey<'a>(
 /// still the one waiting. Anything else leaves the radio as it is. Returns
 /// whether the line was used up (a yes, or a no), or is still to be done
 /// as typed.
-fn answer_waiting(shared: &Shared, desk: &Desk, typed: &Result<Typed, String>) -> bool {
+fn answer_waiting(
+    shared: &Shared,
+    desk: &Desk,
+    typed: &Result<Typed, String>,
+    setups: &dyn Setups,
+    definition: &Definition,
+) -> bool {
     let pending = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
-    let Some((number, plan)) = pending else {
+    let Some((number, asked)) = pending else {
         return false;
     };
-    match typed {
-        Ok(Typed::Yes(None)) => {
-            crate::print_event(&restore(shared, &plan, &desk.serial));
-            true
-        }
-        Ok(Typed::Yes(Some(answered))) if *answered == number => {
-            crate::print_event(&restore(shared, &plan, &desk.serial));
-            true
-        }
+    let yes = match typed {
+        Ok(Typed::Yes(None)) => true,
+        Ok(Typed::Yes(Some(answered))) if *answered == number => true,
         Ok(Typed::Yes(Some(answered))) => {
             crate::print_event(&format!(
                 "question {answered} was replaced by question {number}; nothing changed."
             ));
             if let Ok(mut slot) = desk.waiting.lock() {
-                slot.get_or_insert((number, plan));
+                slot.get_or_insert((number, asked));
             }
-            true
+            return true;
         }
-        _ => {
-            crate::print_event(&if plan.fixes {
-                "nothing fixed; the radio is as it was.".to_owned()
-            } else {
-                format!("setup {} not put back; nothing changed.", plan.setup)
-            });
-            matches!(typed, Ok(Typed::No))
+        _ => false,
+    };
+    let no = matches!(typed, Ok(Typed::No));
+    crate::print_event(&match (asked, yes) {
+        (Asked::Change(plan), true) => restore(shared, &plan, &desk.serial),
+        (Asked::Change(plan), false) if plan.fixes => {
+            "nothing fixed; the radio is as it was.".to_owned()
         }
-    }
+        (Asked::Change(plan), false) => {
+            format!("setup {} not put back; nothing changed.", plan.setup)
+        }
+        (Asked::StockSave, true) => stock_send(shared, setups, definition, &desk.serial),
+        (Asked::StockSave, false) => "Lab Stock proposal not sent; nothing changed.".to_owned(),
+        (Asked::Enroll, true) => desk.enroll(true),
+        (Asked::Enroll, false) if no => desk.enroll(false),
+        (Asked::Enroll, false) => {
+            "Lab profile: not enrolled yet, so the Agent leaves the radio alone; it asks again \
+             next time it starts (enroll on enrolls it now)."
+                .to_owned()
+        }
+    });
+    yes || no
 }
 
 /// Answers the operator's commands, from what they type, until the Agent
@@ -934,7 +1200,7 @@ fn console(
     };
     for line in lines {
         let typed = typed(&line);
-        if answer_waiting(shared, desk, &typed) {
+        if answer_waiting(shared, desk, &typed, setups, definition) {
             continue;
         }
         let said = match typed {
@@ -943,9 +1209,12 @@ fn console(
             Ok(Typed::Yes(_) | Typed::No) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
                 match read().and_then(|now| {
-                    setups
-                        .kept(&now.maker, &now.model, serial)
-                        .map(|kept| restore_plan(&now, &kept, &name, definition))
+                    match lab_plan(&records_folder(), &now, &name, definition) {
+                        Some(plan) => Ok(Ok(plan)),
+                        None => setups
+                            .kept(&now.maker, &now.model, serial)
+                            .map(|kept| restore_plan(&now, &kept, &name, definition)),
+                    }
                 }) {
                     Ok(Ok(plan)) => {
                         let mut lines = plan.lines();
@@ -966,6 +1235,13 @@ fn console(
             Ok(Typed::Help) => TYPE_HELP.to_owned(),
             Ok(Typed::Auto(None)) => auto_mode::said(desk.auto.load(Ordering::SeqCst)),
             Ok(Typed::Auto(Some(on))) => desk.set_auto(on),
+            Ok(Typed::Enroll(None)) => enrollment::said(enrollment::load(&enrollment::path(
+                &records_folder(),
+                serial,
+            ))),
+            Ok(Typed::Enroll(Some(on))) => desk.enroll(on),
+            Ok(Typed::Stock) => stock(setups, definition, desk, read()),
+            Ok(Typed::StockSave) => stock_save(desk, definition, read()),
             Ok(Typed::Show(name)) => show(shared, definition, &name),
             Ok(Typed::Fix) => match read() {
                 Ok(now) => {
@@ -986,6 +1262,9 @@ fn console(
                 Err(why) => format!("not checked: {why}"),
             },
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
+            Ok(Typed::Keep(name)) if lab_locked(&records_folder(), definition, &name).is_some() => {
+                lab_locked(&records_folder(), definition, &name).unwrap_or_default()
+            }
             Ok(Typed::Keep(name)) => match read() {
                 Ok(record) => match setups.keep(&record, &name) {
                     Ok(()) => format!(
@@ -1059,7 +1338,7 @@ fn vara(station: &crate::audio_windows::Station) {
         Ok(true) => {
             println!(
                 "VARA: running, so its sound devices were left alone (it keeps its settings \
-                 while it runs).\n  -> Close VARA, then start the Agent again."
+                 while it runs).\n  -> Close VARA: the Agent sets it up as soon as it closes."
             );
             return;
         }
@@ -1107,6 +1386,741 @@ fn vara(station: &crate::audio_windows::Station) {
     }
 }
 
+/// How the Agent tells which program connected: its process id and
+/// executable, from where it connected and where the Agent listens.
+type Identify = Box<dyn Fn(SocketAddr, SocketAddr) -> Result<(u32, String), String> + Send + Sync>;
+
+/// How long a program's first transmission may wait for its lab profile
+/// to go on.
+const PROFILE_WAIT: Duration = Duration::from_secs(15);
+
+/// The radio this `station` serves, and what the lab's profiles need to
+/// know about it.
+#[derive(Clone)]
+struct LabRadio {
+    shared: Arc<Shared>,
+    serial: String,
+    definition: Definition,
+    /// The records folder, where a radio's enrollment is kept.
+    records: std::path::PathBuf,
+    /// How many profiles are going on now; a program's transmission waits
+    /// until none are.
+    going_on: Arc<(Mutex<u32>, Condvar)>,
+    /// The radio's settings as the Agent last knew them: read as the
+    /// station started, with each profile's settings as it put them on.
+    /// What differs from this was changed on the radio since, which LabLog
+    /// shows when an administrator reads the radio for a profile.
+    known: Arc<Mutex<Option<Record>>>,
+}
+
+/// The radio as programs reach it: the shared radio, with the lab's
+/// profile for a program put on, once, as that program starts, on a radio
+/// enrolled in lab settings control (Principle X, second exception). The
+/// first program to start keeps the radio: a second one starting while it
+/// is connected changes nothing.
+struct Programs {
+    lab: LabRadio,
+    /// Whether the radio has a serial number to enroll it by.
+    enrollable: bool,
+    identify: Identify,
+    /// Each connected program's process, where it could be told.
+    connected: Mutex<HashMap<SocketAddr, u32>>,
+    /// The processes whose profile has gone on: once per program start.
+    started: Mutex<HashSet<u32>>,
+}
+
+impl Programs {
+    /// The radio `station` serves, with serial number `serial` if known,
+    /// telling programs apart the way Windows can.
+    fn for_station(shared: &Arc<Shared>, serial: Option<&str>, definition: &Definition) -> Self {
+        Self::new(
+            LabRadio {
+                shared: Arc::clone(shared),
+                serial: serial.unwrap_or_default().to_owned(),
+                definition: definition.clone(),
+                records: records_folder(),
+                going_on: Arc::new((Mutex::new(0), Condvar::new())),
+                known: Arc::new(Mutex::new(None)),
+            },
+            serial.is_some(),
+            Box::new(program_id::identify),
+        )
+    }
+
+    fn new(lab: LabRadio, enrollable: bool, identify: Identify) -> Self {
+        Self {
+            lab,
+            enrollable,
+            identify,
+            connected: Mutex::new(HashMap::new()),
+            started: Mutex::new(HashSet::new()),
+        }
+    }
+
+    /// Why the lab's profile for program `name` (executable `exe`,
+    /// process `pid`) doesn't go on now, if it doesn't.
+    fn not_now(&self, pid: u32, exe: &str, name: &str) -> Option<String> {
+        let started = self.started.lock().ok()?;
+        if started.contains(&pid) {
+            return Some(String::new());
+        }
+        let first = self.connected.lock().ok().and_then(|connected| {
+            connected
+                .values()
+                .find(|other| **other != pid && started.contains(other))
+                .copied()
+        });
+        drop(started);
+        if let Some(first) = first {
+            return Some(format!(
+                "Lab profile: {exe} ({name}) started while another program (process {first}) \
+                 has the radio; the first program keeps it, so nothing was changed."
+            ));
+        }
+        let identity = self.lab.shared.identity();
+        let enrolled = self.enrollable
+            && enrollment::load(&enrollment::path(&self.lab.records, &self.lab.serial))
+                == Some(true);
+        if !enrolled {
+            return Some(format!(
+                "Lab profile: {exe} is {name}, but this radio isn't enrolled in lab settings \
+                 control, so the Agent left it as it is."
+            ));
+        }
+        if profiles::current(&self.lab.records, &self.lab.definition, name).is_none() {
+            return Some(format!(
+                "Lab profile: {exe} is {name}; the lab has no {name} profile for the {} yet, so \
+                 the radio is as it was.",
+                identity.model
+            ));
+        }
+        None
+    }
+}
+
+impl LabRadio {
+    /// Puts the lab's profile for program `name` on the radio, says what
+    /// became of it, and records it like any restore.
+    fn put_on(&self, name: &str, exe: &str) -> String {
+        let Some(profile) = profiles::current(&self.records, &self.definition, name) else {
+            return format!(
+                "Lab profile: no {name} profile for the {}.",
+                self.definition.model
+            );
+        };
+        let ids: Vec<&str> = profile.ids().collect();
+        let serial = self.serial.as_str();
+        let now = self.shared.settings(|radio| {
+            settings_record::read_these(
+                radio,
+                &ids,
+                Some(serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        });
+        let now = match now {
+            Ok(now) => now,
+            Err(why) => return format!("Lab profile: {name} not put on for {exe}: {why}"),
+        };
+        let plan = crate::restore::plan(
+            &format!("{name} lab profile"),
+            profile.kept(&self.definition),
+            &now,
+            &self.definition,
+        );
+        let head = format!(
+            "Lab profile: {exe} started, so the {name} profile goes on ({}).",
+            profile.origin()
+        );
+        if plan.put.is_empty() && plan.kept_back.is_empty() {
+            return format!("{head}\nThe radio already matches it; nothing changed.");
+        }
+        let mut lines = vec![head];
+        lines.extend(plan.lines());
+        if !plan.put.is_empty() {
+            lines.push(restore(&self.shared, &plan, serial));
+            self.learn(&ids);
+        }
+        lines.join("\n")
+    }
+
+    /// Reads the settings `ids` again into what the Agent knows of the
+    /// radio, after it changed them.
+    fn learn(&self, ids: &[&str]) {
+        let read = self.shared.settings(|radio| {
+            settings_record::read_these(
+                radio,
+                ids,
+                Some(&self.serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        });
+        let (Ok(read), Ok(mut known)) = (read, self.known.lock()) else {
+            return;
+        };
+        if let Some(known) = known.as_mut() {
+            for entry in read.settings {
+                if let Some(old) = known.settings.iter_mut().find(|old| old.id == entry.id) {
+                    *old = entry;
+                }
+            }
+        }
+    }
+
+    /// Reads the whole radio for LabLog, which asked for it to make the
+    /// lab's `program` profile: every setting the Agent may write, the
+    /// profile it puts on now, and what changed since it last knew. Changes
+    /// nothing on the radio.
+    fn read_for_lablog(&self, program: &str) -> crate::engine::ReadAnswer {
+        let failed = |problem: String| crate::engine::ReadAnswer::Failed { problem };
+        let read = self.shared.settings(|radio| {
+            settings_record::read(
+                radio,
+                Some(&self.serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        });
+        let record = match read {
+            Ok(record) => record,
+            Err(why) => return failed(why),
+        };
+        let settings = crate::lab_stock::checked(&record, &self.definition);
+        if settings.is_empty() {
+            return failed(format!(
+                "none of the {}'s settings has been checked on a real radio yet, so a profile \
+                 would put nothing on",
+                record.model
+            ));
+        }
+        let profile = profiles::current(&self.records, &self.definition, program);
+        let changed = self.known.lock().ok().and_then(|known| {
+            known.as_ref().map(|known| {
+                settings
+                    .iter()
+                    .filter(|now| {
+                        known
+                            .settings
+                            .iter()
+                            .find(|old| old.id == now.id)
+                            .is_some_and(|old| old.bytes.as_deref() != Some(now.bytes.as_str()))
+                    })
+                    .map(|now| now.id.clone())
+                    .collect::<Vec<_>>()
+            })
+        });
+        crate::engine::ReadAnswer::Read {
+            maker: record.maker.clone(),
+            model: record.model.clone(),
+            serial: self.serial.clone(),
+            settings,
+            profile: profile
+                .as_ref()
+                .map(|p| p.shown(&self.definition))
+                .unwrap_or_default(),
+            profile_from: profile
+                .as_ref()
+                .map_or_else(|| "none yet".to_owned(), profiles::Profile::origin),
+            changed: changed.unwrap_or_default(),
+        }
+    }
+
+    /// Waits, up to [`PROFILE_WAIT`], until no profile is going on.
+    /// Returns whether none is.
+    fn ready(&self) -> bool {
+        let (count, done) = &*self.going_on;
+        let Ok(count) = count.lock() else {
+            return true;
+        };
+        done.wait_timeout_while(count, PROFILE_WAIT, |count| *count > 0)
+            .is_ok_and(|(count, _)| *count == 0)
+    }
+
+    /// Counts a profile going on (`on`), or done.
+    fn going(&self, on: bool) {
+        let (count, done) = &*self.going_on;
+        if let Ok(mut count) = count.lock() {
+            *count = if on {
+                count.saturating_add(1)
+            } else {
+                count.saturating_sub(1)
+            };
+        }
+        done.notify_all();
+    }
+}
+
+impl Source for Programs {
+    fn identity(&self) -> RadioIdentity {
+        self.lab.shared.identity()
+    }
+
+    fn reading(&self) -> Result<Reading, String> {
+        self.lab.shared.reading()
+    }
+
+    fn can_tune(&self) -> bool {
+        self.lab.shared.can_tune()
+    }
+
+    fn tune(&self, tuning: Tuning) -> Result<(), String> {
+        self.lab.shared.tune(tuning)
+    }
+
+    fn can_transmit(&self) -> bool {
+        self.lab.shared.can_transmit()
+    }
+
+    fn transmit(&self, program: SocketAddr, on: bool) -> Result<(), String> {
+        if on && !self.lab.ready() {
+            return Err(
+                "the lab profile is still going on the radio; transmit again in a moment"
+                    .to_owned(),
+            );
+        }
+        self.lab.shared.transmit(program, on)
+    }
+
+    fn connected(&self, program: SocketAddr, server: SocketAddr) {
+        let (pid, exe) = match (self.identify)(program, server) {
+            Ok(found) => found,
+            Err(why) => {
+                self.note(&format!(
+                    "Lab profile: couldn't tell which program connected from {program} ({why}), \
+                     so the radio is as it was."
+                ));
+                return;
+            }
+        };
+        // The executable's own name, logged each time: the names the Agent
+        // knows programs by are checked against these.
+        let short = exe.rsplit(['\\', '/']).next().unwrap_or(&exe).to_owned();
+        let Some(name) = program_id::setup_for(&exe) else {
+            self.note(&format!(
+                "Lab profile: {short} connected ({exe}); the lab has no profile for it, so the \
+                 radio is as it was."
+            ));
+            return;
+        };
+        let why_not = self.not_now(pid, &short, name);
+        if let Ok(mut connected) = self.connected.lock() {
+            connected.insert(program, pid);
+        }
+        match why_not {
+            Some(why) if why.is_empty() => {}
+            Some(why) => self.note(&why),
+            None => {
+                if let Ok(mut started) = self.started.lock() {
+                    started.insert(pid);
+                }
+                // Counted before the program is answered at all, so its
+                // first transmission waits for the profile.
+                self.lab.going(true);
+                let lab = self.lab.clone();
+                std::thread::spawn(move || {
+                    let said = lab.put_on(name, &short);
+                    lab.shared.note(&said);
+                    lab.going(false);
+                });
+            }
+        }
+    }
+
+    fn gone(&self, program: SocketAddr) {
+        if let Ok(mut connected) = self.connected.lock() {
+            connected.remove(&program);
+        }
+        self.lab.shared.gone(program);
+    }
+
+    fn watch(&self) {
+        self.lab.shared.watch();
+    }
+
+    fn note(&self, event: &str) {
+        self.lab.shared.note(event);
+    }
+}
+
+/// How often the Agent asks LabLog whether an administrator wants its
+/// radio read for a lab profile.
+const READS_EVERY: Duration = Duration::from_secs(5);
+/// How often the Agent fetches the lab profiles saved in LabLog.
+const PROFILES_EVERY: Duration = Duration::from_secs(30);
+
+/// The Agent's side of LabLog's Lab Profiles page, on its own thread while
+/// the station runs with `--engine`: it keeps a copy of the profiles saved
+/// there, and reads the radio when an administrator asks. Dropping it
+/// stops it.
+struct ProfileDesk {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ProfileDesk {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Starts the Agent's side of LabLog's Lab Profiles page for `lab`.
+fn start_profile_desk(uplink: Uplink, lab: LabRadio) -> ProfileDesk {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let mut fetched: Option<std::time::Instant> = None;
+        let mut asked: Option<std::time::Instant> = None;
+        let mut said: Option<String> = None;
+        while !flag.load(Ordering::SeqCst) {
+            if fetched.is_none_or(|at| at.elapsed() >= PROFILES_EVERY) {
+                fetched = Some(std::time::Instant::now());
+                fetch_profiles(&uplink, &lab, &mut said);
+            }
+            if asked.is_none_or(|at| at.elapsed() >= READS_EVERY) {
+                asked = Some(std::time::Instant::now());
+                answer_reads(&uplink, &lab);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+    ProfileDesk {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+/// Keeps a copy of the profiles saved in LabLog for the radio's model, and
+/// says when one changes. `said` is the last problem said, so it is said
+/// once.
+fn fetch_profiles(uplink: &Uplink, lab: &LabRadio, said: &mut Option<String>) {
+    let definition = &lab.definition;
+    let saved = match uplink.lab_profiles(&definition.maker, &definition.model) {
+        Ok(saved) => saved,
+        Err(error) => {
+            let why = format!(
+                "Lab profile: couldn't hear from LabLog ({error}), so programs get the {} \
+                 profiles last heard from it, or the Agent's own.",
+                definition.model
+            );
+            if said.as_deref() != Some(why.as_str()) {
+                lab.shared.note(&why);
+                *said = Some(why);
+            }
+            return;
+        }
+    };
+    *said = None;
+    let path = profiles::saved_path(&lab.records, &definition.maker, &definition.model);
+    let before = profiles::load_saved(&path);
+    if before == saved {
+        return;
+    }
+    if let Err(why) = profiles::keep_saved(&path, &saved) {
+        lab.shared.note(&format!("Lab profile: {why}"));
+        return;
+    }
+    for profile in &saved {
+        if before.contains(profile) {
+            continue;
+        }
+        let said = if profiles::from_saved(profile, definition).is_some() {
+            format!(
+                "Lab profile: LabLog's {} profile for the {} is version #{}, saved by {} at {}; \
+                 it goes on as {} starts from now on.",
+                profile.program,
+                definition.model,
+                profile.id,
+                profile.saved_by,
+                profile.saved_at,
+                profile.program
+            )
+        } else {
+            format!(
+                "Lab profile: LabLog's {} profile for the {} (version #{}) has a setting this \
+                 Agent may not write, so it isn't used; the Agent's own is.",
+                profile.program, definition.model, profile.id
+            )
+        };
+        lab.shared.note(&said);
+    }
+}
+
+/// Reads the radio for each request waiting in LabLog, and answers it.
+fn answer_reads(uplink: &Uplink, lab: &LabRadio) {
+    let Ok(asked) = uplink.profile_reads() else {
+        return;
+    };
+    for ask in asked {
+        let answer = lab.read_for_lablog(&ask.program);
+        let said = match &answer {
+            crate::engine::ReadAnswer::Read { settings, .. } => format!(
+                "Lab profile: LabLog asked for this radio's settings, for the {} profile; read \
+                 {} and sent them. Nothing on the radio changed.",
+                ask.program,
+                settings.len()
+            ),
+            crate::engine::ReadAnswer::Failed { problem } => format!(
+                "Lab profile: LabLog asked for this radio's settings, for the {} profile, but \
+                 they couldn't be read: {problem}",
+                ask.program
+            ),
+        };
+        lab.shared.note(&said);
+        if let Err(error) = uplink.answer_read(&ask.id, &answer) {
+            lab.shared.note(&format!(
+                "Lab profile: the reading didn't reach LabLog: {error}"
+            ));
+        }
+    }
+}
+
+/// The programs whose settings the Agent sets up, by executable, and the
+/// names they are shown by.
+#[cfg(any(windows, test))]
+const SET_UP_PROGRAMS: [(&str, &str); 6] = [
+    ("vara.exe", "VARA"),
+    ("rms express.exe", "Winlink Express"),
+    ("wsjtx.exe", "WSJT-X"),
+    ("js8call.exe", "JS8Call"),
+    ("fldigi.exe", "fldigi"),
+    ("mmsstv.exe", "MMSSTV"),
+];
+
+/// How often the Agent looks for a program that has closed.
+#[cfg(windows)]
+const LOOK_FOR_CLOSED: Duration = Duration::from_secs(5);
+
+/// Which of the programs the Agent sets up are open, looked at every
+/// [`LOOK_FOR_CLOSED`].
+#[cfg(windows)]
+struct ProgramsOpen {
+    open: HashSet<&'static str>,
+    looked: std::time::Instant,
+}
+
+#[cfg(windows)]
+impl ProgramsOpen {
+    fn now() -> Self {
+        Self {
+            open: open_programs(&tasklist()),
+            looked: std::time::Instant::now(),
+        }
+    }
+
+    /// The name of a program that was open when last looked and is closed
+    /// now, if one is (and it's time to look again).
+    fn closed_since(&mut self) -> Option<&'static str> {
+        if self.looked.elapsed() < LOOK_FOR_CLOSED {
+            return None;
+        }
+        self.looked = std::time::Instant::now();
+        let list = tasklist();
+        if list.is_empty() {
+            return None;
+        }
+        let now = open_programs(&list);
+        let closed = self.open.difference(&now).next().copied();
+        self.open = now;
+        closed
+    }
+}
+
+/// Windows' list of running programs, as `tasklist` writes it in CSV, or
+/// nothing when it can't be read.
+#[cfg(windows)]
+fn tasklist() -> String {
+    std::process::Command::new("tasklist")
+        .args(["/NH", "/FO", "CSV"])
+        .output()
+        .map(|listed| String::from_utf8_lossy(&listed.stdout).into_owned())
+        .unwrap_or_default()
+}
+
+/// The programs the Agent sets up that `tasklist`'s CSV `list` shows
+/// running, by the names they are shown by.
+#[cfg(any(windows, test))]
+fn open_programs(list: &str) -> HashSet<&'static str> {
+    let images: HashSet<String> = list
+        .lines()
+        .filter_map(|line| line.split(',').next())
+        .map(|image| image.trim_matches('"').to_ascii_lowercase())
+        .collect();
+    SET_UP_PROGRAMS
+        .iter()
+        .filter(|(image, _)| images.contains(*image))
+        .map(|(_, name)| *name)
+        .collect()
+}
+
+/// Stands between VARA and its client (Winlink Express) so the Agent keys
+/// the radio when VARA asks: moves VARA's command port to the Agent's, if
+/// VARA isn't running, and listens on the one VARA's clients use (see
+/// `vara_proxy`).
+#[cfg(windows)]
+fn vara_proxy(
+    rigctld: SocketAddr,
+    notes: mpsc::Sender<String>,
+) -> Option<crate::vara_proxy::Proxy> {
+    use crate::vara::{self, MOVED_COMMAND_PORT, Moved};
+    use crate::vara_proxy::{Ports, Proxy};
+    let path = vara::find()?;
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let clients = vara::clients_port(&text, vara::original(&path).as_deref());
+    // Only Winlink Express needs the Agent between it and VARA. Without it,
+    // VARA stays on its own port, as VarAC has always found it.
+    if crate::winlink::find().is_none() {
+        if vara::command_port(&text) == Some(MOVED_COMMAND_PORT) && vara::running() == Ok(false) {
+            match vara::set_command_port(&path, clients) {
+                Ok(_) => println!(
+                    "VARA: command port put back to {clients} in {} (Winlink Express isn't \
+                     installed, so the Agent doesn't stand between VARA and its client).",
+                    path.display()
+                ),
+                Err(why) => println!("VARA: its command port wasn't put back ({why})."),
+            }
+        }
+        return None;
+    }
+    if vara::command_port(&text) != Some(MOVED_COMMAND_PORT) {
+        match vara::running() {
+            Ok(false) => match vara::set_command_port(&path, MOVED_COMMAND_PORT) {
+                Ok(Moved::Already) => {}
+                Ok(Moved::From(before)) => println!(
+                    "VARA: command port set to {MOVED_COMMAND_PORT} in {} (was {}), so the Agent \
+                     can stand between VARA and Winlink Express on {clients}.",
+                    path.display(),
+                    before.map_or_else(|| "not set".to_owned(), |port| port.to_string()),
+                ),
+                Err(why) => {
+                    println!(
+                        "VARA: its command port wasn't moved ({why}), so the Agent can't key \
+                         for Winlink Express."
+                    );
+                    return None;
+                }
+            },
+            Ok(true) => {
+                println!(
+                    "VARA: running on its own port, so the Agent can't key for Winlink Express \
+                     yet.\n  -> Close VARA, then start the Agent again."
+                );
+                return None;
+            }
+            Err(why) => {
+                println!("VARA: its command port was left alone ({why}).");
+                return None;
+            }
+        }
+    }
+    let ports = Ports {
+        clients,
+        vara: MOVED_COMMAND_PORT,
+        rigctld,
+    };
+    match Proxy::start(&ports, Arc::new(program_id::keys_itself), notes) {
+        Ok(proxy) => {
+            println!(
+                "VARA: the Agent passes VARA's clients through on 127.0.0.1:{clients} (and {}), \
+                 and keys the radio when VARA asks, for Winlink Express. VARA itself is on \
+                 {MOVED_COMMAND_PORT}.",
+                clients + 1
+            );
+            Some(proxy)
+        }
+        Err(why) => {
+            println!(
+                "VARA: the Agent can't stand between VARA and Winlink Express ({why}).\n  -> If \
+                 VARA is running, close it and start the Agent again."
+            );
+            None
+        }
+    }
+}
+
+/// Where the virtual Kenwood answers, and the program's end of its
+/// com0com pair when known: `--kenwood PORT` if given, else, where
+/// Winlink Express is installed, the first com0com pair a program can open
+/// by a `COMn` name, installing com0com with one if there is none (see
+/// `com0com`).
+#[cfg(windows)]
+fn kenwood_ports(asked: Option<&str>) -> Option<(String, Option<String>)> {
+    let listing = crate::com0com::listed();
+    if let Some(port) = asked {
+        let program = crate::com0com::pairs(&listing)
+            .into_iter()
+            .find(|pair| pair.agent.eq_ignore_ascii_case(port))
+            .map(|pair| pair.program);
+        return Some((port.to_owned(), program));
+    }
+    crate::winlink::find()?;
+    let pair = match crate::com0com::for_programs(&listing) {
+        Some(pair) => pair,
+        None => match crate::com0com::install() {
+            Ok(pair) => {
+                println!(
+                    "com0com: installed, with the pair {} <-> {}.",
+                    pair.program, pair.agent
+                );
+                pair
+            }
+            Err(why) => {
+                println!(
+                    "Virtual Kenwood: not started, as there is no com0com pair: {why}\n  \
+                     Winlink Express still keys through the Agent; it tunes the radio only \
+                     through a COM port."
+                );
+                return None;
+            }
+        },
+    };
+    Some((pair.agent, Some(pair.program)))
+}
+
+/// How Winlink Express is set to tune, with or without the virtual
+/// Kenwood.
+#[cfg(windows)]
+fn kenwood_tuning(kenwood: Option<&(String, Option<String>)>) -> crate::winlink::Tuning<'_> {
+    kenwood.map_or(crate::winlink::Tuning::Agent, |(_, program)| {
+        crate::winlink::Tuning::Kenwood(program.as_deref())
+    })
+}
+
+/// Answers as a Kenwood TS-2000 on `port`, one end of a com0com pair, for
+/// a program such as Winlink Express on `program`, the other end (see
+/// `kenwood_cat`).
+#[cfg(windows)]
+fn virtual_kenwood(
+    port: &str,
+    program: Option<&str>,
+    rigctld: SocketAddr,
+) -> Option<crate::kenwood_cat::Virtual> {
+    match crate::kenwood_cat::Virtual::start(port, rigctld) {
+        Ok(running) => {
+            let other = program.map_or_else(
+                || "the other port of the pair".to_owned(),
+                |program| format!("{program} (set by the Agent while Winlink Express is closed)"),
+            );
+            println!(
+                "Virtual Kenwood: answering as a TS-2000 on {port}. In Winlink Express, \
+                 Radio Setup: Kenwood, Control Port {other}."
+            );
+            Some(running)
+        }
+        Err(why) => {
+            println!(
+                "Virtual Kenwood: not started ({why}).\n  -> Is com0com installed, and is \
+                 {port} one end of its pair?"
+            );
+            None
+        }
+    }
+}
+
 /// Tells the operator how programs on this computer reach the radio.
 fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     println!(
@@ -1123,6 +2137,10 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     println!(
         "  WSJT-X: Settings > Radio: Rig Hamlib NET rigctl, Network Server {address}, PTT Method CAT."
     );
+    println!(
+        "  Winlink Express: VARA HF TNC at 127.0.0.1, ports as usual (8300, 8301); the Agent \
+         sets its Radio Setup to Manual, no control port, PTT External, and keys when VARA asks."
+    );
 }
 
 /// Runs the station until Ctrl-C.
@@ -1138,42 +2156,92 @@ pub fn run(
     listen: SocketAddr,
     limit: Duration,
     engine: Option<(&str, &str, Option<&str>)>,
+    kenwood: Option<&str>,
+    stated: &crate::sends_as::Stated,
 ) -> Result<(), String> {
     let running = Arc::new(AtomicBool::new(true));
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     let typing = start_typing(Arc::clone(&running));
-    let uplink = engine
-        .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
-        .transpose()?;
-    if pretend {
-        let found = Found {
-            radio: crate::civ_pretend_radio().map_err(|error| error.to_string())?,
-            port: "the pretend port".to_owned(),
-            serial: Some(PRETEND_SERIAL.to_owned()),
-        };
-        return run_found(found, listen, limit, uplink, &running, &typing);
+    let mut stated = stated.clone();
+    if stated.no_bus {
+        stated.mqtt = None;
+    } else if stated.mqtt.is_none() {
+        // FieldLab's broker, as the Engine takes it, else FieldLab's own.
+        stated.mqtt = std::env::var("LABLOG_MQTT")
+            .ok()
+            .filter(|broker| !broker.trim().is_empty())
+            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok())
+            .or_else(|| {
+                Some((
+                    crate::sends_as::FIELDLAB_BROKER.to_owned(),
+                    crate::sends_as::MQTT_PORT,
+                ))
+            });
     }
-    let Some(found) = wait_for_radio(port, &running) else {
-        println!("stopped");
-        return Ok(());
+    let _whereabouts = crate::sends_as::Whereabouts::start(stated, records_folder());
+    // A radio unplugged, turned off or swapped for another is looked for
+    // again, so any radio can be moved to this computer while the Agent runs.
+    loop {
+        let uplink = engine
+            .map(|(engine, key_file, station)| uplink(engine, key_file, station, &running))
+            .transpose()?;
+        let ended = if pretend {
+            let found = Found {
+                radio: Box::new(crate::civ_pretend_radio().map_err(|error| error.to_string())?),
+                port: "the pretend port".to_owned(),
+                serial: Some(PRETEND_SERIAL.to_owned()),
+            };
+            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
+        } else {
+            let Some(found) = wait_for_radio(port, &running) else {
+                break;
+            };
+            run_found(found, listen, limit, uplink, &running, &typing, kenwood)?
+        };
+        if ended == Ended::Stopped {
+            break;
+        }
+        crate::print_event(&format!(
+            "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
+             -> The Agent looks for a radio again; plug in any radio it knows.",
+            LOST_AFTER.as_secs()
+        ));
+    }
+    println!("stopped");
+    Ok(())
+}
+
+/// Starts carrying QSOs, the radio's state and who LabLog logs as between
+/// the programs and the Engine, when there is one.
+fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate::carrier::Carrier> {
+    let Some(uplink) = uplink else {
+        println!(
+            "QSOs: stay in each program's own log (start the Agent with --engine to send them \
+             to LabLog)."
+        );
+        return None;
     };
-    run_found(found, listen, limit, uplink, &running, &typing)
+    let radio = Arc::clone(shared) as Arc<dyn Source>;
+    crate::carrier::start(uplink.clone(), radio, &records_folder())
+        .map_err(|why| println!("QSOs: not sent to LabLog ({why})."))
+        .ok()
 }
 
 /// The serial number the pretend radio's settings are kept under.
 const PRETEND_SERIAL: &str = "PRETEND";
 
 /// Runs the station with the radio found, until stopped.
-fn run_found<P: Port + Send + 'static>(
-    mut found: Found<P>,
+fn run_found(
+    mut found: Found,
     listen: SocketAddr,
     limit: Duration,
     uplink: Option<Uplink>,
     running: &AtomicBool,
     typing: &Typing,
-) -> Result<(), String> {
+    kenwood: Option<&str>,
+) -> Result<Ended, String> {
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -1187,14 +2255,16 @@ fn run_found<P: Port + Send + 'static>(
             .unwrap_or_default(),
         found.radio.baud()
     );
-    let record = check_settings(&mut found.radio, found.serial.as_deref());
+    let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = found.radio.definition().clone();
     if let Some(uplink) = &uplink {
         sync(uplink, &record, &definition);
     }
     let sound = definition.usb_audio.clone();
     let (notes, heard) = mpsc::channel();
-    let shared = Arc::new(Shared::with_transmit(Box::new(found.radio), limit).with_notes(notes));
+    #[cfg(windows)]
+    let vara_notes = notes.clone();
+    let shared = Arc::new(Shared::with_transmit(found.radio, limit).with_notes(notes));
     let on_air = shared.on_air();
     #[cfg(windows)]
     let station = audio(sound.as_deref(), Arc::clone(&on_air));
@@ -1203,12 +2273,35 @@ fn run_found<P: Port + Send + 'static>(
         let _ = (&sound, &on_air);
         println!("Audio: carried on Windows only.");
     }
-    let server = rigctld_server::Server::start(listen, Arc::clone(&shared) as Arc<dyn Source>)?;
+    let programs = Programs::for_station(&shared, found.serial.as_deref(), &definition);
+    if let Ok(mut known) = programs.lab.known.lock() {
+        *known = Some(record.clone());
+    }
+    let profile_desk = uplink
+        .as_ref()
+        .filter(|_| found.serial.is_some())
+        .map(|uplink| start_profile_desk(uplink.clone(), programs.lab.clone()));
+    let server = rigctld_server::Server::start(listen, Arc::new(programs) as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
+    let kenwood = kenwood_ports(kenwood);
+    #[cfg(windows)]
+    let tuning = kenwood_tuning(kenwood.as_ref());
+    #[cfg(windows)]
     if let Some(station) = &station {
-        crate::programs::set_up(station, server.address());
+        crate::programs::set_up(station, server.address(), tuning);
     }
+    #[cfg(windows)]
+    let vara_proxy = vara_proxy(server.address(), vara_notes);
+    #[cfg(windows)]
+    let virtual_kenwood = kenwood
+        .as_ref()
+        .and_then(|(port, program)| virtual_kenwood(port, program.as_deref(), server.address()));
+    #[cfg(not(windows))]
+    if kenwood.is_some() {
+        println!("Virtual Kenwood: Windows only, so not started.");
+    }
+    let carrier = start_carrier(uplink.as_ref(), &shared);
     let desk = found
         .serial
         .clone()
@@ -1216,55 +2309,170 @@ fn run_found<P: Port + Send + 'static>(
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
-    let mut hint: Option<&'static str> = None;
-    #[cfg(windows)]
-    let mut last = std::time::Instant::now();
-    #[cfg(windows)]
-    let mut was_on_air = false;
-    crate::show_until_stopped(shared.as_ref(), &heard, running, || {
+    let mut watching = Watching::new(kenwood.clone());
+    let serving = AtomicBool::new(true);
+    let mut lost = Lost::default();
+    crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
         offer_drive();
         #[cfg(windows)]
         if let Some(station) = &station {
-            for error in station.errors.try_iter() {
-                crate::print_event(&format!("sound device error: {error}"));
-            }
-            // How loud a program's transmit audio was, each time the radio
-            // is unkeyed: silence means the program isn't playing into the
-            // transmit cable.
-            if let (Some(transmit), Some(cable)) = (&station.transmit, &station.transmit_cable) {
-                let on_air_now = on_air.load(Ordering::SeqCst);
-                if on_air_now && !was_on_air {
-                    let _ = transmit.take_peak_dbfs();
-                }
-                if was_on_air && !on_air_now {
-                    crate::print_event(&match transmit.take_peak_dbfs() {
-                        Some(db) => format!("transmit audio: {db:.0} dBFS peak"),
-                        None => format!(
-                            "transmit audio: silent\n-> The program's sound output should be \"{cable}\"."
-                        ),
-                    });
-                }
-                was_on_air = on_air_now;
-            }
-            // The receive level, said only when what to do about it changes.
-            if last.elapsed() >= Duration::from_secs(5) {
-                last = std::time::Instant::now();
-                let now = station.receive_hint();
-                if now != hint {
-                    crate::print_event(&match now {
-                        Some(what) => format!("receive audio: {what}"),
-                        None => "receive audio: level good".to_owned(),
-                    });
-                    hint = now;
-                }
-            }
+            watching.watch(station, &on_air, server.address());
+        }
+        if !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+            serving.store(false, Ordering::SeqCst);
         }
     });
+    #[cfg(windows)]
+    drop(vara_proxy);
+    #[cfg(windows)]
+    drop(virtual_kenwood);
+    drop(carrier);
+    drop(profile_desk);
     drop(server);
     #[cfg(windows)]
     drop(station);
-    println!("stopped");
-    Ok(())
+    // The console lets go of the radio, so it can be found again.
+    if let Ok(mut slot) = typing.to_console.lock() {
+        *slot = None;
+    }
+    Ok(if running.load(Ordering::SeqCst) {
+        Ended::Lost
+    } else {
+        Ended::Stopped
+    })
+}
+
+/// How a station run ended.
+#[derive(Debug, PartialEq, Eq)]
+enum Ended {
+    /// Asked to stop.
+    Stopped,
+    /// The radio stopped answering: unplugged, turned off, or swapped.
+    Lost,
+}
+
+/// How long the radio may go unread before the Agent counts it gone and
+/// looks for a radio again.
+const LOST_AFTER: Duration = Duration::from_secs(15);
+
+/// How often the Agent checks that the radio still answers.
+const LOOK_FOR_LOST: Duration = Duration::from_secs(2);
+
+/// Whether the radio has stopped answering for `after` ([`LOST_AFTER`]),
+/// looked at every `every` ([`LOOK_FOR_LOST`]).
+struct Lost {
+    after: Duration,
+    every: Duration,
+    looked: Option<std::time::Instant>,
+    failing_since: Option<std::time::Instant>,
+}
+
+impl Default for Lost {
+    fn default() -> Self {
+        Self {
+            after: LOST_AFTER,
+            every: LOOK_FOR_LOST,
+            looked: None,
+            failing_since: None,
+        }
+    }
+}
+
+impl Lost {
+    fn now(&mut self, radio: &dyn Source) -> bool {
+        if self.looked.is_some_and(|at| at.elapsed() < self.every) {
+            return false;
+        }
+        self.looked = Some(std::time::Instant::now());
+        if radio.reading().is_ok() {
+            self.failing_since = None;
+            return false;
+        }
+        self.failing_since
+            .get_or_insert_with(std::time::Instant::now)
+            .elapsed()
+            >= self.after
+    }
+}
+
+/// What the station watches on Windows while it runs: sound device errors,
+/// the transmit and receive audio levels, and programs closing.
+#[cfg(windows)]
+struct Watching {
+    hint: Option<&'static str>,
+    last: std::time::Instant,
+    was_on_air: bool,
+    open: ProgramsOpen,
+    /// The virtual Kenwood's port and its pair's program end, when
+    /// programs tune the radio through it.
+    kenwood: Option<(String, Option<String>)>,
+}
+
+#[cfg(windows)]
+impl Watching {
+    fn new(kenwood: Option<(String, Option<String>)>) -> Self {
+        Self {
+            hint: None,
+            last: std::time::Instant::now(),
+            was_on_air: false,
+            open: ProgramsOpen::now(),
+            kenwood,
+        }
+    }
+
+    fn watch(
+        &mut self,
+        station: &crate::audio_windows::Station,
+        on_air: &AtomicBool,
+        radio: SocketAddr,
+    ) {
+        // A program open when the Agent started keeps its settings while it
+        // runs and writes them as it closes, so the Agent sets it up right
+        // after it closes, ready for its next start.
+        if let Some(closed) = self.open.closed_since() {
+            crate::print_event(&format!(
+                "{closed} closed, so the Agent sets up the programs that are closed now."
+            ));
+            vara(station);
+            crate::programs::set_up(station, radio, kenwood_tuning(self.kenwood.as_ref()));
+        } else if crate::sends_as::take_changed() {
+            // The call or grid changed (see `sends_as`, which says so).
+            crate::programs::set_up(station, radio, kenwood_tuning(self.kenwood.as_ref()));
+        }
+        for error in station.errors.try_iter() {
+            crate::print_event(&format!("sound device error: {error}"));
+        }
+        // How loud a program's transmit audio was, each time the radio is
+        // unkeyed: silence means the program isn't playing into the
+        // transmit cable.
+        if let (Some(transmit), Some(cable)) = (&station.transmit, &station.transmit_cable) {
+            let on_air_now = on_air.load(Ordering::SeqCst);
+            if on_air_now && !self.was_on_air {
+                let _ = transmit.take_peak_dbfs();
+            }
+            if self.was_on_air && !on_air_now {
+                crate::print_event(&match transmit.take_peak_dbfs() {
+                    Some(db) => format!("transmit audio: {db:.0} dBFS peak"),
+                    None => format!(
+                        "transmit audio: silent\n-> The program's sound output should be \"{cable}\"."
+                    ),
+                });
+            }
+            self.was_on_air = on_air_now;
+        }
+        // The receive level, said only when what to do about it changes.
+        if self.last.elapsed() >= Duration::from_secs(5) {
+            self.last = std::time::Instant::now();
+            let now = station.receive_hint();
+            if now != self.hint {
+                crate::print_event(&match now {
+                    Some(what) => format!("receive audio: {what}"),
+                    None => "receive audio: level good".to_owned(),
+                });
+                self.hint = now;
+            }
+        }
+    }
 }
 
 /// `check-writes`: finds the radio, and once the operator says yes, writes
@@ -1276,7 +2484,26 @@ fn run_found<P: Port + Send + 'static>(
 /// The radio isn't found, or the console can't be read.
 pub fn check_writes(port: Option<&str>) -> Result<(), String> {
     let running = AtomicBool::new(true);
-    let mut found = find(port, &running)?;
+    let found = find(port, &running)?;
+    check_writes_on(found.radio, &found.port, found.serial.as_deref())
+}
+
+/// `check-writes` on a radio already found: on `port` (or a FlexRadio's
+/// address), with its USB serial number if known.
+///
+/// # Errors
+///
+/// The console can't be read.
+pub fn check_writes_on(
+    radio: Box<dyn SerialRadio>,
+    port: &str,
+    serial: Option<&str>,
+) -> Result<(), String> {
+    let mut found = Found {
+        radio,
+        port: port.to_owned(),
+        serial: serial.map(str::to_owned),
+    };
     let definition = found.radio.definition().clone();
     let changeable = definition.settings.iter().filter(|s| s.write).count();
     println!(
@@ -1304,7 +2531,7 @@ pub fn check_writes(port: Option<&str>) -> Result<(), String> {
         return Ok(());
     }
     let report = crate::write_check::check(
-        &mut found.radio,
+        found.radio.as_mut(),
         found.serial.as_deref(),
         std::time::SystemTime::now(),
         &settings_record::computer_name(),
@@ -1433,8 +2660,8 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        DRIVE_ASK, Desk, DriveTried, Typed, compared, compared_all, drive_offer, restore_plan,
-        startup_command, typed,
+        DRIVE_ASK, Desk, DriveTried, LabRadio, Lost, Programs, Typed, compared, compared_all,
+        drive_offer, lab_locked, lab_plan, open_programs, restore_plan, startup_command, typed,
     };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
@@ -1442,6 +2669,466 @@ mod tests {
     use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
+
+    /// What the pretend radio has for the setting `id` now, in hex.
+    fn setting_now(shared: &Shared, id: &str) -> Option<String> {
+        shared
+            .settings(|radio| {
+                settings_record::read_these(radio, &[id], Some("PRETEND"), UNIX_EPOCH, "test")
+            })
+            .ok()
+            .and_then(|record| record.settings.into_iter().next())
+            .and_then(|entry| entry.bytes)
+    }
+
+    #[test]
+    fn puts_the_lab_profile_on_an_enrolled_radio_once_as_varac_starts() {
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let radio = CivRadio::find(
+            PretendPort::new(PretendCiv::new(&definition), 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let (notes, heard) = std::sync::mpsc::channel();
+        let shared = Arc::new(
+            Shared::with_transmit(Box::new(radio), Duration::from_mins(1)).with_notes(notes),
+        );
+        let records = std::env::temp_dir().join(format!("lablog-lab-{}", std::process::id()));
+        let lab = LabRadio {
+            shared: Arc::clone(&shared),
+            serial: "PRETEND".to_owned(),
+            definition,
+            records: records.clone(),
+            going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
+            known: Arc::new(Mutex::new(None)),
+        };
+        // VarAC from one port, WSJT-X from another; anything else unknown.
+        let programs = Programs::new(
+            lab,
+            true,
+            Box::new(|program: SocketAddr, _| match program.port() {
+                50_001 | 50_002 => Ok((4242, r"C:\VarAC\VarAC.exe".to_owned())),
+                50_003 => Ok((777, r"C:\WSJT\wsjtx\bin\wsjtx.exe".to_owned())),
+                _ => Err("not found".to_owned()),
+            }),
+        );
+        let server = SocketAddr::from(([127, 0, 0, 1], 4532));
+        let from = |port: u16| SocketAddr::from(([127, 0, 0, 1], port));
+        // The next note that says `what`, passing over the others.
+        let note_with = |what: &str| loop {
+            match heard.recv_timeout(Duration::from_secs(10)) {
+                Ok(note) if note.contains(what) => break note,
+                Ok(_) => {}
+                Err(_) => break String::new(),
+            }
+        };
+        assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("24"));
+
+        // Not enrolled: left as it is.
+        programs.connected(from(50_001), server);
+        assert!(note_with("Lab profile").contains("isn't enrolled"));
+        programs.gone(from(50_001));
+        assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("24"));
+
+        // Enrolled: the VARA profile goes on, and a transmission waits for it.
+        assert!(
+            crate::enrollment::save(&crate::enrollment::path(&records, "PRETEND"), true).is_ok()
+        );
+        programs.connected(from(50_001), server);
+        assert!(programs.transmit(from(50_001), true).is_ok());
+        assert!(programs.transmit(from(50_001), false).is_ok());
+        let said = note_with("Lab profile");
+        assert!(
+            said.contains("VarAC.exe started, so the VARA profile goes on"),
+            "{said}"
+        );
+        assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("27"));
+        assert_eq!(
+            setting_now(&shared, "usb_mod_level").as_deref(),
+            Some("01 02")
+        );
+        assert_eq!(setting_now(&shared, "data_mod").as_deref(), Some("03"));
+
+        // The operator's change stands while VarAC runs, even when it
+        // connects again; a second program doesn't take the radio.
+        assert!(
+            shared
+                .settings(|radio| {
+                    let width = radio
+                        .definition()
+                        .settings
+                        .iter()
+                        .find(|s| s.id == "filter_width")
+                        .cloned()
+                        .unwrap_or_else(|| unreachable!());
+                    radio.write_exposed(&width, &[0x30])
+                })
+                .is_ok_and(|written| written.is_ok())
+        );
+        programs.connected(from(50_002), server);
+        programs.connected(from(50_003), server);
+        assert!(note_with("Lab profile").contains("the first program keeps it"));
+        programs.connected(from(50_004), server);
+        assert!(note_with("Lab profile").contains("couldn't tell which program"));
+        assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("30"));
+        let _ = std::fs::remove_dir_all(&records);
+    }
+
+    /// A pretend IC-7300 for the lab's profiles, keeping its enrollment and
+    /// LabLog's profiles in `records`, with what the Agent knows of it read
+    /// as the station starts.
+    fn pretend_lab(records: &std::path::Path) -> (Arc<Shared>, LabRadio, rigdef::Definition) {
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let radio = CivRadio::find(
+            PretendPort::new(PretendCiv::new(&definition), 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Arc::new(Shared::with_transmit(
+            Box::new(radio),
+            Duration::from_mins(1),
+        ));
+        let started = shared
+            .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "test"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        let lab = LabRadio {
+            shared: Arc::clone(&shared),
+            serial: "PRETEND".to_owned(),
+            definition: definition.clone(),
+            records: records.to_owned(),
+            going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
+            known: Arc::new(Mutex::new(Some(started))),
+        };
+        (shared, lab, definition)
+    }
+
+    #[test]
+    fn reads_the_radio_for_lablog_and_puts_lablogs_saved_profile_on() {
+        let records =
+            std::env::temp_dir().join(format!("lablog-lablog-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&records);
+        let (shared, lab, definition) = pretend_lab(&records);
+        let write = |id: &str, bytes: &[u8]| {
+            let setting = definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .unwrap_or_else(|| unreachable!("{id}"));
+            assert!(
+                shared
+                    .settings(|radio| radio.write_exposed(&setting, bytes))
+                    .is_ok_and(|written| written.is_ok())
+            );
+        };
+
+        // brian turns RF power down at the radio; LabLog asks for a reading.
+        write("rf_power", &[0x00, 0x69]);
+        let crate::engine::ReadAnswer::Read {
+            settings,
+            profile,
+            profile_from,
+            changed,
+            serial,
+            ..
+        } = lab.read_for_lablog("VARA")
+        else {
+            unreachable!("the pretend radio can be read")
+        };
+        assert_eq!(serial, "PRETEND");
+        assert_eq!(changed, ["rf_power"]);
+        assert_eq!(profile_from, "built into the Agent");
+        assert_eq!(
+            profile.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            [
+                "mode_and_filter",
+                "data_mode_and_filter",
+                "filter_width",
+                "usb_mod_level",
+                "data_mod"
+            ]
+        );
+        assert!(
+            settings
+                .iter()
+                .any(|s| s.id == "rf_power" && s.bytes == "00 69")
+        );
+        assert!(
+            settings.iter().all(|s| definition
+                .settings
+                .iter()
+                .any(|d| d.id == s.id && d.write && d.write_checked)),
+            "only settings the Agent may write"
+        );
+
+        // The administrator saves the built-in settings plus RF power; the
+        // Agent's copy of LabLog's profiles then has it, and it goes on.
+        let mut chosen: Vec<crate::engine::StockSetting> = settings
+            .into_iter()
+            .filter(|s| s.id == "rf_power" || profile.iter().any(|p| p.id == s.id))
+            .collect();
+        chosen.retain(|s| s.id != "filter_width");
+        let saved = crate::engine::SavedProfile {
+            id: 4,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            program: "VARA".to_owned(),
+            settings: chosen,
+            saved_by: "K9KSU".to_owned(),
+            saved_at: "2026-10-30T00:40:00Z".to_owned(),
+        };
+        let path = crate::profiles::saved_path(&records, "Icom", "IC-7300");
+        assert!(crate::profiles::keep_saved(&path, std::slice::from_ref(&saved)).is_ok());
+        write("rf_power", &[0x02, 0x55]);
+        let said = lab.put_on("VARA", "VarAC.exe");
+        assert!(said.contains("saved in LabLog, version #4"), "{said}");
+        assert_eq!(setting_now(&shared, "rf_power").as_deref(), Some("00 69"));
+        // What the Agent put on is what it knows now: nothing changed since.
+        let crate::engine::ReadAnswer::Read {
+            changed,
+            profile_from,
+            ..
+        } = lab.read_for_lablog("VARA")
+        else {
+            unreachable!("the pretend radio can be read")
+        };
+        assert_eq!(profile_from, "saved in LabLog, version #4");
+        assert!(!changed.contains(&"rf_power".to_owned()), "{changed:?}");
+        let _ = std::fs::remove_dir_all(&records);
+    }
+
+    /// A radio that answers or doesn't, as the test says.
+    struct Fickle(AtomicBool, crate::rig::RadioIdentity);
+
+    impl Source for Fickle {
+        fn identity(&self) -> crate::rig::RadioIdentity {
+            self.1.clone()
+        }
+
+        fn reading(&self) -> Result<crate::rig::Reading, String> {
+            if self.0.load(Ordering::SeqCst) {
+                return Err("unplugged".to_owned());
+            }
+            Ok(crate::rig::Reading {
+                frequency_hz: 14_074_000,
+                mode: None,
+                passband_hz: None,
+                ptt: None,
+                vfo: None,
+            })
+        }
+    }
+
+    #[test]
+    fn counts_the_radio_lost_only_after_it_stops_answering_for_a_while() {
+        let radio = Fickle(AtomicBool::new(false), transmitted([0, 0, 0]).0.identity());
+        let mut lost = Lost {
+            after: Duration::from_millis(50),
+            every: Duration::ZERO,
+            looked: None,
+            failing_since: None,
+        };
+        assert!(!lost.now(&radio), "it answers");
+        radio.0.store(true, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "one miss isn't lost");
+        std::thread::sleep(Duration::from_millis(60));
+        assert!(lost.now(&radio), "still not answering: lost");
+        radio.0.store(false, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "answering again");
+        radio.0.store(true, Ordering::SeqCst);
+        assert!(!lost.now(&radio), "the clock starts again");
+    }
+
+    #[test]
+    fn reads_which_programs_are_open_from_windows_list() {
+        let list = "\"System Idle Process\",\"0\",\"Services\",\"0\",\"8 K\"\r\n\
+                    \"VARA.exe\",\"4120\",\"Console\",\"1\",\"30,112 K\"\r\n\
+                    \"wsjtx.exe\",\"5004\",\"Console\",\"1\",\"80,000 K\"\r\n";
+        let open = open_programs(list);
+        assert_eq!(open.len(), 2);
+        assert!(open.contains("VARA") && open.contains("WSJT-X"));
+        assert!(open_programs("").is_empty());
+    }
+
+    #[test]
+    fn the_labs_profiles_are_locked_and_restore_puts_one_on() {
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let records = std::env::temp_dir().join(format!("lablog-locked-{}", std::process::id()));
+        let locked = lab_locked(&records, &definition, "vara").unwrap_or_default();
+        assert!(
+            locked.contains("the lab's locked profile for the IC-7300"),
+            "{locked}"
+        );
+        assert!(locked.contains("keep My VARA"));
+        assert!(locked.contains("Lab Profiles"), "{locked}");
+        assert_eq!(lab_locked(&records, &definition, "My VARA"), None);
+        assert_eq!(lab_locked(&records, &definition, "Field Day"), None);
+        let now = shared
+            .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "test"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        let plan = lab_plan(&records, &now, "VARA", &definition);
+        let put: Vec<String> = plan
+            .iter()
+            .flat_map(|plan| plan.put.iter().map(|put| put.setting.id.clone()))
+            .collect();
+        assert!(put.contains(&"filter_width".to_owned()), "{put:?}");
+        assert!(put.contains(&"usb_mod_level".to_owned()), "{put:?}");
+        assert!(lab_plan(&records, &now, "My VARA", &definition).is_none());
+    }
+
+    /// Lab Stock kept as a test Engine would keep it: one approved, and the
+    /// proposals sent.
+    struct StockEngine {
+        stock: Option<crate::engine::LabStock>,
+        proposed: Arc<Mutex<Vec<Vec<crate::engine::StockSetting>>>>,
+    }
+
+    impl crate::setups::Setups for StockEngine {
+        fn keep(&self, _: &settings_record::Record, _: &str) -> Result<(), String> {
+            Err("not kept here".to_owned())
+        }
+
+        fn kept(&self, _: &str, _: &str, _: &str) -> Result<KeptRadio, String> {
+            Err("not kept here".to_owned())
+        }
+
+        fn place(&self) -> String {
+            "on the test Engine".to_owned()
+        }
+
+        fn lab_stock(&self, _: &str, _: &str) -> Result<Option<crate::engine::LabStock>, String> {
+            Ok(self.stock.clone())
+        }
+
+        fn propose_lab_stock(
+            &self,
+            _: &settings_record::Record,
+            settings: &[crate::engine::StockSetting],
+        ) -> Result<u64, String> {
+            let mut proposed = self.proposed.lock().map_err(|e| e.to_string())?;
+            proposed.push(settings.to_vec());
+            Ok(7)
+        }
+    }
+
+    /// Types `lines` at the console of the pretend IC-7300, auto mode on,
+    /// with `engine` keeping Lab Stock; returns the desk.
+    fn typed_at_console(
+        shared: &Shared,
+        definition: &rigdef::Definition,
+        engine: &StockEngine,
+        lines: &[&str],
+    ) -> Desk {
+        let desk = Desk {
+            waiting: Arc::new(Mutex::new(None)),
+            asked: Arc::new(AtomicU32::new(0)),
+            auto: Arc::new(AtomicBool::new(true)),
+            serial: "PRETEND".to_owned(),
+        };
+        let (send, receive) = std::sync::mpsc::channel();
+        for line in lines {
+            let _ = send.send((*line).to_owned());
+        }
+        drop(send);
+        super::console(shared, engine, definition, &desk, &receive);
+        desk
+    }
+
+    #[test]
+    fn lab_stock_waits_for_a_yes_even_in_auto_mode_and_stock_save_proposes_it() {
+        assert_eq!(typed("stock"), Ok(Typed::Stock));
+        assert_eq!(typed("Stock SAVE"), Ok(Typed::StockSave));
+        assert!(typed("stock now").is_err());
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let before = setting_now(&shared, "data_mod");
+        let stock = crate::engine::LabStock {
+            id: 3,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            settings: vec![crate::engine::StockSetting {
+                id: "data_mod".to_owned(),
+                label: "DATA MOD".to_owned(),
+                bytes: if before.as_deref() == Some("02") {
+                    "03"
+                } else {
+                    "02"
+                }
+                .to_owned(),
+                shown: None,
+            }],
+        };
+        let engine = StockEngine {
+            stock: Some(stock),
+            proposed: Arc::new(Mutex::new(Vec::new())),
+        };
+        let desk = typed_at_console(&shared, &definition, &engine, &["stock"]);
+        let waiting = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
+        let Some((1, super::Asked::Change(plan))) = waiting else {
+            unreachable!("the Lab Stock waits for a yes, auto mode or not")
+        };
+        assert_eq!(plan.setup, "Lab Stock #3");
+        assert_eq!(plan.put.len(), 1);
+        assert_eq!(
+            setting_now(&shared, "data_mod"),
+            before,
+            "nothing written yet"
+        );
+
+        // Sending reads each filter's width, which chooses each filter: a
+        // yes first.
+        let selected = setting_now(&shared, "data_mode_and_filter");
+        let desk = typed_at_console(&shared, &definition, &engine, &["stock save", "no"]);
+        assert!(desk.waiting.lock().is_ok_and(|slot| slot.is_none()));
+        assert!(
+            engine.proposed.lock().is_ok_and(|p| p.is_empty()),
+            "no yes, nothing sent"
+        );
+        let _ = typed_at_console(&shared, &definition, &engine, &["stock save", "yes"]);
+        let proposed = engine
+            .proposed
+            .lock()
+            .map(|p| p.clone())
+            .unwrap_or_default();
+        assert_eq!(proposed.len(), 1);
+        let ids: Vec<&str> = proposed[0].iter().map(|s| s.id.as_str()).collect();
+        assert!(ids.contains(&"data_mod"), "{ids:?}");
+        assert_eq!(
+            ids[ids.len() - 3..],
+            [
+                "filter_width_fil1",
+                "filter_width_fil2",
+                "filter_width_fil3"
+            ]
+        );
+        assert_eq!(
+            setting_now(&shared, "data_mode_and_filter"),
+            selected,
+            "back on the filter it was on"
+        );
+        assert!(
+            proposed[0]
+                .iter()
+                .all(|s| s.id.starts_with("filter_width_fil")
+                    || definition
+                        .settings
+                        .iter()
+                        .any(|d| d.id == s.id && d.write && d.write_checked && !d.moves)),
+            "only settings the Agent may write"
+        );
+
+        let none = StockEngine {
+            stock: None,
+            proposed: Arc::new(Mutex::new(Vec::new())),
+        };
+        let desk = typed_at_console(&shared, &definition, &none, &["stock"]);
+        assert!(desk.waiting.lock().is_ok_and(|slot| slot.is_none()));
+    }
 
     /// The pretend IC-7300, shared for transmitting, after one transmission
     /// whose meters read `meters` (raw Po, SWR, ALC levels).
@@ -1655,6 +3342,10 @@ mod tests {
         assert_eq!(typed("exit"), Ok(Typed::Quit));
         assert!(typed("quit now").is_err());
         assert!(typed("compare FT8").is_err());
+        assert_eq!(typed("enroll"), Ok(Typed::Enroll(None)));
+        assert_eq!(typed("Enroll ON"), Ok(Typed::Enroll(Some(true))));
+        assert_eq!(typed("enroll off"), Ok(Typed::Enroll(Some(false))));
+        assert!(typed("enroll maybe").is_err());
     }
 
     #[test]

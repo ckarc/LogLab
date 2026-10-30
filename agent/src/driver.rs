@@ -99,7 +99,7 @@ pub fn inf_in(folder: &Path, inf: &str) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
-pub use windows::ensure;
+pub use windows::{downloads, ensure, fetch, keep, kept_folder};
 
 #[cfg(windows)]
 mod windows {
@@ -173,7 +173,7 @@ mod windows {
     }
 
     /// `drivers` beside the Agent.
-    fn kept_folder() -> PathBuf {
+    pub fn kept_folder() -> PathBuf {
         std::env::current_exe()
             .ok()
             .and_then(|exe| exe.parent().map(|folder| folder.join("drivers")))
@@ -181,7 +181,7 @@ mod windows {
     }
 
     /// The operator's Downloads folder.
-    fn downloads() -> Option<PathBuf> {
+    pub fn downloads() -> Option<PathBuf> {
         std::env::var_os("USERPROFILE").map(|home| Path::new(&home).join("Downloads"))
     }
 
@@ -194,7 +194,7 @@ mod windows {
     }
 
     /// Fetches the package into `folder` with Windows' own curl.exe.
-    fn fetch(driver: &DriverSummary, folder: &Path) -> Result<PathBuf, String> {
+    pub fn fetch(driver: &DriverSummary, folder: &Path) -> Result<PathBuf, String> {
         std::fs::create_dir_all(folder)
             .map_err(|error| format!("can't make {}: {error}", folder.display()))?;
         let package = folder.join(&driver.file);
@@ -252,7 +252,7 @@ mod windows {
     }
 
     /// Keeps a copy of the package in `drivers`, for the next computer.
-    fn keep(package: &Path, kept: &Path, driver: &DriverSummary) {
+    pub fn keep(package: &Path, kept: &Path, driver: &DriverSummary) {
         let copy = kept.join(&driver.file);
         if package == copy {
             return;

@@ -19,18 +19,30 @@
 //! reports the transmit slice, or the active slice when none transmits, and
 //! names it in the reading's VFO field, such as "Slice A".
 //!
-//! Only questions are ever sent. [`Ask`] is the whole list of what the Agent
-//! may say to the radio, and none of it tunes the radio or keys it.
+//! [`Ask`] is the whole list of questions the Agent may send, and none of
+//! it changes anything. [`Order`] is the whole list of changes: tuning the
+//! slice the Agent reports, changing its mode, and keying the transmitter.
+//! Orders are sent only through [`Tunable`] and [`Keyable`], so only
+//! `serve --allow-tuning` or `--allow-transmit` ever sends one
+//! (Principle IX), and whether a change took is what the radio's next status
+//! says, not what was asked (Principle X).
+//!
 //! Every line from the radio is checked before it is believed
 //! (Principle XII): lines are capped in size, the number of slices is capped,
 //! and frequencies and widths must be in range.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::time::{Duration, Instant};
 
-use crate::rig::{ControlPath, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity, Reading};
+use crate::civ_radio::WriteBack;
+use crate::flex_settings::{self, FlexSetting};
+use crate::rig::{
+    ControlPath, Exposes, Keyable, MAX_FREQUENCY_HZ, Mode, Radio, RadioError, RadioIdentity,
+    Reading, Tunable, Tuning, TxMeters,
+};
+use crate::rigdef::SettingSummary;
 
 /// The port a FlexRadio's API listens on.
 pub const PORT: u16 = 4992;
@@ -46,6 +58,25 @@ const READ_WAIT: Duration = Duration::from_millis(20);
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// How long the radio may say nothing before the Agent gives up on it.
 const SILENCE: Duration = Duration::from_secs(15);
+/// How long the radio may take to answer an order.
+const ANSWER_WAIT: Duration = Duration::from_secs(2);
+/// The most meters the Agent keeps track of.
+const MAX_METERS: usize = 1024;
+/// How old a meter reading may be and still count.
+const METER_FRESH: Duration = Duration::from_secs(1);
+/// The most meter packets taken in at once.
+const MAX_PACKETS: usize = 256;
+/// The VITA-49 packet class code of a FlexRadio meter packet.
+const METER_CLASS: u16 = 0x8002;
+/// A FLEX-6000 or -8000 series radio's full power, in watts.
+const FLEX_FULL_WATTS: f64 = 100.0;
+
+/// How long a setting may take to show its new value in the radio's
+/// status lines.
+const SETTLE: Duration = Duration::from_millis(500);
+/// How long the transmit interlock may take to say the radio keyed or
+/// unkeyed, after it took the order.
+const KEY_WAIT: Duration = Duration::from_secs(3);
 
 /// Everything the Agent may say to the radio. All of it only asks.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,19 +94,95 @@ pub enum Ask {
     Whole,
     /// Whether the radio is still there.
     Ping,
+    /// Where on this computer to send its meter readings (UDP).
+    MeterPort(u16),
+    /// Status lines describing its meters, and their readings (over UDP).
+    Meters,
 }
 
 impl Ask {
     /// The command text sent for this question, after `C<n>|`.
     #[must_use]
-    pub const fn command(self) -> &'static str {
+    pub fn command(self) -> String {
         match self {
-            Self::Info => "info",
-            Self::Slices => "sub slice all",
-            Self::Transmitter => "sub tx all",
-            Self::Whole => "sub radio all",
-            Self::Ping => "ping",
+            Self::Info => "info".to_owned(),
+            Self::Slices => "sub slice all".to_owned(),
+            Self::Transmitter => "sub tx all".to_owned(),
+            Self::Whole => "sub radio all".to_owned(),
+            Self::Ping => "ping".to_owned(),
+            Self::MeterPort(port) => format!("client udpport {port}"),
+            Self::Meters => "sub meter all".to_owned(),
         }
+    }
+}
+
+/// Everything the Agent may ask the radio to change.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Order {
+    /// Tune a slice, in hertz.
+    Tune {
+        /// The slice's number.
+        slice: u8,
+        /// Its new frequency.
+        hz: u64,
+    },
+    /// Change a slice's mode, by the radio's name for it.
+    Mode {
+        /// The slice's number.
+        slice: u8,
+        /// The mode, as [`mode_to_flex`] names it.
+        mode: &'static str,
+    },
+    /// Key the transmitter, or unkey it, through the radio's transmit
+    /// interlock. The slice that transmits is the one marked `tx`.
+    Transmit(bool),
+    /// Put one of [`flex_settings::SETTINGS`] to a value, on a slice
+    /// (only for a restore the operator asked for, or `check-writes`).
+    Setting {
+        /// The setting.
+        setting: &'static FlexSetting,
+        /// The slice's number.
+        slice: u8,
+        /// The value, as [`flex_settings::to_text`] gives it.
+        text: String,
+    },
+}
+
+impl Order {
+    /// The command text sent for this order, after `C<n>|`. The words are
+    /// `FlexLib`'s (`slice tune`, `slice set`); the API's wiki also gives
+    /// them shortened (`slice t`, `slice s`).
+    #[must_use]
+    pub fn command(&self) -> String {
+        match self {
+            Self::Tune { slice, hz } => format!(
+                "slice tune {slice} {}.{:06}",
+                hz / 1_000_000,
+                hz % 1_000_000
+            ),
+            Self::Mode { slice, mode } => format!("slice set {slice} mode={mode}"),
+            Self::Transmit(on) => format!("xmit {}", u8::from(*on)),
+            Self::Setting {
+                setting,
+                slice,
+                text,
+            } => flex_settings::set_command(setting, *slice, text),
+        }
+    }
+}
+
+/// What a FlexRadio's refusal code means, in plain words, from the API's
+/// wiki pages for `slice`, `xmit` and the known responses.
+#[must_use]
+pub fn refusal(code: u32) -> String {
+    match code {
+        0x5000_000C => "that frequency is out of the radio's range".to_owned(),
+        0x5000_000D | 0x534C_9999 => "the radio has no such slice".to_owned(),
+        0x5000_001D => "the radio has nothing free to tune that far".to_owned(),
+        0x5000_002F | 0x5000_0030 | 0x5000_0032 => "the radio has no such mode".to_owned(),
+        0x5000_0033 => "a value is out of range".to_owned(),
+        0x5000_003D => "this radio cannot transmit".to_owned(),
+        other => format!("error {other:08X}"),
     }
 }
 
@@ -123,6 +230,24 @@ pub fn classify(line: &str) -> Line<'_> {
 fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
     text.split([' ', ','])
         .filter_map(|word| word.split_once('='))
+}
+
+/// The most `key=value`s kept for one slice or the transmitter.
+const MAX_VALUES: usize = 256;
+/// The longest key or value kept.
+const MAX_VALUE: usize = 64;
+
+/// Keeps one `key=value` from a status line, if it is plain enough and
+/// there is room.
+fn keep(values: &mut BTreeMap<String, String>, key: &str, value: &str) {
+    let plain = |text: &str| text.len() <= MAX_VALUE && text.bytes().all(|b| b.is_ascii_graphic());
+    if key.is_empty() || !plain(key) || !plain(value) {
+        return;
+    }
+    if values.len() >= MAX_VALUES && !values.contains_key(key) {
+        return;
+    }
+    values.insert(key.to_owned(), value.to_owned());
 }
 
 /// A frequency in megahertz as the radio writes it ("14.074000"), in hertz.
@@ -173,6 +298,24 @@ pub fn mode_from_flex(name: &str) -> Option<Mode> {
     })
 }
 
+/// The FlexRadio's name for a rig-model mode, if it has the mode. Names
+/// from the API's list of supported modes; the radio reports them in
+/// capitals, as they are sent.
+#[must_use]
+pub const fn mode_to_flex(mode: Mode) -> Option<&'static str> {
+    Some(match mode {
+        Mode::Usb => "USB",
+        Mode::Lsb => "LSB",
+        Mode::Cw => "CW",
+        Mode::Rtty => "RTTY",
+        Mode::Am => "AM",
+        Mode::Fm => "FM",
+        Mode::DataUsb => "DIGU",
+        Mode::DataLsb => "DIGL",
+        Mode::CwReverse | Mode::RttyReverse | Mode::DataFm | Mode::Other => return None,
+    })
+}
+
 /// What the Agent knows about one slice, from its status lines.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct Slice {
@@ -183,6 +326,8 @@ struct Slice {
     letter: Option<String>,
     transmit: bool,
     active: bool,
+    /// Every other `key=value` it reported, for its settings.
+    values: BTreeMap<String, String>,
 }
 
 /// The radio's live state, built up from its status lines.
@@ -190,6 +335,15 @@ struct Slice {
 pub struct Board {
     slices: BTreeMap<u8, Slice>,
     ptt: Option<bool>,
+    /// The transmit interlock's state, as it last said it.
+    interlock: Option<String>,
+    /// The meters' numbers, by what the Agent reads them for.
+    forward_meter: Option<u16>,
+    swr_meter: Option<u16>,
+    /// How many meters the radio has described.
+    meters_seen: BTreeSet<u16>,
+    /// The transmitter's `key=value`s, for its settings.
+    transmit: BTreeMap<String, String>,
 }
 
 impl Board {
@@ -209,11 +363,26 @@ impl Board {
                 let rest = status.splitn(3, ' ').nth(2).unwrap_or_default();
                 self.take_slice(index, rest)
             }
+            // "transmit band ..." lines are per-band settings, not these.
+            Some("transmit") if words.next() != Some("band") => {
+                for (key, value) in pairs(status) {
+                    keep(&mut self.transmit, key, value);
+                }
+                Ok(())
+            }
+            Some("meter") => {
+                self.take_meters(status.get("meter ".len()..).unwrap_or_default());
+                Ok(())
+            }
             Some("interlock") => {
                 for (key, value) in pairs(status) {
-                    if key == "state" {
+                    if key == "state"
+                        && value.len() <= 24
+                        && value.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+                    {
                         // UNKEY_REQUESTED: still on the air until it unkeys.
                         self.ptt = Some(matches!(value, "TRANSMITTING" | "UNKEY_REQUESTED"));
+                        self.interlock = Some(value.to_owned());
                     }
                 }
                 Ok(())
@@ -250,8 +419,73 @@ impl Board {
                 "active" => slice.active = value == "1",
                 _ => {}
             }
+            keep(&mut slice.values, key, value);
         }
         Ok(())
+    }
+
+    /// Take in the radio's description of its meters: `#`-separated
+    /// `<number>.<field>=<value>` words. The Agent keeps only which numbers
+    /// are the transmitter's forward power (in dBm) and SWR.
+    fn take_meters(&mut self, text: &str) {
+        let mut described: BTreeMap<u16, BTreeMap<&str, &str>> = BTreeMap::new();
+        for word in text.split('#') {
+            let Some((name, value)) = word.split_once('=') else {
+                continue;
+            };
+            let Some((number, field)) = name.trim().split_once('.') else {
+                continue;
+            };
+            let Ok(number) = number.parse::<u16>() else {
+                continue;
+            };
+            if !self.meters_seen.contains(&number) && self.meters_seen.len() >= MAX_METERS {
+                continue;
+            }
+            self.meters_seen.insert(number);
+            described
+                .entry(number)
+                .or_default()
+                .insert(field, value.trim_matches('"'));
+        }
+        for (number, fields) in described {
+            let field = |name: &str| fields.get(name).copied().unwrap_or_default();
+            if !field("src").starts_with("TX") {
+                continue;
+            }
+            match (field("nam"), field("unit").to_ascii_lowercase().as_str()) {
+                ("FWDPWR", "dbm") => self.forward_meter = Some(number),
+                ("SWR", "swr") => self.swr_meter = Some(number),
+                _ => {}
+            }
+        }
+    }
+
+    /// The value the radio last reported for `setting`, as text.
+    fn value(&self, setting: &FlexSetting) -> Option<String> {
+        let slice = || self.chosen().map(|(_, slice)| &slice.values);
+        match setting.object {
+            flex_settings::Object::Transmit => self.transmit.get(setting.status).cloned(),
+            flex_settings::Object::Slice => slice()?.get(setting.status).cloned(),
+            flex_settings::Object::Filter => {
+                let values = slice()?;
+                Some(format!(
+                    "{} {}",
+                    values.get("filter_lo")?,
+                    values.get("filter_hi")?
+                ))
+            }
+        }
+    }
+
+    /// The slice that matters: the transmit slice, else the active one,
+    /// else the first.
+    fn chosen(&self) -> Option<(&u8, &Slice)> {
+        self.slices
+            .iter()
+            .find(|(_, s)| s.transmit)
+            .or_else(|| self.slices.iter().find(|(_, s)| s.active))
+            .or_else(|| self.slices.iter().next())
     }
 
     /// The reading for the slice that matters: the transmit slice, else the
@@ -261,13 +495,7 @@ impl Board {
     ///
     /// No slice is open, or it has not said its frequency yet.
     pub fn reading(&self) -> Result<Reading, RadioError> {
-        let chosen = self
-            .slices
-            .iter()
-            .find(|(_, s)| s.transmit)
-            .or_else(|| self.slices.iter().find(|(_, s)| s.active))
-            .or_else(|| self.slices.iter().next());
-        let Some((index, slice)) = chosen else {
+        let Some((index, slice)) = self.chosen() else {
             return Err(RadioError(
                 "no slice is open on the FlexRadio; open one in SmartSDR".to_owned(),
             ));
@@ -293,6 +521,80 @@ impl Board {
             vfo: Some(format!("Slice {letter}")),
         })
     }
+}
+
+/// The meter readings in one VITA-49 packet from the radio, as (meter
+/// number, raw value) pairs: empty unless it is a whole meter packet.
+///
+/// The header's layout is VITA-49's: the first word gives the packet type
+/// (top 4 bits), whether a class ID and a trailer follow (bits 27 and 26),
+/// the timestamps (bits 23-22 and 21-20) and the size in 32-bit words (low
+/// 16 bits). Types 1 and 3 carry a stream ID. The class ID's second word
+/// ends in the packet class code; a meter packet's is 0x8002, and its
+/// payload is pairs of a 16-bit meter number and a 16-bit signed value
+/// (the API's Metering Protocol page; `AetherSDR`'s reading of it).
+#[must_use]
+pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
+    let word = |at: usize| {
+        packet
+            .get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_be_bytes)
+    };
+    let Some(header) = word(0) else {
+        return Vec::new();
+    };
+    let size = usize::try_from(header & 0xFFFF).unwrap_or(usize::MAX) * 4;
+    let has_class = header & 0x0800_0000 != 0;
+    if !has_class || size > packet.len() {
+        return Vec::new();
+    }
+    let packet = &packet[..size];
+    let mut at = 4;
+    if matches!(header >> 28, 1 | 3) {
+        at += 4;
+    }
+    if word(at + 4).map(|w| w & 0xFFFF) != Some(u32::from(METER_CLASS)) {
+        return Vec::new();
+    }
+    at += 8;
+    if header & 0x00C0_0000 != 0 {
+        at += 4;
+    }
+    if header & 0x0030_0000 != 0 {
+        at += 8;
+    }
+    let end = size.saturating_sub(if header & 0x0400_0000 != 0 { 4 } else { 0 });
+    packet
+        .get(at..end)
+        .unwrap_or_default()
+        .chunks_exact(4)
+        .map(|pair| {
+            (
+                u16::from_be_bytes([pair[0], pair[1]]),
+                i16::from_be_bytes([pair[2], pair[3]]),
+            )
+        })
+        .collect()
+}
+
+/// Forward power in percent of `full_watts`, from a meter's raw dBm
+/// (two's complement, 1/128 dB steps: the API's Meter Units).
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn power_percent(raw_dbm: i16, full_watts: f64) -> u16 {
+    let watts = 10_f64.powf(f64::from(raw_dbm) / 1280.0) / 1000.0;
+    // Clamped to 0..=999 first, so the cast loses nothing.
+    (watts / full_watts * 100.0).round().clamp(0.0, 999.0) as u16
+}
+
+/// SWR in tenths, from a meter's raw value (1/128 steps, as dBm's: the
+/// steps `FlexLib` and `AetherSDR` read it in).
+#[must_use]
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+pub fn swr_tenths(raw: i16) -> u16 {
+    // Clamped to 10..=9990 first (1.0 to 999.0), so the cast loses nothing.
+    (f64::from(raw) / 12.8).round().clamp(10.0, 9990.0) as u16
 }
 
 /// The radio's model from its `info` answer, if it is plain enough to show.
@@ -321,6 +623,17 @@ pub struct FlexRadio {
     seq: u32,
     heard_at: Instant,
     pinged_at: Instant,
+    /// Where the radio sends meter readings, once asked for them.
+    meters: Option<UdpSocket>,
+    /// Whether asking for them was tried (it is tried once).
+    meters_asked: bool,
+    /// The radio's address: meter packets from anywhere else are ignored.
+    radio_ip: IpAddr,
+    /// The last forward power and SWR readings, raw, and when.
+    forward: Option<(i16, Instant)>,
+    swr: Option<(i16, Instant)>,
+    /// Its settings, as the record and restore code takes them.
+    definition: crate::rigdef::Definition,
 }
 
 impl FlexRadio {
@@ -354,6 +667,12 @@ impl FlexRadio {
             seq: 0,
             heard_at: now,
             pinged_at: now,
+            meters: None,
+            meters_asked: false,
+            radio_ip: target.ip(),
+            forward: None,
+            swr: None,
+            definition: flex_settings::definition("FlexRadio"),
         };
         let info = radio.send(Ask::Info)?;
         let slices = radio.send(Ask::Slices)?;
@@ -394,13 +713,107 @@ impl FlexRadio {
                 "the radio at that address did not say it is a FlexRadio".to_owned(),
             ));
         }
+        radio.definition = flex_settings::definition(&radio.identity.model);
         Ok(radio)
     }
 
     /// Send one question; return its number.
     fn send(&mut self, ask: Ask) -> Result<u32, RadioError> {
+        self.send_text(&ask.command())
+    }
+
+    /// Send one order and wait for the radio to take it or refuse it,
+    /// following its status lines meanwhile.
+    fn order(&mut self, order: &Order) -> Result<(), RadioError> {
+        self.command(&order.command())
+    }
+
+    /// Send one command and wait for the radio to take it or refuse it,
+    /// following its status lines meanwhile.
+    fn command(&mut self, command: &str) -> Result<(), RadioError> {
+        let seq = self.send_text(command)?;
+        let deadline = Instant::now() + ANSWER_WAIT;
+        loop {
+            if Instant::now() > deadline {
+                return Err(RadioError(format!(
+                    "the FlexRadio did not answer {command:?}"
+                )));
+            }
+            let Some(line) = self.next_line()? else {
+                continue;
+            };
+            match classify(&line) {
+                Line::Answer {
+                    seq: answered,
+                    code,
+                    ..
+                } if answered == seq => {
+                    return if code == 0 {
+                        Ok(())
+                    } else {
+                        Err(RadioError(format!(
+                            "the FlexRadio refused {command:?}: {}",
+                            refusal(code)
+                        )))
+                    };
+                }
+                Line::Status(status) => self.board.take(status)?,
+                _ => {}
+            }
+        }
+    }
+
+    /// Asks the radio to send its meter readings to a UDP port on this
+    /// computer, the first time meters are wanted.
+    fn ask_for_meters(&mut self) -> Result<(), RadioError> {
+        let lost = |error: io::Error| RadioError(format!("can't take FlexRadio meters: {error}"));
+        let socket = UdpSocket::bind(("0.0.0.0", 0)).map_err(lost)?;
+        socket.set_nonblocking(true).map_err(lost)?;
+        let port = socket.local_addr().map_err(lost)?.port();
+        self.command(&Ask::MeterPort(port).command())?;
+        self.command(&Ask::Meters.command())?;
+        self.meters = Some(socket);
+        Ok(())
+    }
+
+    /// Take in the meter packets that have arrived.
+    fn take_meter_packets(&mut self) {
+        let Some(socket) = &self.meters else {
+            return;
+        };
+        let mut packet = vec![0_u8; 65_536];
+        for _ in 0..MAX_PACKETS {
+            let Ok((size, from)) = socket.recv_from(&mut packet) else {
+                break;
+            };
+            if from.ip() != self.radio_ip {
+                continue;
+            }
+            let now = Instant::now();
+            for (number, value) in meter_readings(&packet[..size]) {
+                if Some(number) == self.board.forward_meter {
+                    self.forward = Some((value, now));
+                } else if Some(number) == self.board.swr_meter {
+                    self.swr = Some((value, now));
+                }
+            }
+        }
+    }
+
+    /// Take in every line that has arrived.
+    fn take_in(&mut self) -> Result<(), RadioError> {
+        while let Some(line) = self.next_line()? {
+            if let Line::Status(status) = classify(&line) {
+                self.board.take(status)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Send one command line; return its number.
+    fn send_text(&mut self, command: &str) -> Result<u32, RadioError> {
         self.seq = self.seq.wrapping_add(1);
-        let line = format!("C{}|{}\n", self.seq, ask.command());
+        let line = format!("C{}|{command}\n", self.seq);
         self.writer
             .write_all(line.as_bytes())
             .map_err(|error| RadioError(format!("lost touch with the FlexRadio: {error}")))?;
@@ -450,13 +863,13 @@ impl Radio for FlexRadio {
         &self.identity
     }
 
+    fn exposes(&mut self) -> Option<&mut dyn Exposes> {
+        Some(self)
+    }
+
     fn read(&mut self) -> Result<Reading, RadioError> {
         // Take in everything that has arrived since the last read.
-        while let Some(line) = self.next_line()? {
-            if let Line::Status(status) = classify(&line) {
-                self.board.take(status)?;
-            }
-        }
+        self.take_in()?;
         if self.heard_at.elapsed() > SILENCE {
             return Err(RadioError("the FlexRadio stopped answering".to_owned()));
         }
@@ -465,6 +878,200 @@ impl Radio for FlexRadio {
             self.pinged_at = Instant::now();
         }
         self.board.reading()
+    }
+}
+
+impl Tunable for FlexRadio {
+    /// Tunes the slice the Agent reports (the transmit slice, else the
+    /// active one), or changes its mode. A FlexRadio has slices, not VFO A
+    /// and B, so the other VFO, choosing a VFO and split are refused: split
+    /// on a FlexRadio is a second slice, set up in SmartSDR.
+    fn tune(&mut self, tuning: Tuning) -> Result<(), RadioError> {
+        self.take_in()?;
+        let slice = *self
+            .board
+            .chosen()
+            .ok_or_else(|| {
+                RadioError("no slice is open on the FlexRadio; open one in SmartSDR".to_owned())
+            })?
+            .0;
+        let order = match tuning {
+            Tuning::Frequency(hz) if hz == 0 || hz > MAX_FREQUENCY_HZ => {
+                return Err(RadioError(format!("{hz} Hz is not a frequency")));
+            }
+            Tuning::Frequency(hz) => Order::Tune { slice, hz },
+            Tuning::Mode(mode) => Order::Mode {
+                slice,
+                mode: mode_to_flex(mode)
+                    .ok_or_else(|| RadioError(format!("a FlexRadio has no {mode:?} mode")))?,
+            },
+            Tuning::OtherFrequency(_) | Tuning::Select(_) | Tuning::Split(_) => {
+                return Err(RadioError(
+                    "a FlexRadio has slices, not VFO A and B; split is a second slice, set up in SmartSDR"
+                        .to_owned(),
+                ));
+            }
+        };
+        self.order(&order)
+    }
+}
+
+impl Keyable for FlexRadio {
+    /// Keys or unkeys through the radio's transmit interlock, then waits for
+    /// the interlock to say it did: the radio taking the order is not the
+    /// radio transmitting (Principle X).
+    fn transmit(&mut self, on: bool) -> Result<(), RadioError> {
+        // Meters are asked for before the first transmission, so they are
+        // flowing by the time it is on the air; without them the
+        // transmission goes ahead.
+        if on && !self.meters_asked {
+            self.meters_asked = true;
+            let _ = self.ask_for_meters();
+        }
+        self.order(&Order::Transmit(on))?;
+        let deadline = Instant::now() + KEY_WAIT;
+        loop {
+            match self.board.interlock.as_deref() {
+                Some("TRANSMITTING") if on => return Ok(()),
+                Some("READY" | "RECEIVE" | "NOT_READY") if !on => return Ok(()),
+                Some(state @ ("TX_FAULT" | "TIMEOUT")) if on => {
+                    return Err(RadioError(format!(
+                        "the FlexRadio would not transmit: its interlock says {state}"
+                    )));
+                }
+                _ => {}
+            }
+            if Instant::now() > deadline {
+                return Err(RadioError(format!(
+                    "sent xmit {}, but the FlexRadio's interlock still says {}",
+                    u8::from(on),
+                    self.board.interlock.as_deref().unwrap_or("nothing")
+                )));
+            }
+            if let Some(line) = self.next_line()?
+                && let Line::Status(status) = classify(&line)
+            {
+                self.board.take(status)?;
+            }
+        }
+    }
+
+    /// Forward power and SWR, as the radio's meters measured them within
+    /// the last second. Power is in percent of a FLEX-6000 or -8000's 100 W,
+    /// so another model's isn't given. The radio's ALC meter is in dBFS,
+    /// not on a scale the Agent can judge, so ALC is left out.
+    fn meters(&mut self) -> Result<Option<TxMeters>, RadioError> {
+        self.take_in()?;
+        self.take_meter_packets();
+        if !self.identity.model.starts_with("FLEX-") {
+            return Ok(None);
+        }
+        let fresh = |reading: Option<(i16, Instant)>| {
+            reading
+                .filter(|(_, at)| at.elapsed() <= METER_FRESH)
+                .map(|(value, _)| value)
+        };
+        Ok(match (fresh(self.forward), fresh(self.swr)) {
+            (Some(forward), Some(swr)) => Some(TxMeters {
+                power: power_percent(forward, FLEX_FULL_WATTS),
+                swr_tenths: swr_tenths(swr),
+                alc: None,
+                tuning: false,
+                readings: 0,
+            }),
+            _ => None,
+        })
+    }
+}
+
+impl FlexRadio {
+    /// Reads one setting from what the radio last reported.
+    fn read_setting(&mut self, summary: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        let setting = known(summary)?;
+        self.take_in()?;
+        let text = self.board.value(setting).ok_or_else(|| {
+            RadioError(format!("the FlexRadio hasn't reported {}", setting.label))
+        })?;
+        flex_settings::to_bytes(setting, &text).map_err(RadioError)
+    }
+
+    /// Puts one setting to `bytes`, then follows the radio's status lines
+    /// for a moment so a read straight after sees what it reports.
+    fn write_setting(&mut self, summary: &SettingSummary, bytes: &[u8]) -> Result<(), RadioError> {
+        let setting = known(summary)?;
+        let text = flex_settings::to_text(setting, bytes).map_err(RadioError)?;
+        self.take_in()?;
+        let slice = self.board.chosen().map_or(0, |(index, _)| *index);
+        self.order(&Order::Setting {
+            setting,
+            slice,
+            text: text.clone(),
+        })?;
+        let deadline = Instant::now() + SETTLE;
+        while Instant::now() < deadline && self.board.value(setting).as_deref() != Some(&text) {
+            if let Some(line) = self.next_line()?
+                && let Line::Status(status) = classify(&line)
+            {
+                self.board.take(status)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Reads one setting, writes exactly what it read back to it, and reads
+    /// it again (`check-writes`).
+    ///
+    /// # Errors
+    ///
+    /// The setting is one the Agent never changes, or couldn't be read
+    /// before the write.
+    pub fn write_back(&mut self, summary: &SettingSummary) -> Result<WriteBack, RadioError> {
+        if !summary.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                summary.label
+            )));
+        }
+        let before = self.read_setting(summary)?;
+        let written = self.write_setting(summary, &before);
+        let after = self.read_setting(summary);
+        Ok(WriteBack {
+            before,
+            written: written.map_err(|error| error.to_string()),
+            after: after.map_err(|error| error.to_string()),
+        })
+    }
+}
+
+/// The FlexRadio setting a summary names.
+fn known(summary: &SettingSummary) -> Result<&'static FlexSetting, RadioError> {
+    flex_settings::find(&summary.id)
+        .ok_or_else(|| RadioError(format!("a FlexRadio has no setting {:?}", summary.id)))
+}
+
+impl Exposes for FlexRadio {
+    fn definition(&self) -> &crate::rigdef::Definition {
+        &self.definition
+    }
+
+    fn read_exposed(&mut self, setting: &SettingSummary) -> Result<Vec<u8>, RadioError> {
+        self.read_setting(setting)
+    }
+
+    fn write_exposed(&mut self, setting: &SettingSummary, bytes: &[u8]) -> Result<(), RadioError> {
+        if !setting.write {
+            return Err(RadioError(format!(
+                "{} is one the Agent never changes",
+                setting.label
+            )));
+        }
+        if !setting.write_checked {
+            return Err(RadioError(format!(
+                "{} isn't checked on a real radio yet, so the Agent doesn't write it",
+                setting.label
+            )));
+        }
+        self.write_setting(setting, bytes)
     }
 }
 
@@ -490,10 +1097,14 @@ mod tests {
     use std::net::TcpListener;
     use std::thread;
 
+    use std::time::{Duration, Instant};
+
     use super::{
-        Ask, Board, FlexRadio, Line, classify, mode_from_flex, model_from_info, parse_mhz,
+        Ask, Board, FlexRadio, Line, Order, classify, meter_readings, mode_from_flex, mode_to_flex,
+        model_from_info, parse_mhz, power_percent, swr_tenths,
     };
-    use crate::rig::{Mode, Radio, Reading};
+    use crate::flex_pretend::PretendFlex;
+    use crate::rig::{Exposes, Keyable, Mode, Radio, Reading, Tunable, Tuning, TxMeters, Vfo};
 
     #[test]
     fn sorts_lines() {
@@ -620,11 +1231,13 @@ mod tests {
             Ask::Transmitter,
             Ask::Whole,
             Ask::Ping,
+            Ask::MeterPort(4993),
+            Ask::Meters,
         ] {
             let command = ask.command();
             let first = command.split(' ').next().unwrap_or_default();
             assert!(
-                matches!(first, "info" | "sub" | "ping"),
+                matches!(first, "info" | "sub" | "ping") || command.starts_with("client udpport "),
                 "{command} is not a question"
             );
         }
@@ -703,6 +1316,337 @@ mod tests {
         assert_eq!(
             seen,
             ["info", "sub slice all", "sub tx all", "sub radio all"]
+        );
+    }
+
+    #[test]
+    fn orders_are_written_as_the_api_takes_them() {
+        assert_eq!(
+            Order::Tune {
+                slice: 1,
+                hz: 14_074_000
+            }
+            .command(),
+            "slice tune 1 14.074000"
+        );
+        assert_eq!(
+            Order::Tune { slice: 0, hz: 475 }.command(),
+            "slice tune 0 0.000475"
+        );
+        assert_eq!(
+            Order::Mode {
+                slice: 0,
+                mode: "DIGU"
+            }
+            .command(),
+            "slice set 0 mode=DIGU"
+        );
+        assert_eq!(Order::Transmit(true).command(), "xmit 1");
+        assert_eq!(Order::Transmit(false).command(), "xmit 0");
+        // Every mode the Agent sends reads back as the same mode.
+        for mode in [
+            Mode::Usb,
+            Mode::Lsb,
+            Mode::Cw,
+            Mode::Rtty,
+            Mode::Am,
+            Mode::Fm,
+            Mode::DataUsb,
+            Mode::DataLsb,
+        ] {
+            assert_eq!(mode_to_flex(mode).and_then(mode_from_flex), Some(mode));
+        }
+        for mode in [
+            Mode::CwReverse,
+            Mode::RttyReverse,
+            Mode::DataFm,
+            Mode::Other,
+        ] {
+            assert_eq!(mode_to_flex(mode), None);
+        }
+    }
+
+    fn pretend(can_transmit: bool) -> Option<(PretendFlex, FlexRadio)> {
+        let pretend = PretendFlex::start("FLEX-6600", can_transmit).ok()?;
+        let radio = FlexRadio::open(pretend.address());
+        assert!(radio.is_ok(), "{:?}", radio.as_ref().err());
+        Some((pretend, radio.ok()?))
+    }
+
+    #[test]
+    fn tunes_and_keys_a_flexradio() {
+        let Some((pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        assert_eq!(radio.identity().model, "FLEX-6600");
+        assert_eq!(radio.tune(Tuning::Frequency(7_074_000)), Ok(()));
+        assert_eq!(radio.tune(Tuning::Mode(Mode::Usb)), Ok(()));
+        let reading = radio.read().unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(reading.frequency_hz, 7_074_000);
+        assert_eq!(reading.mode, Some(Mode::Usb));
+        assert_eq!(reading.ptt, Some(false));
+        assert_eq!(radio.transmit(true), Ok(()));
+        assert!(pretend.transmitting());
+        assert_eq!(radio.read().map(|r| r.ptt), Ok(Some(true)));
+        assert_eq!(radio.transmit(false), Ok(()));
+        assert!(!pretend.transmitting());
+        assert_eq!(radio.read().map(|r| r.ptt), Ok(Some(false)));
+        assert_eq!(
+            heard(&pretend)[4..],
+            [
+                "slice tune 0 7.074000",
+                "slice set 0 mode=USB",
+                "client udpport N",
+                "sub meter all",
+                "xmit 1",
+                "xmit 0"
+            ]
+        );
+    }
+
+    /// What the pretend radio heard, with the meter port as N.
+    fn heard(pretend: &PretendFlex) -> Vec<String> {
+        pretend
+            .heard()
+            .into_iter()
+            .map(|command| {
+                if command.starts_with("client udpport ") {
+                    "client udpport N".to_owned()
+                } else {
+                    command
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn reads_the_transmit_meters_while_keyed() {
+        let Some((_pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        // Not keyed yet: nothing asked for, nothing to read.
+        assert_eq!(radio.meters(), Ok(None));
+        assert_eq!(radio.transmit(true), Ok(()));
+        let mut meters = radio.meters();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while meters == Ok(None) && Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(20));
+            meters = radio.meters();
+        }
+        assert_eq!(
+            meters,
+            Ok(Some(TxMeters {
+                power: 40,
+                swr_tenths: 13,
+                alc: None,
+                tuning: false,
+                readings: 0,
+            }))
+        );
+        assert_eq!(radio.transmit(false), Ok(()));
+    }
+
+    #[test]
+    fn reads_meter_packets() {
+        let packet = |header: u32, class: u32, pairs: &[(u16, i16)], trailer: bool| {
+            let mut words = vec![header, 0x0000_0700, 0x0000_1C2D, class];
+            if header & 0x00C0_0000 != 0 {
+                words.push(0);
+            }
+            if header & 0x0030_0000 != 0 {
+                words.extend([0, 0]);
+            }
+            let mut bytes: Vec<u8> = words.iter().flat_map(|w| w.to_be_bytes()).collect();
+            for (number, value) in pairs {
+                bytes.extend_from_slice(&number.to_be_bytes());
+                bytes.extend_from_slice(&value.to_be_bytes());
+            }
+            if trailer {
+                bytes.extend_from_slice(&[0xFF; 4]);
+            }
+            let size = u32::try_from(bytes.len() / 4).unwrap_or(0);
+            bytes[..4].copy_from_slice(&(header | size).to_be_bytes());
+            bytes
+        };
+        let pairs = [(15, 5891), (17, 166), (7, -1280)];
+        // Extension data with a stream ID, both timestamps.
+        let full = packet(0x3850_0000, 0x534C_8002, &pairs, false);
+        assert_eq!(meter_readings(&full), pairs);
+        // With a trailer, it is left out.
+        let trailed = packet(0x3C50_0000, 0x534C_8002, &pairs, true);
+        assert_eq!(meter_readings(&trailed), pairs);
+        // No timestamps.
+        let bare = packet(0x3800_0000, 0x534C_8002, &pairs, false);
+        assert_eq!(meter_readings(&bare), pairs);
+        // Not a meter packet, no class ID, cut short, empty.
+        assert!(meter_readings(&packet(0x3850_0000, 0x534C_8003, &pairs, false)).is_empty());
+        assert!(meter_readings(&packet(0x3050_0000, 0x534C_8002, &pairs, false)).is_empty());
+        assert!(meter_readings(&full[..full.len() - 4]).is_empty());
+        assert!(meter_readings(&[]).is_empty());
+    }
+
+    #[test]
+    fn puts_meters_on_the_agents_scales() {
+        assert_eq!(power_percent(5891, 100.0), 40);
+        assert_eq!(power_percent(6400, 100.0), 100);
+        assert_eq!(power_percent(0, 100.0), 0);
+        assert_eq!(power_percent(i16::MAX, 100.0), 999);
+        assert_eq!(swr_tenths(128), 10);
+        assert_eq!(swr_tenths(166), 13);
+        assert_eq!(swr_tenths(192), 15);
+        assert_eq!(swr_tenths(-50), 10);
+        let mut board = Board::default();
+        assert_eq!(
+            board.take(
+                "meter 3.src=SLC#3.num=0#3.nam=LEVEL#3.unit=dBm#\
+                 15.src=TX-#15.num=1#15.nam=FWDPWR#15.desc=RF Power Forward#15.unit=dBm#\
+                 17.src=TX-#17.nam=SWR#17.unit=SWR#7.src=TX-#7.nam=ALC#7.unit=dBFS#"
+            ),
+            Ok(())
+        );
+        assert_eq!((board.forward_meter, board.swr_meter), (Some(15), Some(17)));
+    }
+
+    #[test]
+    fn records_every_setting_and_writes_none_until_checked() {
+        let Some((_pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        let record = crate::settings_record::read(
+            &mut radio,
+            None,
+            std::time::SystemTime::UNIX_EPOCH,
+            "TEST",
+        );
+        assert_eq!(record.model, "FLEX-6600");
+        let unread: Vec<&str> = record
+            .settings
+            .iter()
+            .filter(|e| matches!(e.value, crate::settings_record::Value::Unread { .. }))
+            .map(|e| e.id.as_str())
+            .collect();
+        assert!(unread.is_empty(), "{unread:?}");
+        let definition = radio.definition().clone();
+        // Its own words are shown as words.
+        let lines = crate::settings_record::report(&record, &[], None, &definition);
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("Slice mode") && l.ends_with(" DIGU")),
+            "{lines:?}"
+        );
+        let setting = |id: &str| {
+            definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .unwrap_or_else(|| unreachable!("{id}"))
+        };
+        assert_eq!(
+            radio.read_exposed(&setting("rf_power")),
+            Ok(vec![0x00, 0x50])
+        );
+        assert_eq!(radio.read_exposed(&setting("mode")), Ok(b"DIGU".to_vec()));
+        assert_eq!(
+            radio.read_exposed(&setting("filter")),
+            Ok(b"100 3100".to_vec())
+        );
+        let refused = radio.write_exposed(&setting("rf_power"), &[0x00, 0x20]);
+        assert!(refused.is_err_and(|e| e.0.contains("isn't checked on a real radio")));
+        assert_eq!(
+            radio.read_exposed(&setting("rf_power")),
+            Ok(vec![0x00, 0x50])
+        );
+    }
+
+    #[test]
+    fn checks_its_writes_by_writing_each_value_back() {
+        let Some((pretend, mut radio)) = pretend(true) else {
+            return;
+        };
+        let report = crate::write_check::check(
+            &mut radio,
+            None,
+            std::time::SystemTime::UNIX_EPOCH,
+            "TEST",
+            |_, _| {},
+        );
+        let failed: Vec<(&str, &str)> = report
+            .settings
+            .iter()
+            .filter(|c| c.outcome != "works")
+            .map(|c| (c.id.as_str(), c.outcome))
+            .collect();
+        assert!(failed.is_empty(), "{failed:?}");
+        let heard = pretend.heard();
+        for sent in [
+            "transmit set miclevel=50",
+            "slice set 0 agc_mode=med",
+            "slice set 0 rf_gain=10",
+            "filt 0 100 3100",
+            "slice set 0 mode=DIGU",
+        ] {
+            assert!(heard.iter().any(|h| h == sent), "{sent} in {heard:?}");
+        }
+        // Nothing was keyed.
+        assert!(!heard.iter().any(|h| h.starts_with("xmit")));
+    }
+
+    #[test]
+    fn says_what_a_flexradio_refused() {
+        let Some((pretend, mut radio)) = pretend(false) else {
+            return;
+        };
+        let refused = |result: Result<(), crate::rig::RadioError>| {
+            result.map_err(|error| error.0).err().unwrap_or_default()
+        };
+        assert!(
+            refused(radio.tune(Tuning::Frequency(144_174_000)))
+                .contains("out of the radio's range")
+        );
+        assert!(refused(radio.tune(Tuning::Mode(Mode::CwReverse))).contains("no CwReverse mode"));
+        for tuning in [
+            Tuning::OtherFrequency(14_076_000),
+            Tuning::Select(Vfo::B),
+            Tuning::Split(true),
+        ] {
+            assert!(refused(radio.tune(tuning)).contains("slices, not VFO A and B"));
+        }
+        assert!(refused(radio.transmit(true)).contains("cannot transmit"));
+        assert!(!pretend.transmitting());
+        // Only what could be sent was sent.
+        assert_eq!(
+            heard(&pretend)[4..],
+            [
+                "slice tune 0 144.174000",
+                "client udpport N",
+                "sub meter all",
+                "xmit 1"
+            ]
+        );
+        // The radio is still as it was.
+        assert_eq!(radio.read().map(|r| r.frequency_hz), Ok(14_074_000));
+    }
+
+    #[test]
+    fn keying_is_what_the_interlock_says() {
+        // This radio takes `xmit 1` but its interlock never says it keyed.
+        let Some((address, handle)) = fake_radio("FLEX-8400") else {
+            return;
+        };
+        let Ok(mut radio) = FlexRadio::open(&address) else {
+            unreachable!("the fake radio should open")
+        };
+        let error = radio.transmit(true).map_err(|error| error.0);
+        assert_eq!(
+            error,
+            Err("sent xmit 1, but the FlexRadio's interlock still says READY".to_owned())
+        );
+        drop(radio);
+        assert_eq!(
+            handle.join().unwrap_or_default().last().map(String::as_str),
+            Some("xmit 1")
         );
     }
 

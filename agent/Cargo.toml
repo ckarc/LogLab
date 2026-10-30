@@ -19,7 +19,7 @@ serde = { version = "1", features = ["derive"] }
 # A radio's COM port, for the CI-V driver. No default features: they only
 # add USB device listing through libudev on Linux, which needs system
 # libraries. MPL-2.0.
-serialport = { version = "4.10.1", default-features = false }
+serialport = { version = "4.10.1", default-features = false, features = ["usbportinfo-interface"] }
 serde_json = "1"
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
@@ -31,9 +31,11 @@ cpal = { version = "0.18.2", default-features = false }
 # The tray: its icon by the clock, menu and notices (Windows'
 # Shell_NotifyIconW and popup menus). MIT.
 native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "message-window", "menu", "cursor", "notice"] }
-# Windows' own message box, kept on top until answered (MB_TOPMOST). Already
-# in the build through cpal. MIT OR Apache-2.0.
-windows = { version = "0.62.2", features = ["Win32_UI_WindowsAndMessaging"] }
+# Windows' own message box, kept on top until answered (MB_TOPMOST), and
+# which program owns a connection to the virtual radio (GetExtendedTcpTable,
+# QueryFullProcessImageNameW). Already in the build through cpal. MIT OR
+# Apache-2.0.
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
 
 [lints.rust]
 # `unsafe` is denied (not forbidden) so a hardware or platform interface that

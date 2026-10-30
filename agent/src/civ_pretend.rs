@@ -84,6 +84,9 @@ pub struct PretendCiv {
     echo: Option<([u8; 2], u8)>,
     /// The transceive setting and its "ON" code, if the definition has one.
     transceive: Option<([u8; 2], u8)>,
+    /// Each filter's width (`1A 03`), by mode, data mode and filter: the
+    /// radio reads and sets only the selected filter's.
+    widths: BTreeMap<(u8, bool, u8), u16>,
     decoder: Decoder,
 }
 
@@ -121,6 +124,7 @@ impl PretendCiv {
             menu: BTreeMap::new(),
             echo: None,
             transceive: None,
+            widths: BTreeMap::new(),
             decoder: Decoder::default(),
         };
         for setting in &definition.settings {
@@ -252,9 +256,28 @@ impl PretendCiv {
         })
     }
 
+    /// Reads or sets the selected filter's width, keeping each filter's
+    /// own.
+    fn width_answer(&mut self, payload: &[u8]) -> Vec<u8> {
+        let vfo = self.vfos[self.selected];
+        let key = (vfo.mode, vfo.data, vfo.filter);
+        let read = vec![0x1A, 0x03];
+        if let (Some(width), Some(menu)) = (self.widths.get(&key), self.menu.get_mut(&read)) {
+            menu.value = *width;
+        }
+        let answer = self.setting_answer(payload);
+        if let Some(menu) = self.menu.get(&read) {
+            self.widths.insert(key, menu.value);
+        }
+        answer
+    }
+
     /// The answer's payload: the asked-for state, `FB`, or `FA`.
     fn answer(&mut self, payload: &[u8]) -> Vec<u8> {
         let done = |ok: bool| vec![if ok { OK } else { NG }];
+        if payload.starts_with(&[0x1A, 0x03]) {
+            return self.width_answer(payload);
+        }
         match payload {
             [0x03] => self.frequency_answer(&[0x03], self.selected),
             [0x04] => {
