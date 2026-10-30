@@ -21,6 +21,7 @@
   <link rel="stylesheet" href="/static/radio.css">
   <link rel="stylesheet" href="/static/agents.css">
   <link rel="stylesheet" href="/static/lab-stock.css">
+  <link rel="stylesheet" href="/static/lab-profiles.css">
   <link rel="stylesheet" href="/static/import.css">
   <script src="/static/adif-fields.js" defer></script>
   <script src="/static/app.js" defer></script>
@@ -37,6 +38,7 @@
   <script src="/static/radio.js" defer></script>
   <script src="/static/agents.js" defer></script>
   <script src="/static/lab-stock.js" defer></script>
+  <script src="/static/lab-profiles.js" defer></script>
   <script src="/static/cleanup.js" defer></script>
   <script src="/static/demo.js" defer></script>
   <script src="/static/licenses.js" defer></script>
@@ -405,6 +407,7 @@
           <button type="button" id="ov-open" class="link" hidden>Make or change overlays</button>
           <button type="button" id="agents-open" class="link" hidden>Station Agents</button>
           <button type="button" id="lab-stock-open" class="link" hidden>Lab Stock</button>
+          <button type="button" id="lab-profiles-open" class="link" hidden>Lab Profiles</button>
           <button type="button" id="cleanup-open" class="link" hidden>Clean up saved lookups</button>
         </div>
         <div id="demo-row" class="demo-row" hidden>
@@ -544,6 +547,34 @@
     <p class="error" role="alert"></p>
     <div class="actions">
       <button type="button" id="lab-stock-close" class="secondary">Close</button>
+    </div>
+  </dialog>
+
+  <dialog id="lab-profiles-dialog" class="card qrz-dialog lab-profiles-dialog" aria-labelledby="lab-profiles-title">
+    <h2 id="lab-profiles-title">Lab Profiles</h2>
+    <p class="hint">Each radio model's default setup for each program, which an enrolled radio gets as that program starts (VARA for VarAC, FT8 for WSJT-X). To change one, set a lab radio up the way you want it, pick its station and the program, and read it. Its Agent reads the radio (nothing on it changes); tick the settings the profile should hold, then update the default. Every version is kept.</p>
+    <div class="lab-profile-ask">
+      <label>Station <select id="lab-profile-station"></select></label>
+      <label>Program
+        <select id="lab-profile-program">
+          <option value="VARA">VARA (VarAC, VARA)</option>
+          <option value="FT8">FT8 (WSJT-X)</option>
+          <option value="JS8">JS8 (JS8Call)</option>
+          <option value="fldigi">fldigi</option>
+          <option value="SSTV">SSTV (MMSSTV)</option>
+        </select>
+      </label>
+      <button type="button" id="lab-profile-read" class="small">Read this radio</button>
+    </div>
+    <p id="lab-profile-no-stations" class="hint" hidden>No Station Agent has joined yet (Admin, Station Agents).</p>
+    <p id="lab-profile-status" class="hint" role="status"></p>
+    <div id="lab-profile-reading"></div>
+    <h3>Saved in LabLog</h3>
+    <div id="lab-profile-saved"></div>
+    <p id="lab-profiles-none" class="hint">None yet: every program uses the profile built into the Agent.</p>
+    <p class="error" role="alert"></p>
+    <div class="actions">
+      <button type="button" id="lab-profiles-close" class="secondary">Close</button>
     </div>
   </dialog>
 

@@ -190,10 +190,20 @@ confirms it, and records the restore like any other change it makes to a
 radio. (Principle X, amended in constitution 3.0.0.)
 
 **Setups per program, applied by themselves.** The lab keeps one known-good
-profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV), in
-`agent/profiles/` and built into the Agent, so it is locked: only a new build
-replaces it, and the Agent never saves a radio's settings over it (decided by
-brian, 2026-10-28). When a program connects to the virtual radio, the Agent
+profile per radio model for each program (VARA, FT8, JS8, fldigi, SSTV). It
+is locked: only an administrator replaces it, and the Agent never saves a
+radio's settings over it (decided by brian, 2026-10-28). Each has a default
+in `agent/profiles/`, built into the Agent. An administrator replaces one in
+LabLog, with no new build (brian, 2026-10-30): Menu, Admin, Lab Profiles,
+pick the station and program, **Read this radio** (that station's Agent
+reads every setting it may write and changes nothing; the settings changed
+on the radio since the Agent started or last put a profile on come ticked),
+then **Update the default profile**. The Agent fetches LabLog's profiles
+every 30 seconds and keeps a copy in its records folder
+(`lab-profiles-icom-ic-7300.json`), so with LabLog out of reach it uses the
+newest it heard of, and the built-in one only for a program LabLog has none
+for. Every version is kept in LabLog, and an earlier one can be used again.
+When a program connects to the virtual radio, the Agent
 tells which program it is from the process that owns the connection
 (Windows' `GetExtendedTcpTable` and the process's executable; `VarAC.exe`
 means VARA, since VarAC is the program that drives the radio for VARA) and,

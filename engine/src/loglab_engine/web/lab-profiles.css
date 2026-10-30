@@ -1,0 +1,11 @@
+/* SPDX-FileCopyrightText: 2026 LabLog contributors */
+/* SPDX-License-Identifier: AGPL-3.0-only */
+
+/* Lab profiles (lab-profiles.js): each model's default setup for each program, updated from a station's radio. Tables and sections reuse lab-stock.css. */
+
+.lab-profiles-dialog { width: min(760px, calc(100vw - 32px)); max-width: 760px; }
+.lab-profiles-dialog .lab-stock-table td:first-child, .lab-profiles-dialog .lab-stock-table th:first-child { width: 1.5em; }
+.lab-profile-ask { display: flex; flex-wrap: wrap; align-items: end; gap: 8px 12px; margin: 8px 0; }
+.lab-profile-ask label { display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.lab-profile-changed { font-size: 11px; padding: 1px 6px; border-radius: 8px; border: 1px solid var(--glass-line); white-space: nowrap; }
+.lab-profile-differs { font-weight: 600; }

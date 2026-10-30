@@ -3,8 +3,11 @@
 
 # The lab's known-good profiles for the Icom IC-7300: one per program, the
 # same for every IC-7300 the lab has enrolled (brian's decision,
-# 2026-10-28: per model, locked, and only an administrator replaces them,
-# by changing this file in a new build of the Agent). The Agent puts a
+# 2026-10-28: per model, locked, and only an administrator replaces them).
+# These are the defaults built into the Agent. An administrator replaces one
+# in LabLog (Menu, Admin, Lab Profiles) from a radio set up the way it should
+# be, with no new build (brian, 2026-10-30); the Agent then uses LabLog's,
+# and these only for a program LabLog has none for. The Agent puts a
 # program's profile on an enrolled radio once, as that program starts
 # (Principle X, second exception). It never saves the radio over these.
 #

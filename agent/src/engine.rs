@@ -215,6 +215,77 @@ struct KeptAnswer {
     created: bool,
 }
 
+/// A program's profile for a model, as an administrator saved it in LabLog:
+/// it takes the place of the one built into the Agent.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SavedProfile {
+    /// Its version number in LabLog.
+    pub id: u64,
+    /// The radio's maker.
+    pub maker: String,
+    /// The radio's model.
+    pub model: String,
+    /// The program it is for: VARA, FT8, JS8, fldigi or SSTV.
+    pub program: String,
+    /// The settings it puts on.
+    pub settings: Vec<StockSetting>,
+    /// Who saved it.
+    pub saved_by: String,
+    /// When, as the Engine says it.
+    pub saved_at: String,
+}
+
+/// What the Engine answers when asked for a model's saved profiles.
+#[derive(Deserialize)]
+struct SavedProfilesAnswer {
+    profiles: Vec<SavedProfile>,
+}
+
+/// An administrator's request that this station's Agent read its radio for
+/// a program's profile.
+#[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
+pub struct ReadAsked {
+    /// The request's id.
+    pub id: String,
+    /// The program whose profile it is for.
+    pub program: String,
+}
+
+/// The requests waiting for this station.
+#[derive(Deserialize)]
+struct ReadsAnswer {
+    reads: Vec<ReadAsked>,
+}
+
+/// What the Agent answers a request to read its radio with.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(untagged)]
+pub enum ReadAnswer {
+    /// What the radio has now.
+    Read {
+        /// The radio's maker.
+        maker: String,
+        /// The radio's model.
+        model: String,
+        /// The radio's serial number.
+        serial: String,
+        /// Every setting the Agent may write, as the radio has it.
+        settings: Vec<StockSetting>,
+        /// The profile the Agent puts on for the program now.
+        profile: Vec<StockSetting>,
+        /// Where that profile is from, in words.
+        profile_from: String,
+        /// The ids of settings changed on the radio since the Agent started
+        /// or last put a profile on.
+        changed: Vec<String>,
+    },
+    /// Why the radio couldn't be read.
+    Failed {
+        /// The reason, in words.
+        problem: String,
+    },
+}
+
 /// Who programs at this station log as, as the Engine says.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StationInfo {
@@ -240,6 +311,8 @@ pub struct Uplink {
     qsos_url: String,
     settings_url: String,
     lab_stock_url: String,
+    lab_profiles_url: String,
+    reads_url: String,
     authorization: String,
     http: ureq::Agent,
 }
@@ -274,6 +347,8 @@ impl Uplink {
             qsos_url: format!("{base}/api/v1/agent/qsos"),
             settings_url: format!("{base}/api/v1/agent/radio-settings"),
             lab_stock_url: format!("{base}/api/v1/agent/lab-stock"),
+            lab_profiles_url: format!("{base}/api/v1/agent/lab-profiles"),
+            reads_url: format!("{base}/api/v1/agent/profile-reads"),
             authorization: format!("Bearer {key}"),
             http,
         })
@@ -498,6 +573,76 @@ impl Uplink {
         Ok(answer.id)
     }
 
+    /// The profiles an administrator saved in LabLog for the radio `maker`
+    /// `model`, one for each program that has one.
+    ///
+    /// # Errors
+    ///
+    /// The Engine refused the key, can't be reached, or sent something that
+    /// isn't an answer to this.
+    pub fn lab_profiles(&self, maker: &str, model: &str) -> Result<Vec<SavedProfile>, SendError> {
+        let mut response = self
+            .http
+            .get(&self.lab_profiles_url)
+            .query("maker", maker)
+            .query("model", model)
+            .header("Authorization", &self.authorization)
+            .call()
+            .map_err(failed)?;
+        let answer: SavedProfilesAnswer = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_SETTINGS_ANSWER)
+            .read_json()
+            .map_err(|error| SendError::Unreachable(format!("the Engine's answer: {error}")))?;
+        Ok(answer.profiles)
+    }
+
+    /// The requests from LabLog waiting for this station's Agent to read
+    /// its radio.
+    ///
+    /// # Errors
+    ///
+    /// The Engine refused the key, can't be reached, or sent something that
+    /// isn't an answer to this.
+    pub fn profile_reads(&self) -> Result<Vec<ReadAsked>, SendError> {
+        let mut response = self
+            .http
+            .get(&self.reads_url)
+            .header("Authorization", &self.authorization)
+            .call()
+            .map_err(failed)?;
+        let answer: ReadsAnswer = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_ANSWER)
+            .read_json()
+            .map_err(|error| SendError::Unreachable(format!("the Engine's answer: {error}")))?;
+        Ok(answer
+            .reads
+            .into_iter()
+            .filter(|read| is_request_id(&read.id))
+            .collect())
+    }
+
+    /// Answers the request `id` to read the radio.
+    ///
+    /// # Errors
+    ///
+    /// The id isn't one the Engine gives, or the Engine refused the answer
+    /// or can't be reached.
+    pub fn answer_read(&self, id: &str, answer: &ReadAnswer) -> Result<(), SendError> {
+        if !is_request_id(id) {
+            return Err(SendError::Unreachable(format!("{id:?} isn't a request id")));
+        }
+        self.http
+            .post(&format!("{}/{id}", self.reads_url))
+            .header("Authorization", &self.authorization)
+            .send_json(answer)
+            .map_err(failed)?;
+        Ok(())
+    }
+
     fn put(&self, url: &str, body: &impl Serialize) -> Result<(), SendError> {
         match self
             .http
@@ -513,6 +658,12 @@ impl Uplink {
             Err(error) => Err(SendError::Unreachable(error.to_string())),
         }
     }
+}
+
+/// Whether `id` is a request id as the Engine gives them (a UUID), so it
+/// can go in an address as it is.
+fn is_request_id(id: &str) -> bool {
+    id.len() == 36 && id.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
 /// What a failed request says.
@@ -758,6 +909,65 @@ mod tests {
             uplink.propose_lab_stock(&record(None), &settings).is_err(),
             "no serial, no proposal"
         );
+    }
+
+    #[test]
+    fn fetches_saved_profiles_and_answers_a_request_to_read_the_radio() {
+        let (engine, handle) = engine_once(
+            "200 OK",
+            r#"{"profiles":[{"id":4,"maker":"Icom","model":"IC-7300","program":"VARA","current":true,"settings":[{"id":"rf_power","label":"RF power","bytes":"00 69","shown":"69%"}],"note":null,"station":"fl-1","serial":"IC-7300_02065962","again_of":null,"replaces":null,"saved_by":"K9KSU","saved_at":"2026-10-30T00:40:00Z"}]}"#,
+        );
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let saved = uplink
+            .lab_profiles("Icom", "IC-7300")
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(
+            (
+                saved[0].id,
+                saved[0].program.as_str(),
+                saved[0].settings[0].bytes.as_str()
+            ),
+            (4, "VARA", "00 69")
+        );
+        let (first, _) = handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            first,
+            "GET /api/v1/agent/lab-profiles?maker=Icom&model=IC-7300 HTTP/1.1"
+        );
+
+        let id = "e81ddc07-21dd-4992-88b2-520d613ae543";
+        let (engine, handle) = engine_once(
+            "200 OK",
+            r#"{"reads":[{"id":"e81ddc07-21dd-4992-88b2-520d613ae543","program":"VARA"},{"id":"../keys","program":"FT8"}]}"#,
+        );
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let asked = uplink
+            .profile_reads()
+            .unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(
+            asked.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            [id]
+        );
+        let _ = handle.join();
+
+        let (engine, handle) = engine_once("204 No Content", "");
+        let uplink = Uplink::new(&engine, KEY).unwrap_or_else(|e| unreachable!("{e}"));
+        let answer = super::ReadAnswer::Failed {
+            problem: "the radio is transmitting".to_owned(),
+        };
+        assert!(uplink.answer_read(id, &answer).is_ok());
+        let (first, body) = handle.join().unwrap_or_else(|_| unreachable!());
+        assert_eq!(
+            first,
+            format!("POST /api/v1/agent/profile-reads/{id} HTTP/1.1")
+        );
+        let sent: serde_json::Value =
+            serde_json::from_str(&body).unwrap_or_else(|e| unreachable!("{e}"));
+        assert_eq!(
+            sent,
+            serde_json::json!({"problem": "the radio is transmitting"})
+        );
+        assert!(uplink.answer_read("../keys", &answer).is_err());
     }
 
     #[test]
