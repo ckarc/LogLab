@@ -50,6 +50,8 @@ mod lab_stock;
 mod mmsstv;
 mod mqtt;
 mod pairing;
+#[cfg(test)]
+mod pe_exports;
 mod pretend;
 mod profiles;
 mod program_id;

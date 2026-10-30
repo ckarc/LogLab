@@ -17,3 +17,6 @@ agent/target/
 .DS_Store
 Thumbs.db
 .hypothesis/
+
+# MMSSTV PTT plugin (Rust)
+agent/mmsstv-ptt/target/

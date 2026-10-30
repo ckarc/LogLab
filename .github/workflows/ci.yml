@@ -91,7 +91,38 @@ jobs:
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
         with:
-          workspaces: agent
+          workspaces: |
+            agent
+            agent/mmsstv-ptt
+      # MMSSTV's PTT plugin: its own package, checked like the Agent.
+      - name: Format check (MMSSTV plugin)
+        working-directory: agent/mmsstv-ptt
+        run: cargo fmt --check
+      - name: Lint (MMSSTV plugin)
+        working-directory: agent/mmsstv-ptt
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - name: Tests (MMSSTV plugin)
+        working-directory: agent/mmsstv-ptt
+        run: cargo test --locked
+      # On Windows, the plugin is built for 32-bit Windows, as MMSSTV is,
+      # and the Agent carries it (agent/build.rs checks it and fails the
+      # build if it isn't a 32-bit DLL exporting what MMSSTV looks up). Every
+      # later step on Windows, tests included, builds the Agent with it.
+      - name: Add 32-bit Windows target (Windows)
+        if: matrix.os == 'windows-latest'
+        run: rustup target add i686-pc-windows-msvc
+      - name: Build MMSSTV plugin, 32-bit (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: agent/mmsstv-ptt
+        env:
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
+        run: cargo build --locked --release --target i686-pc-windows-msvc
+      - name: Carry the MMSSTV plugin in the Agent (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: agent/mmsstv-ptt
+        run: >-
+          "LABLOG_MMSSTV_PTT_DLL=$PWD\target\i686-pc-windows-msvc\release\lablog_ptt.dll"
+          | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
       - name: Format check
         run: cargo fmt --check
       - name: Lint

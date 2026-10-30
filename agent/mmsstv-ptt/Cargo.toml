@@ -1,0 +1,46 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# MMSSTV's PTT plugin: a small DLL that MMSSTV loads in place of a COM port
+# and that keys the radio through the Agent. Built for 32-bit Windows, as
+# MMSSTV is; the Agent carries the built file inside itself (see the Agent's
+# build.rs) and puts it next to Mmsstv.exe. Its own package, not part of the
+# Agent's, because it is built for a different target.
+
+[package]
+name = "lablog-mmsstv-ptt"
+version = "0.1.0"
+description = "LabLog's PTT plugin for MMSSTV: keys the radio through the Station Agent."
+edition = "2024"
+rust-version = "1.97"
+license = "AGPL-3.0-only"
+authors = ["Brian Krenzin, K9KSU"]
+repository = "https://github.com/ckarc/loglab"
+publish = false
+
+[lib]
+name = "lablog_ptt"
+crate-type = ["cdylib"]
+
+[lints.rust]
+# Denied, and allowed only on the five exported functions MMSSTV calls.
+unsafe_code = "deny"
+missing_docs = "warn"
+unused_qualifications = "warn"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+print_stderr = "warn"
+dbg_macro = "warn"
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+# A panic must never cross into MMSSTV.
+panic = "abort"
