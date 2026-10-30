@@ -52,6 +52,22 @@ pub fn log_since(log: &str, since: &str) -> String {
     kept
 }
 
+/// The newest lines of `log` that fit in half of `most` bytes, if `log` is
+/// longer than `most`; otherwise all of it.
+#[must_use]
+pub fn log_tail(log: &str, most: usize) -> &str {
+    if log.len() <= most {
+        return log;
+    }
+    let mut from = log.len() - most / 2;
+    while !log.is_char_boundary(from) {
+        from += 1;
+    }
+    log[from..]
+        .find('\n')
+        .map_or("", |end| &log[from + end + 1..])
+}
+
 /// `log` with its newest line first.
 #[must_use]
 pub fn newest_first(log: &str) -> String {
@@ -488,8 +504,8 @@ pub fn quoted(option: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, log_since, newest_first,
-        question_box, quoted, restore_menu, status, track_programs,
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, log_since, log_tail,
+        newest_first, question_box, quoted, restore_menu, status, track_programs,
     };
 
     /// Every event `lines` make, in order.
@@ -599,6 +615,11 @@ mod tests {
              2026-10-30T00:17:11Z  radio: receiving\n"
         );
         assert_eq!(log_since(log, "2026-09-01T00:00:00Z"), log);
+        assert_eq!(log_tail(log, 1000), log);
+        assert_eq!(
+            log_tail(log, 80),
+            "2026-10-30T00:17:11Z  radio: receiving\n"
+        );
         assert_eq!(
             newest_first(&kept),
             "2026-10-30T00:17:11Z  radio: receiving\r\n  continued\r\n\

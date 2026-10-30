@@ -47,7 +47,7 @@ const IDLE: Duration = Duration::from_millis(200);
 /// How long after `station` stops on its own before it is started again.
 const RESTART: Duration = Duration::from_secs(30);
 /// The longest log kept before it is moved aside, in bytes.
-const LOG_MOST: u64 = 2_000_000;
+const LOG_MOST: usize = 2_000_000;
 /// Windows' tooltip holds at most 127 characters.
 const TIP_MOST: usize = 120;
 
@@ -217,7 +217,8 @@ fn start_station(
 }
 
 /// The log beside the Agent, opened to add to, after dropping lines older
-/// than `tray::LOG_KEEP` and moving a long one aside.
+/// than `tray::LOG_KEEP` and, if it is still too long, its oldest lines.
+/// Nothing else is kept: no second log, and no stale Open log view.
 fn open_log(path: &Path) -> Option<File> {
     if let Ok(log) = std::fs::read_to_string(path) {
         let since = std::time::SystemTime::now()
@@ -225,13 +226,14 @@ fn open_log(path: &Path) -> Option<File> {
             .map(crate::settings_record::utc_text)
             .unwrap_or_default();
         let kept = tray::log_since(&log, &since);
+        let kept = tray::log_tail(&kept, LOG_MOST);
         if kept.len() != log.len() {
             let _ = std::fs::write(path, kept);
         }
     }
-    if std::fs::metadata(path).is_ok_and(|meta| meta.len() > LOG_MOST) {
-        let _ = std::fs::rename(path, path.with_extension("log.old"));
-    }
+    // Earlier builds moved a long log aside to loglab-agent.log.old.
+    let _ = std::fs::remove_file(path.with_extension("log.old"));
+    let _ = std::fs::remove_file(std::env::temp_dir().join(tray::LOG_VIEW_NAME));
     OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
