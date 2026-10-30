@@ -324,19 +324,26 @@ pub fn classify(event: &str) -> Said {
 /// name), up to date with one thing `station` said: `a program connected
 /// (127.0.0.1:61551): VarAC.exe` adds one, `a program disconnected (...)`
 /// takes it away. A program the Agent couldn't name is kept as "a program".
-pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) {
+/// Returns the name of a named program that went, for its balloon.
+pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) -> Option<String> {
     let first = event.lines().next().unwrap_or_default();
     let peer = |rest: &str| rest.split(')').next().unwrap_or_default().to_owned();
     if let Some(rest) = first.strip_prefix("a program connected (") {
         let name = rest
             .split_once("): ")
-            .map_or("a program", |(_, name)| name.trim());
+            .map_or(UNNAMED, |(_, name)| name.trim());
         programs.push((peer(rest), name.to_owned()));
     } else if let Some(rest) = first.strip_prefix("a program disconnected (") {
         let gone = peer(rest);
-        programs.retain(|(from, _)| *from != gone);
+        let at = programs.iter().position(|(from, _)| *from == gone)?;
+        let (_, name) = programs.remove(at);
+        return (name != UNNAMED).then_some(name);
     }
+    None
 }
+
+/// How a program the Agent couldn't name is called.
+const UNNAMED: &str = "a program";
 
 /// What the tray's light says when clicked: the radio, then which
 /// programs are using it, or that none is.
@@ -653,7 +660,10 @@ mod tests {
             status("", "receiving", &programs),
             "receiving\nConnected: VarAC.exe, a program."
         );
-        track_programs("a program disconnected (127.0.0.1:61551)", &mut programs);
+        assert_eq!(
+            track_programs("a program disconnected (127.0.0.1:61551)", &mut programs),
+            Some("VarAC.exe".to_owned())
+        );
         track_programs("asked to tune to 14.074000 MHz: done", &mut programs);
         assert_eq!(
             programs,
