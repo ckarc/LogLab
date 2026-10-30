@@ -474,10 +474,16 @@ fn restore_plan(
 }
 
 /// What putting the lab's profile `name` on would change, if the lab has
-/// one by that name for this radio's model: `restore VARA` puts the lab's
-/// VARA profile on, after a yes.
-fn lab_plan(now: &Record, name: &str, definition: &Definition) -> Option<crate::restore::Plan> {
-    let profile = profiles::find(&now.maker, &now.model, name)?;
+/// one by that name for this radio's model (saved in LabLog, as the copy in
+/// `records` has it, or built in): `restore VARA` puts the lab's VARA
+/// profile on, after a yes.
+fn lab_plan(
+    records: &std::path::Path,
+    now: &Record,
+    name: &str,
+    definition: &Definition,
+) -> Option<crate::restore::Plan> {
+    let profile = profiles::current(records, definition, name)?;
     Some(crate::restore::plan(
         &format!("{} lab profile", profile.name),
         profile.kept(definition),
@@ -487,16 +493,16 @@ fn lab_plan(now: &Record, name: &str, definition: &Definition) -> Option<crate::
 }
 
 /// Why `keep NAME` is refused, when NAME is one of the lab's profiles for
-/// this radio's model: those are locked, and only a new build of the Agent
-/// changes them (brian's decision, 2026-10-28).
-fn lab_locked(shared: &Shared, name: &str) -> Option<String> {
-    let identity = shared.identity();
-    let profile = profiles::find(&identity.maker, &identity.model, name)?;
+/// this radio's model: those are locked, and only an administrator changes
+/// them, in LabLog (brian's decisions, 2026-10-28 and 2026-10-30).
+fn lab_locked(records: &std::path::Path, definition: &Definition, name: &str) -> Option<String> {
+    let profile = profiles::current(records, definition, name)?;
     Some(format!(
         "setup {name} not kept: {} is the lab's locked profile for the {}, and only an \
-         administrator changes it, with a new build of the Agent.\n-> Keep your own under \
-         another name, like keep My {}; restore My {} puts it back.",
-        profile.name, identity.model, profile.name, profile.name
+         administrator changes it, in LabLog (Menu, Admin, Lab Profiles: Read this radio, then \
+         Update the default).\n-> Keep your own under another name, like keep My {}; restore \
+         My {} puts it back.",
+        profile.name, definition.model, profile.name, profile.name
     ))
 }
 
@@ -728,7 +734,7 @@ fn start_console(
         println!("Auto mode: on, so the Agent makes its fixes without asking (auto off asks).");
     }
     let enrolled = enrollment::load(&enrollment::path(&records_folder(), &desk.serial));
-    let lab_model = profiles::any_for(&record.maker, &record.model);
+    let lab_model = profiles::any_here(&records_folder(), &definition);
     let plan = crate::restore::fixes(record, &definition);
     if lab_model && enrolled.is_none() {
         // One question waits at a time, so the fix offer waits until fix
@@ -1202,11 +1208,13 @@ fn console(
             Ok(Typed::Nothing | Typed::Quit) => continue,
             Ok(Typed::Yes(_) | Typed::No) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
-                match read().and_then(|now| match lab_plan(&now, &name, definition) {
-                    Some(plan) => Ok(Ok(plan)),
-                    None => setups
-                        .kept(&now.maker, &now.model, serial)
-                        .map(|kept| restore_plan(&now, &kept, &name, definition)),
+                match read().and_then(|now| {
+                    match lab_plan(&records_folder(), &now, &name, definition) {
+                        Some(plan) => Ok(Ok(plan)),
+                        None => setups
+                            .kept(&now.maker, &now.model, serial)
+                            .map(|kept| restore_plan(&now, &kept, &name, definition)),
+                    }
                 }) {
                     Ok(Ok(plan)) => {
                         let mut lines = plan.lines();
@@ -1254,8 +1262,8 @@ fn console(
                 Err(why) => format!("not checked: {why}"),
             },
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
-            Ok(Typed::Keep(name)) if lab_locked(shared, &name).is_some() => {
-                lab_locked(shared, &name).unwrap_or_default()
+            Ok(Typed::Keep(name)) if lab_locked(&records_folder(), definition, &name).is_some() => {
+                lab_locked(&records_folder(), definition, &name).unwrap_or_default()
             }
             Ok(Typed::Keep(name)) => match read() {
                 Ok(record) => match setups.keep(&record, &name) {
@@ -1398,6 +1406,11 @@ struct LabRadio {
     /// How many profiles are going on now; a program's transmission waits
     /// until none are.
     going_on: Arc<(Mutex<u32>, Condvar)>,
+    /// The radio's settings as the Agent last knew them: read as the
+    /// station started, with each profile's settings as it put them on.
+    /// What differs from this was changed on the radio since, which LabLog
+    /// shows when an administrator reads the radio for a profile.
+    known: Arc<Mutex<Option<Record>>>,
 }
 
 /// The radio as programs reach it: the shared radio, with the lab's
@@ -1427,6 +1440,7 @@ impl Programs {
                 definition: definition.clone(),
                 records: records_folder(),
                 going_on: Arc::new((Mutex::new(0), Condvar::new())),
+                known: Arc::new(Mutex::new(None)),
             },
             serial.is_some(),
             Box::new(program_id::identify),
@@ -1473,7 +1487,7 @@ impl Programs {
                  control, so the Agent left it as it is."
             ));
         }
-        if profiles::find(&identity.maker, &identity.model, name).is_none() {
+        if profiles::current(&self.lab.records, &self.lab.definition, name).is_none() {
             return Some(format!(
                 "Lab profile: {exe} is {name}; the lab has no {name} profile for the {} yet, so \
                  the radio is as it was.",
@@ -1488,9 +1502,11 @@ impl LabRadio {
     /// Puts the lab's profile for program `name` on the radio, says what
     /// became of it, and records it like any restore.
     fn put_on(&self, name: &str, exe: &str) -> String {
-        let identity = self.shared.identity();
-        let Some(profile) = profiles::find(&identity.maker, &identity.model, name) else {
-            return format!("Lab profile: no {name} profile for the {}.", identity.model);
+        let Some(profile) = profiles::current(&self.records, &self.definition, name) else {
+            return format!(
+                "Lab profile: no {name} profile for the {}.",
+                self.definition.model
+            );
         };
         let ids: Vec<&str> = profile.ids().collect();
         let serial = self.serial.as_str();
@@ -1513,7 +1529,10 @@ impl LabRadio {
             &now,
             &self.definition,
         );
-        let head = format!("Lab profile: {exe} started, so the {name} profile goes on.");
+        let head = format!(
+            "Lab profile: {exe} started, so the {name} profile goes on ({}).",
+            profile.origin()
+        );
         if plan.put.is_empty() && plan.kept_back.is_empty() {
             return format!("{head}\nThe radio already matches it; nothing changed.");
         }
@@ -1521,8 +1540,91 @@ impl LabRadio {
         lines.extend(plan.lines());
         if !plan.put.is_empty() {
             lines.push(restore(&self.shared, &plan, serial));
+            self.learn(&ids);
         }
         lines.join("\n")
+    }
+
+    /// Reads the settings `ids` again into what the Agent knows of the
+    /// radio, after it changed them.
+    fn learn(&self, ids: &[&str]) {
+        let read = self.shared.settings(|radio| {
+            settings_record::read_these(
+                radio,
+                ids,
+                Some(&self.serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        });
+        let (Ok(read), Ok(mut known)) = (read, self.known.lock()) else {
+            return;
+        };
+        if let Some(known) = known.as_mut() {
+            for entry in read.settings {
+                if let Some(old) = known.settings.iter_mut().find(|old| old.id == entry.id) {
+                    *old = entry;
+                }
+            }
+        }
+    }
+
+    /// Reads the whole radio for LabLog, which asked for it to make the
+    /// lab's `program` profile: every setting the Agent may write, the
+    /// profile it puts on now, and what changed since it last knew. Changes
+    /// nothing on the radio.
+    fn read_for_lablog(&self, program: &str) -> crate::engine::ReadAnswer {
+        let failed = |problem: String| crate::engine::ReadAnswer::Failed { problem };
+        let read = self.shared.settings(|radio| {
+            settings_record::read(
+                radio,
+                Some(&self.serial),
+                std::time::SystemTime::now(),
+                &settings_record::computer_name(),
+            )
+        });
+        let record = match read {
+            Ok(record) => record,
+            Err(why) => return failed(why),
+        };
+        let settings = crate::lab_stock::checked(&record, &self.definition);
+        if settings.is_empty() {
+            return failed(format!(
+                "none of the {}'s settings has been checked on a real radio yet, so a profile \
+                 would put nothing on",
+                record.model
+            ));
+        }
+        let profile = profiles::current(&self.records, &self.definition, program);
+        let changed = self.known.lock().ok().and_then(|known| {
+            known.as_ref().map(|known| {
+                settings
+                    .iter()
+                    .filter(|now| {
+                        known
+                            .settings
+                            .iter()
+                            .find(|old| old.id == now.id)
+                            .is_some_and(|old| old.bytes.as_deref() != Some(now.bytes.as_str()))
+                    })
+                    .map(|now| now.id.clone())
+                    .collect::<Vec<_>>()
+            })
+        });
+        crate::engine::ReadAnswer::Read {
+            maker: record.maker.clone(),
+            model: record.model.clone(),
+            serial: self.serial.clone(),
+            settings,
+            profile: profile
+                .as_ref()
+                .map(|p| p.shown(&self.definition))
+                .unwrap_or_default(),
+            profile_from: profile
+                .as_ref()
+                .map_or_else(|| "none yet".to_owned(), profiles::Profile::origin),
+            changed: changed.unwrap_or_default(),
+        }
     }
 
     /// Waits, up to [`PROFILE_WAIT`], until no profile is going on.
@@ -1639,6 +1741,141 @@ impl Source for Programs {
 
     fn note(&self, event: &str) {
         self.lab.shared.note(event);
+    }
+}
+
+/// How often the Agent asks LabLog whether an administrator wants its
+/// radio read for a lab profile.
+const READS_EVERY: Duration = Duration::from_secs(5);
+/// How often the Agent fetches the lab profiles saved in LabLog.
+const PROFILES_EVERY: Duration = Duration::from_secs(30);
+
+/// The Agent's side of LabLog's Lab Profiles page, on its own thread while
+/// the station runs with `--engine`: it keeps a copy of the profiles saved
+/// there, and reads the radio when an administrator asks. Dropping it
+/// stops it.
+struct ProfileDesk {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for ProfileDesk {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// Starts the Agent's side of LabLog's Lab Profiles page for `lab`.
+fn start_profile_desk(uplink: Uplink, lab: LabRadio) -> ProfileDesk {
+    let stop = Arc::new(AtomicBool::new(false));
+    let flag = Arc::clone(&stop);
+    let thread = std::thread::spawn(move || {
+        let mut fetched: Option<std::time::Instant> = None;
+        let mut asked: Option<std::time::Instant> = None;
+        let mut said: Option<String> = None;
+        while !flag.load(Ordering::SeqCst) {
+            if fetched.is_none_or(|at| at.elapsed() >= PROFILES_EVERY) {
+                fetched = Some(std::time::Instant::now());
+                fetch_profiles(&uplink, &lab, &mut said);
+            }
+            if asked.is_none_or(|at| at.elapsed() >= READS_EVERY) {
+                asked = Some(std::time::Instant::now());
+                answer_reads(&uplink, &lab);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
+    ProfileDesk {
+        stop,
+        thread: Some(thread),
+    }
+}
+
+/// Keeps a copy of the profiles saved in LabLog for the radio's model, and
+/// says when one changes. `said` is the last problem said, so it is said
+/// once.
+fn fetch_profiles(uplink: &Uplink, lab: &LabRadio, said: &mut Option<String>) {
+    let definition = &lab.definition;
+    let saved = match uplink.lab_profiles(&definition.maker, &definition.model) {
+        Ok(saved) => saved,
+        Err(error) => {
+            let why = format!(
+                "Lab profile: couldn't hear from LabLog ({error}), so programs get the {} \
+                 profiles last heard from it, or the Agent's own.",
+                definition.model
+            );
+            if said.as_deref() != Some(why.as_str()) {
+                lab.shared.note(&why);
+                *said = Some(why);
+            }
+            return;
+        }
+    };
+    *said = None;
+    let path = profiles::saved_path(&lab.records, &definition.maker, &definition.model);
+    let before = profiles::load_saved(&path);
+    if before == saved {
+        return;
+    }
+    if let Err(why) = profiles::keep_saved(&path, &saved) {
+        lab.shared.note(&format!("Lab profile: {why}"));
+        return;
+    }
+    for profile in &saved {
+        if before.contains(profile) {
+            continue;
+        }
+        let said = if profiles::from_saved(profile, definition).is_some() {
+            format!(
+                "Lab profile: LabLog's {} profile for the {} is version #{}, saved by {} at {}; \
+                 it goes on as {} starts from now on.",
+                profile.program,
+                definition.model,
+                profile.id,
+                profile.saved_by,
+                profile.saved_at,
+                profile.program
+            )
+        } else {
+            format!(
+                "Lab profile: LabLog's {} profile for the {} (version #{}) has a setting this \
+                 Agent may not write, so it isn't used; the Agent's own is.",
+                profile.program, definition.model, profile.id
+            )
+        };
+        lab.shared.note(&said);
+    }
+}
+
+/// Reads the radio for each request waiting in LabLog, and answers it.
+fn answer_reads(uplink: &Uplink, lab: &LabRadio) {
+    let Ok(asked) = uplink.profile_reads() else {
+        return;
+    };
+    for ask in asked {
+        let answer = lab.read_for_lablog(&ask.program);
+        let said = match &answer {
+            crate::engine::ReadAnswer::Read { settings, .. } => format!(
+                "Lab profile: LabLog asked for this radio's settings, for the {} profile; read \
+                 {} and sent them. Nothing on the radio changed.",
+                ask.program,
+                settings.len()
+            ),
+            crate::engine::ReadAnswer::Failed { problem } => format!(
+                "Lab profile: LabLog asked for this radio's settings, for the {} profile, but \
+                 they couldn't be read: {problem}",
+                ask.program
+            ),
+        };
+        lab.shared.note(&said);
+        if let Err(error) = uplink.answer_read(&ask.id, &answer) {
+            lab.shared.note(&format!(
+                "Lab profile: the reading didn't reach LabLog: {error}"
+            ));
+        }
     }
 }
 
@@ -2037,6 +2274,13 @@ fn run_found(
         println!("Audio: carried on Windows only.");
     }
     let programs = Programs::for_station(&shared, found.serial.as_deref(), &definition);
+    if let Ok(mut known) = programs.lab.known.lock() {
+        *known = Some(record.clone());
+    }
+    let profile_desk = uplink
+        .as_ref()
+        .filter(|_| found.serial.is_some())
+        .map(|uplink| start_profile_desk(uplink.clone(), programs.lab.clone()));
     let server = rigctld_server::Server::start(listen, Arc::new(programs) as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
@@ -2083,6 +2327,7 @@ fn run_found(
     #[cfg(windows)]
     drop(virtual_kenwood);
     drop(carrier);
+    drop(profile_desk);
     drop(server);
     #[cfg(windows)]
     drop(station);
@@ -2458,6 +2703,7 @@ mod tests {
             definition,
             records: records.clone(),
             going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
+            known: Arc::new(Mutex::new(None)),
         };
         // VarAC from one port, WSJT-X from another; anything else unknown.
         let programs = Programs::new(
@@ -2531,6 +2777,132 @@ mod tests {
         let _ = std::fs::remove_dir_all(&records);
     }
 
+    /// A pretend IC-7300 for the lab's profiles, keeping its enrollment and
+    /// LabLog's profiles in `records`, with what the Agent knows of it read
+    /// as the station starts.
+    fn pretend_lab(records: &std::path::Path) -> (Arc<Shared>, LabRadio, rigdef::Definition) {
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-7300"))
+            .unwrap_or_else(|| unreachable!("the IC-7300 is built in"));
+        let radio = CivRadio::find(
+            PretendPort::new(PretendCiv::new(&definition), 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Arc::new(Shared::with_transmit(
+            Box::new(radio),
+            Duration::from_mins(1),
+        ));
+        let started = shared
+            .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "test"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        let lab = LabRadio {
+            shared: Arc::clone(&shared),
+            serial: "PRETEND".to_owned(),
+            definition: definition.clone(),
+            records: records.to_owned(),
+            going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
+            known: Arc::new(Mutex::new(Some(started))),
+        };
+        (shared, lab, definition)
+    }
+
+    #[test]
+    fn reads_the_radio_for_lablog_and_puts_lablogs_saved_profile_on() {
+        let records =
+            std::env::temp_dir().join(format!("lablog-lablog-profile-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&records);
+        let (shared, lab, definition) = pretend_lab(&records);
+        let write = |id: &str, bytes: &[u8]| {
+            let setting = definition
+                .settings
+                .iter()
+                .find(|s| s.id == id)
+                .cloned()
+                .unwrap_or_else(|| unreachable!("{id}"));
+            assert!(
+                shared
+                    .settings(|radio| radio.write_exposed(&setting, bytes))
+                    .is_ok_and(|written| written.is_ok())
+            );
+        };
+
+        // brian turns RF power down at the radio; LabLog asks for a reading.
+        write("rf_power", &[0x00, 0x69]);
+        let crate::engine::ReadAnswer::Read {
+            settings,
+            profile,
+            profile_from,
+            changed,
+            serial,
+            ..
+        } = lab.read_for_lablog("VARA")
+        else {
+            unreachable!("the pretend radio can be read")
+        };
+        assert_eq!(serial, "PRETEND");
+        assert_eq!(changed, ["rf_power"]);
+        assert_eq!(profile_from, "built into the Agent");
+        assert_eq!(
+            profile.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+            [
+                "mode_and_filter",
+                "data_mode_and_filter",
+                "filter_width",
+                "usb_mod_level",
+                "data_mod"
+            ]
+        );
+        assert!(
+            settings
+                .iter()
+                .any(|s| s.id == "rf_power" && s.bytes == "00 69")
+        );
+        assert!(
+            settings.iter().all(|s| definition
+                .settings
+                .iter()
+                .any(|d| d.id == s.id && d.write && d.write_checked)),
+            "only settings the Agent may write"
+        );
+
+        // The administrator saves the built-in settings plus RF power; the
+        // Agent's copy of LabLog's profiles then has it, and it goes on.
+        let mut chosen: Vec<crate::engine::StockSetting> = settings
+            .into_iter()
+            .filter(|s| s.id == "rf_power" || profile.iter().any(|p| p.id == s.id))
+            .collect();
+        chosen.retain(|s| s.id != "filter_width");
+        let saved = crate::engine::SavedProfile {
+            id: 4,
+            maker: "Icom".to_owned(),
+            model: "IC-7300".to_owned(),
+            program: "VARA".to_owned(),
+            settings: chosen,
+            saved_by: "K9KSU".to_owned(),
+            saved_at: "2026-10-30T00:40:00Z".to_owned(),
+        };
+        let path = crate::profiles::saved_path(&records, "Icom", "IC-7300");
+        assert!(crate::profiles::keep_saved(&path, std::slice::from_ref(&saved)).is_ok());
+        write("rf_power", &[0x02, 0x55]);
+        let said = lab.put_on("VARA", "VarAC.exe");
+        assert!(said.contains("saved in LabLog, version #4"), "{said}");
+        assert_eq!(setting_now(&shared, "rf_power").as_deref(), Some("00 69"));
+        // What the Agent put on is what it knows now: nothing changed since.
+        let crate::engine::ReadAnswer::Read {
+            changed,
+            profile_from,
+            ..
+        } = lab.read_for_lablog("VARA")
+        else {
+            unreachable!("the pretend radio can be read")
+        };
+        assert_eq!(profile_from, "saved in LabLog, version #4");
+        assert!(!changed.contains(&"rf_power".to_owned()), "{changed:?}");
+        let _ = std::fs::remove_dir_all(&records);
+    }
+
     /// A radio that answers or doesn't, as the test says.
     struct Fickle(AtomicBool, crate::rig::RadioIdentity);
 
@@ -2587,25 +2959,27 @@ mod tests {
     #[test]
     fn the_labs_profiles_are_locked_and_restore_puts_one_on() {
         let (shared, definition) = transmitted([0, 0, 0]);
-        let locked = lab_locked(&shared, "vara").unwrap_or_default();
+        let records = std::env::temp_dir().join(format!("lablog-locked-{}", std::process::id()));
+        let locked = lab_locked(&records, &definition, "vara").unwrap_or_default();
         assert!(
             locked.contains("the lab's locked profile for the IC-7300"),
             "{locked}"
         );
         assert!(locked.contains("keep My VARA"));
-        assert_eq!(lab_locked(&shared, "My VARA"), None);
-        assert_eq!(lab_locked(&shared, "Field Day"), None);
+        assert!(locked.contains("Lab Profiles"), "{locked}");
+        assert_eq!(lab_locked(&records, &definition, "My VARA"), None);
+        assert_eq!(lab_locked(&records, &definition, "Field Day"), None);
         let now = shared
             .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "test"))
             .unwrap_or_else(|why| unreachable!("{why}"));
-        let plan = lab_plan(&now, "VARA", &definition);
+        let plan = lab_plan(&records, &now, "VARA", &definition);
         let put: Vec<String> = plan
             .iter()
             .flat_map(|plan| plan.put.iter().map(|put| put.setting.id.clone()))
             .collect();
         assert!(put.contains(&"filter_width".to_owned()), "{put:?}");
         assert!(put.contains(&"usb_mod_level".to_owned()), "{put:?}");
-        assert!(lab_plan(&now, "My VARA", &definition).is_none());
+        assert!(lab_plan(&records, &now, "My VARA", &definition).is_none());
     }
 
     /// Lab Stock kept as a test Engine would keep it: one approved, and the
