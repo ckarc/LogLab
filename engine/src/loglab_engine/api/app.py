@@ -103,6 +103,7 @@ from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
 from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
 from loglab_engine.personal import personal_stats
+from loglab_engine.profile_reads import RadioRead, ReadAsk, ReadDesk, ReadError
 from loglab_engine.reference import (
     SECTIONS,
     ZONE_FIELDS,
@@ -143,6 +144,12 @@ from loglab_engine.store import (
 )
 from loglab_engine.store.agent import AgentKeyError, AgentKeyStore
 from loglab_engine.store.callbook import CallbookStore
+from loglab_engine.store.lab_profile import (
+    LabProfile,
+    LabProfileMovedError,
+    LabProfileNotFoundError,
+    LabProfileStore,
+)
 from loglab_engine.store.lab_stock import (
     DecidedError,
     LabStockMovedError,
@@ -397,6 +404,127 @@ class AgentLabStockOut(BaseModel):
     """A model's Lab Stock now, if an administrator has approved one."""
 
     lab_stock: LabStockOut | None
+
+
+Program = Literal["VARA", "FT8", "JS8", "fldigi", "SSTV"]
+
+
+class ProfileReadAskIn(_Strict):
+    """An administrator asking a station's Agent to read its radio for a program's profile."""
+
+    station: StationName
+    program: Program
+
+
+class ProfileReadIn(_Strict):
+    """What an Agent read from its radio, for an administrator's request.
+
+    ``settings`` is every setting the Agent may write, as the radio has it;
+    ``profile`` is the profile the Agent puts on for the program now, from
+    ``profile_from``; ``changed`` names the settings changed on the radio
+    since the Agent started or last put a profile on.
+    """
+
+    maker: _RadioText
+    model: _RadioText
+    serial: _Serial
+    settings: Annotated[list[LabStockSettingIn], Field(min_length=1, max_length=MAX_SETTINGS)]
+    profile: Annotated[list[LabStockSettingIn], Field(max_length=MAX_SETTINGS)]
+    profile_from: Annotated[str, StringConstraints(min_length=1, max_length=200, pattern=_PLAIN)]
+    changed: Annotated[
+        list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]],
+        Field(max_length=MAX_SETTINGS),
+    ]
+
+
+class ProfileReadFailedIn(_Strict):
+    """Why an Agent couldn't read its radio for a request."""
+
+    problem: Annotated[str, StringConstraints(min_length=1, max_length=500, pattern=_PLAIN)]
+
+
+class ProfileReadOut(BaseModel):
+    """A request that a station's Agent read its radio, and its answer once there is one."""
+
+    id: uuid.UUID
+    station: str
+    program: str
+    asked_by: str
+    asked_at: datetime
+    state: str
+    problem: str | None
+    maker: str | None
+    model: str | None
+    serial: str | None
+    settings: list[LabStockSettingIn]
+    profile: list[LabStockSettingIn]
+    profile_from: str | None
+    changed: list[str]
+    read_at: datetime | None
+    # The model's profile for the program saved in LabLog now: what saving
+    # replaces (None: the Agent's built-in one).
+    against: int | None
+
+
+class AgentProfileReadOut(BaseModel):
+    """A request the Agent is to answer: read the radio for this program."""
+
+    id: uuid.UUID
+    program: str
+
+
+class AgentProfileReadsOut(BaseModel):
+    """The requests waiting for the Agent's station."""
+
+    reads: list[AgentProfileReadOut]
+
+
+class LabProfileSaveIn(_Strict):
+    """An administrator making the chosen settings of a reading a program's profile.
+
+    ``against`` is the profile they compared with (None: the Agent's built-in
+    one): if it has changed since, nothing is saved.
+    """
+
+    read: Annotated[uuid.UUID, Field(strict=False)]
+    settings: Annotated[
+        list[Annotated[str, StringConstraints(pattern=r"^[a-z][a-z0-9_]{0,63}$")]],
+        Field(min_length=1, max_length=MAX_SETTINGS),
+    ]
+    against: int | None
+    note: Annotated[str, StringConstraints(min_length=1, max_length=500, pattern=_PLAIN)] | None = (
+        None
+    )
+
+
+class LabProfileAgainIn(_Strict):
+    """An administrator going back to an earlier version, compared against the one now."""
+
+    against: int | None
+
+
+class LabProfileOut(BaseModel):
+    """One version of a model's profile for a program."""
+
+    id: int
+    maker: str
+    model: str
+    program: str
+    current: bool
+    settings: list[LabStockSettingIn]
+    note: str | None
+    station: str | None
+    serial: str | None
+    again_of: int | None
+    replaces: int | None
+    saved_by: str
+    saved_at: datetime
+
+
+class AgentLabProfilesOut(BaseModel):
+    """A model's profiles saved in LabLog now, one per program that has one."""
+
+    profiles: list[LabProfileOut]
 
 
 class PairingAskIn(_Strict):
@@ -2715,6 +2843,212 @@ def propose_lab_stock_again(proposal_id: int, who: Signed, conn: Conn) -> LabSto
     return _lab_stock_out(LabStockStore(conn).propose_again(who, proposal_id))
 
 
+def _reads(request: Request) -> ReadDesk:
+    desk: ReadDesk = request.app.state.profile_reads
+    return desk
+
+
+Reads = Annotated[ReadDesk, Depends(_reads)]
+
+
+def _setting_out(s: StockSetting) -> LabStockSettingIn:
+    return LabStockSettingIn(id=s.id, label=s.label, bytes=s.bytes, shown=s.shown)
+
+
+def _setting_in(s: LabStockSettingIn) -> StockSetting:
+    return StockSetting(s.id, s.label, s.bytes, s.shown)
+
+
+def _lab_profile_out(found: LabProfile) -> LabProfileOut:
+    return LabProfileOut(
+        id=found.id,
+        maker=found.maker,
+        model=found.model,
+        program=found.program,
+        current=found.current,
+        settings=[_setting_out(s) for s in found.settings],
+        note=found.note,
+        station=found.station,
+        serial=found.serial,
+        again_of=found.again_of,
+        replaces=found.replaces,
+        saved_by=found.saved_by,
+        saved_at=found.saved_at,
+    )
+
+
+def _read_out(found: ReadAsk, conn: psycopg.Connection[TupleRow]) -> ProfileReadOut:
+    read = found.read
+    against = None
+    if read is not None:
+        against = next(
+            (
+                p.id
+                for p in LabProfileStore(conn).current(read.maker, read.model)
+                if p.program == found.program
+            ),
+            None,
+        )
+    return ProfileReadOut(
+        id=found.id,
+        station=found.station,
+        program=found.program,
+        asked_by=found.asked_by,
+        asked_at=found.asked_at,
+        state=found.state,
+        problem=found.problem,
+        maker=None if read is None else read.maker,
+        model=None if read is None else read.model,
+        serial=None if read is None else read.serial,
+        settings=[] if read is None else [_setting_out(s) for s in read.settings],
+        profile=[] if read is None else [_setting_out(s) for s in read.profile],
+        profile_from=None if read is None else read.profile_from,
+        changed=[] if read is None else list(read.changed),
+        read_at=None if read is None else read.read_at,
+        against=against,
+    )
+
+
+@api.post("/profile-reads", status_code=status.HTTP_201_CREATED)
+def ask_profile_read(
+    body: ProfileReadAskIn, who: Signed, conn: Conn, reads: Reads
+) -> ProfileReadOut:
+    """Ask a station's Agent to read its radio, to make a program's lab profile from it.
+
+    The Agent finds the request within a few seconds and answers with what
+    the radio has now; reading changes nothing on the radio (Principle X).
+    Administrators only.
+    """
+    _require(conn, who, Permission.ADMIN)
+    try:
+        found = reads.ask(body.station, body.program, who.operator, datetime.now(UTC))
+    except ReadError as error:
+        raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, str(error)) from error
+    return _read_out(found, conn)
+
+
+@api.get("/profile-reads/{read_id}")
+def profile_read(read_id: uuid.UUID, who: Signed, conn: Conn, reads: Reads) -> ProfileReadOut:
+    """A request to read a station's radio, and what the Agent read once it has.
+
+    Administrators only.
+    """
+    _require(conn, who, Permission.ADMIN)
+    try:
+        found = reads.get(read_id, datetime.now(UTC))
+    except ReadError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+    return _read_out(found, conn)
+
+
+@api.get("/agent/profile-reads")
+def agent_profile_reads(station: AgentStation, reads: Reads) -> AgentProfileReadsOut:
+    """The requests for this station's Agent to read its radio, oldest first."""
+    return AgentProfileReadsOut(
+        reads=[
+            AgentProfileReadOut(id=a.id, program=a.program)
+            for a in reads.waiting_for(station, datetime.now(UTC))
+        ]
+    )
+
+
+@api.post("/agent/profile-reads/{read_id}", status_code=status.HTTP_204_NO_CONTENT)
+def answer_profile_read(
+    read_id: uuid.UUID,
+    body: ProfileReadIn | ProfileReadFailedIn,
+    station: AgentStation,
+    reads: Reads,
+) -> None:
+    """The Agent answers a request: what it read from its radio, or why it couldn't."""
+    now = datetime.now(UTC)
+    try:
+        if isinstance(body, ProfileReadFailedIn):
+            reads.answer(station, read_id, now, problem=body.problem)
+            return
+        settings = tuple(_setting_in(s) for s in body.settings)
+        profile = tuple(_setting_in(s) for s in body.profile)
+        if len({s.id for s in settings}) != len(settings):
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_CONTENT, "a setting is there twice")
+        reads.answer(
+            station,
+            read_id,
+            now,
+            read=RadioRead(
+                maker=body.maker,
+                model=body.model,
+                serial=body.serial,
+                settings=settings,
+                profile=profile,
+                profile_from=body.profile_from,
+                changed=tuple(body.changed),
+                read_at=now,
+            ),
+        )
+    except ReadError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+
+
+@api.post("/lab-profiles", status_code=status.HTTP_201_CREATED)
+def save_lab_profile(
+    body: LabProfileSaveIn, who: Signed, conn: Conn, reads: Reads
+) -> LabProfileOut:
+    """Make the chosen settings of a radio reading its model's profile for the program.
+
+    Every enrolled radio of that model gets it as the program starts, in
+    place of the Agent's built-in one. Refused with 409 if the profile is no
+    longer the one it was compared ``against``. Administrators only.
+    """
+    _require(conn, who, Permission.ADMIN)
+    try:
+        found = reads.get(body.read, datetime.now(UTC))
+    except ReadError as error:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, str(error)) from error
+    if found.read is None:
+        raise HTTPException(status.HTTP_409_CONFLICT, "the Agent hasn't read the radio yet")
+    return _lab_profile_out(
+        LabProfileStore(conn).save(
+            who,
+            found.station,
+            found.read,
+            found.program,
+            tuple(body.settings),
+            against=body.against,
+            note=body.note,
+        )
+    )
+
+
+@api.get("/lab-profiles")
+def list_lab_profiles(who: Signed, conn: Conn) -> list[LabProfileOut]:
+    """Every version of every lab profile, newest first. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return [_lab_profile_out(p) for p in LabProfileStore(conn).all()]
+
+
+@api.post("/lab-profiles/{profile_id}/again", status_code=status.HTTP_201_CREATED)
+def save_lab_profile_again(
+    profile_id: int, body: LabProfileAgainIn, who: Signed, conn: Conn
+) -> LabProfileOut:
+    """Go back to an earlier version: it is saved again, as the newest. Administrators only."""
+    _require(conn, who, Permission.ADMIN)
+    return _lab_profile_out(LabProfileStore(conn).again(who, profile_id, against=body.against))
+
+
+@api.get("/agent/lab-profiles")
+def agent_lab_profiles(
+    maker: _RadioText, model: _RadioText, station: AgentStation, conn: Conn
+) -> AgentLabProfilesOut:
+    """A model's profiles saved in LabLog now, one per program that has one.
+
+    The Agent puts one on an enrolled radio as its program starts, in place
+    of its built-in one, and keeps a copy for when LabLog can't be reached.
+    """
+    del station
+    return AgentLabProfilesOut(
+        profiles=[_lab_profile_out(p) for p in LabProfileStore(conn).current(maker, model)]
+    )
+
+
 @api.get("/agent/station")
 def agent_station(
     station: AgentStation,
@@ -4108,6 +4442,8 @@ _STATUS_FOR: Final[tuple[tuple[type[StoreError], int], ...]] = (
     (LabStockNotFoundError, status.HTTP_404_NOT_FOUND),
     (DecidedError, status.HTTP_409_CONFLICT),
     (LabStockMovedError, status.HTTP_409_CONFLICT),
+    (LabProfileNotFoundError, status.HTTP_404_NOT_FOUND),
+    (LabProfileMovedError, status.HTTP_409_CONFLICT),
     (OperationNotFoundError, status.HTTP_404_NOT_FOUND),
     (QsoExistsError, status.HTTP_409_CONFLICT),
     (ArchivedError, status.HTTP_409_CONFLICT),
@@ -4192,6 +4528,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
     app.state.pairings = PairingDesk()
+    app.state.profile_reads = ReadDesk()
     app.state.demo = Demo(database, app.state.on_air, app.state.rig)
     app.include_router(api)
     app.add_exception_handler(StoreError, _store_error)

@@ -123,9 +123,14 @@ def _check_model(maker: str, model: str) -> None:
             raise StoreError(msg)
 
 
-def _check(
+def check_settings(
     maker: str, model: str, serial: str, note: str | None, settings: tuple[StockSetting, ...]
 ) -> None:
+    """Refuse settings read from a radio, or a note, that can't be kept.
+
+    Raises:
+        StoreError: Something in them is not valid.
+    """
     _check_model(maker, model)
     if not _SERIAL.match(serial):
         msg = "the radio's serial number must be 1-64 letters, digits, '.', '_' or '-'"
@@ -180,7 +185,7 @@ class LabStockStore:
             StoreError: Something in it is not valid.
         """
         check_station(station)
-        _check(maker, model, serial, note, settings)
+        check_settings(maker, model, serial, note, settings)
         conn = self._conn
         with conn.transaction():
             conn.execute(
@@ -401,4 +406,5 @@ __all__ = [
     "Proposal",
     "Status",
     "StockSetting",
+    "check_settings",
 ]
