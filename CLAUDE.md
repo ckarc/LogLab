@@ -80,8 +80,9 @@ every line. That means:
 ## Merging
 
 Pull requests merge automatically once every required gate passes; Brian
-does not approve each one. After opening a pull request, turn on auto-merge
-for it (`gh pr merge --auto --merge`). Do not turn it on for a pull request
-that changes `CONSTITUTION.md`, this file, `AGENTS.md`, the CI workflows, or
-the license allowlist: Brian merges those himself. Never weaken a gate,
-skip a test, or edit CI to get a pull request to merge.
+does not approve or merge each one. After opening any pull request, turn on
+auto-merge for it (`gh pr merge --auto --merge`). That includes pull requests
+that change `CONSTITUTION.md`, this file, `AGENTS.md`, the CI workflows, or
+the license allowlist. A constitution amendment must record Brian's own
+decision in its Change History row. Never weaken a gate, skip a test, or edit
+CI to get a pull request to merge.
