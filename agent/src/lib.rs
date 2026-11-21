@@ -83,6 +83,8 @@ mod vara;
 #[cfg(any(windows, test))]
 mod vara_proxy;
 #[cfg(any(windows, test))]
+mod vbcable;
+#[cfg(any(windows, test))]
 mod winlink;
 mod write_check;
 mod wsjtx;
@@ -253,6 +255,14 @@ const RADIO_AGENT_USAGE: &str = "\
 RadioAgent owns this computer's radio and shares it with the programs here.
 It needs no server: everything it keeps is in the records folder beside it.
 
+Double-click RadioAgent.exe (or run it with nothing after it): it starts at
+each sign-in from then on, in the background, and starts now.
+
+Where VB-CABLE isn't installed, RadioAgent fetches it from VB-Audio and runs
+VB-Audio's setup (Windows asks first; restart once it is done). VB-CABLE is
+VB-Audio's (www.vb-cable.com): VB-CABLE is a donationware, all
+participations are welcome.
+
 Usage:
   RadioAgent tray [station's options]
                                        run in the background, with an icon
@@ -275,7 +285,9 @@ Usage:
                                        Winlink Express to use it, and lets
                                        them tune and key it; the call and
                                        grid those programs send come from
-                                       --call and --grid; type help there
+                                       --call and --grid, else from
+                                       WSJT-X's or JS8Call's own settings;
+                                       type help there
                                        for its commands (keep, restore,
                                        stock save, profile save VARA, ...)
   RadioAgent check-writes [--civ PORT | --flex ADDRESS]
@@ -301,8 +313,9 @@ fn parse_radio_agent(args: &[String]) -> Result<Command, String> {
         ));
     }
     match args.first().map(String::as_str) {
-        None
-        | Some(
+        // Double-clicked: set it to start at each sign-in, and start it.
+        None => Ok(Command::Startup("on".to_owned(), Vec::new())),
+        Some(
             "help" | "--help" | "-h" | "--version" | "station" | "tray" | "startup"
             | "check-writes" | "audio-devices" | "check-rig" | "read",
         ) => parse(args).map(|command| match command {
@@ -2055,7 +2068,12 @@ mod tests {
             parse_radio_agent(&args("startup on --grid EM18ct")),
             Ok(Command::Startup("on".to_owned(), args("--grid EM18ct")))
         );
-        assert_eq!(parse_radio_agent(&[]), Ok(Command::Help));
+        // Double-clicked, with nothing typed: start at sign-in, and now.
+        assert_eq!(
+            parse_radio_agent(&[]),
+            Ok(Command::Startup("on".to_owned(), Vec::new()))
+        );
+        assert_eq!(parse_radio_agent(&args("help")), Ok(Command::Help));
         assert_eq!(
             parse_radio_agent(&args("audio-devices")),
             Ok(Command::AudioDevices)

@@ -1518,6 +1518,15 @@ fn audio(sound: Option<&str>, on_air: Arc<AtomicBool>) -> Option<crate::audio_wi
         Ok(station) => station,
         Err(why) => {
             println!("Audio: not carried ({why})");
+            let (_, playing) = crate::audio_windows::device_names();
+            if !playing
+                .iter()
+                .any(|name| name == crate::audio::RECEIVE_CABLE)
+            {
+                match crate::vbcable::install() {
+                    Ok(said) | Err(said) => println!("{said}"),
+                }
+            }
             return None;
         }
     };
