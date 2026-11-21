@@ -198,8 +198,13 @@ pub fn from_saved(saved: &SavedProfile, definition: &Definition) -> Option<Profi
     })
 }
 
-/// The programs a profile is for, as the tray names them.
-pub const PROGRAMS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+/// The programs a profile is for, as the tray names them. `fldigi CW` is
+/// fldigi on one of its CW modems (see `fldigi_rpc`): it goes on in place
+/// of `fldigi` while fldigi is on CW.
+pub const PROGRAMS: [&str; 6] = ["VARA", "FT8", "JS8", "fldigi", "fldigi CW", "SSTV"];
+
+/// The profile for fldigi on CW.
+pub const FLDIGI_CW: &str = "fldigi CW";
 
 /// `program` as [`PROGRAMS`] spells it, if it is one of them.
 #[must_use]
@@ -401,6 +406,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&records);
         assert_eq!(program_named(" js8 "), Some("JS8"));
         assert_eq!(program_named("Winlink"), None);
+        assert_eq!(program_named("FLDIGI cw"), Some("fldigi CW"));
         let checked = |bytes: &str| {
             ["usb_mod_level", "agc", "data_mod"]
                 .iter()
