@@ -1907,8 +1907,10 @@ impl Programs {
             held.said = Some(wanted);
             keep(held);
             return Some(format!(
-                "Lab profile: fldigi is on {name}; there is no {wanted} profile for the {} yet \
-                 (the tray's Save as lab profile > {wanted} saves one), so the radio is as it was.",
+                "Lab profile: fldigi is on {name}; there is no {wanted} profile for the {} yet, so \
+                 the radio is as it was. To make one, set the radio up as you want it for \
+                 {wanted} (a narrow filter for CW, say), then pick the tray's Save as lab \
+                 profile > {wanted} and answer Yes; it goes on from then on.",
                 definition.model
             ));
         }
@@ -1959,8 +1961,17 @@ impl Programs {
         if profiles::current(&self.lab.records, &now_in(&self.lab.definition), name).is_none() {
             return Some(format!(
                 "Lab profile: {exe} is {name}; the lab has no {name} profile for the {} yet, so \
-                 the radio is as it was.",
-                identity.model
+                 the radio is as it was.{}",
+                identity.model,
+                if crate::product::current().standalone {
+                    format!(
+                        " To make one, set the radio up as you want it for {name}, then pick \
+                         the tray's Save as lab profile > {name} and answer Yes; it goes on \
+                         each time {name} starts from then on."
+                    )
+                } else {
+                    String::new()
+                }
             ));
         }
         None
