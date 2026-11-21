@@ -117,6 +117,72 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     ))
 }
 
+/// What `--flex-pretend` asks `find_flex` for.
+pub const PRETEND_FLEX: &str = "pretend";
+
+/// How long the station listens for FlexRadio radios' discovery
+/// broadcasts: each sends one every second.
+const FLEX_LISTEN: Duration = Duration::from_secs(3);
+
+/// Finds the FlexRadio at `address` on the network, or, with `any`, the one
+/// FlexRadio that broadcasts on this network.
+fn find_flex(address: &str) -> Result<Found, String> {
+    // The pretend FLEX-6600, for trying the station without a radio.
+    let pretend;
+    let address = if address == PRETEND_FLEX {
+        pretend = crate::flex_pretend::PretendFlex::start("FLEX-6600", true)
+            .map_err(|error| format!("can't start the pretend FlexRadio: {error}"))?;
+        pretend.address()
+    } else {
+        address
+    };
+    let address = if address == "any" {
+        let heard = crate::flex::discover(FLEX_LISTEN)?;
+        match heard.as_slice() {
+            [] => {
+                return Err(format!(
+                    "no FlexRadio said it is on this network in {} s.\n\
+                     -> Is it on, and on the same network as this computer? Or give its \
+                     address: --flex 192.168.1.20",
+                    FLEX_LISTEN.as_secs()
+                ));
+            }
+            [one] => one.address.to_string(),
+            many => {
+                let list: Vec<String> = many
+                    .iter()
+                    .map(|r| format!("{} {} at {}", r.model, r.serial, r.address.ip()))
+                    .collect();
+                return Err(format!(
+                    "more than one FlexRadio is on this network: {}.\n\
+                     -> Start the station with --flex and the address of the one to use.",
+                    list.join(", ")
+                ));
+            }
+        }
+    } else {
+        address.to_owned()
+    };
+    let radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
+    let serial = radio.serial().map(str::to_owned);
+    Ok(Found {
+        radio: Box::new(radio),
+        port: format!("the network at {address}"),
+        serial,
+    })
+}
+
+/// Which radio the operator asked the station for: the one on a serial
+/// port (`--civ`), a FlexRadio on the network (`--flex`), or, with neither,
+/// whichever USB radio is plugged in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Wanted<'a> {
+    /// The serial port given with `--civ`.
+    pub port: Option<&'a str>,
+    /// The FlexRadio's address given with `--flex`, or `any`.
+    pub flex: Option<&'a str>,
+}
+
 /// How often the radio is looked for again while it isn't there.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
@@ -124,10 +190,10 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
+fn wait_for_radio(port: Option<&str>, flex: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
-        match find(port, running) {
+        match flex.map_or_else(|| find(port, running), find_flex) {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {
@@ -1775,6 +1841,43 @@ struct Programs {
     connected: Mutex<HashMap<SocketAddr, u32>>,
     /// The processes whose profile has gone on: once per program start.
     started: Mutex<HashSet<u32>>,
+    /// fldigi, while it is connected, so the radio follows it onto CW and
+    /// off it again (see `follow_fldigi`).
+    fldigi: Mutex<Option<FldigiHeld>>,
+}
+
+/// fldigi as the Agent follows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FldigiHeld {
+    /// Its process.
+    pid: u32,
+    /// The profile the Agent last put on for it, if any.
+    on: Option<&'static str>,
+    /// What was last said about why nothing changed, so it is said once.
+    said: Option<&'static str>,
+}
+
+/// How often the Agent asks fldigi which modem it is on.
+const FLDIGI_EVERY: Duration = Duration::from_secs(2);
+
+/// How long the Agent waits for fldigi's answer.
+const FLDIGI_WAIT: Duration = Duration::from_millis(500);
+
+/// Follows fldigi onto CW and off it, for as long as `programs` is served.
+fn follow_fldigi_while_served(programs: std::sync::Weak<Programs>) {
+    std::thread::spawn(move || {
+        loop {
+            std::thread::sleep(FLDIGI_EVERY);
+            let Some(programs) = programs.upgrade() else {
+                return;
+            };
+            if let Some(said) = programs.follow_fldigi(|| {
+                crate::fldigi_rpc::modem_name(crate::fldigi_rpc::ADDRESS, FLDIGI_WAIT)
+            }) {
+                programs.note(&said);
+            }
+        }
+    });
 }
 
 impl Programs {
@@ -1802,7 +1905,93 @@ impl Programs {
             identify,
             connected: Mutex::new(HashMap::new()),
             started: Mutex::new(HashSet::new()),
+            fldigi: Mutex::new(None),
         }
+    }
+
+    /// With fldigi holding an enrolled radio, puts the `fldigi CW` profile
+    /// on once fldigi is on a CW modem, and the `fldigi` one once it is off
+    /// it again, as `modem` (asking fldigi for its modem's name) says; never
+    /// while transmitting, and never while another program holds the radio
+    /// (Principle X, second exception: the lab's profile for the program in
+    /// use). Returns what to say, if anything.
+    fn follow_fldigi(&self, modem: impl FnOnce() -> Result<String, String>) -> Option<String> {
+        let mut held = (*self.fldigi.lock().ok()?)?;
+        let connected: Vec<u32> = self.connected.lock().ok()?.values().copied().collect();
+        if !connected.contains(&held.pid) {
+            *self.fldigi.lock().ok()? = None;
+            return None;
+        }
+        let others = {
+            let started = self.started.lock().ok()?;
+            connected
+                .iter()
+                .any(|pid| *pid != held.pid && started.contains(pid))
+        };
+        let enrolled = self.enrollable
+            && enrollment::load(&enrollment::path(&self.lab.records, &self.lab.serial))
+                == Some(true);
+        if others || !enrolled || self.lab.shared.on_air().load(Ordering::SeqCst) {
+            return None;
+        }
+        let keep = |held: FldigiHeld| {
+            if let Ok(mut slot) = self.fldigi.lock()
+                && slot.is_some_and(|now| now.pid == held.pid)
+            {
+                *slot = Some(held);
+            }
+        };
+        let name = match modem() {
+            Ok(name) => name,
+            Err(why) => {
+                if held.said == Some("asked") {
+                    return None;
+                }
+                held.said = Some("asked");
+                keep(held);
+                return Some(format!(
+                    "Lab profile: couldn't ask fldigi which modem it is on ({why}), so the radio \
+                     stays as it is for CW."
+                ));
+            }
+        };
+        let wanted = if crate::fldigi_rpc::is_cw(&name) {
+            profiles::FLDIGI_CW
+        } else {
+            "fldigi"
+        };
+        // With nothing put on yet, the radio is as fldigi found it: set up
+        // for fldigi's data modes, whatever they are.
+        if held.on.unwrap_or("fldigi") == wanted {
+            return None;
+        }
+        let definition = now_in(&self.lab.definition);
+        if profiles::current(&self.lab.records, &definition, wanted).is_none() {
+            if held.said == Some(wanted) {
+                return None;
+            }
+            held.said = Some(wanted);
+            keep(held);
+            return Some(format!(
+                "Lab profile: fldigi is on {name}; there is no {wanted} profile for the {} yet, so \
+                 the radio is as it was. To make one, set the radio up as you want it for \
+                 {wanted} (a narrow filter for CW, say), then pick the tray's Save as lab \
+                 profile > {wanted} and answer Yes; it goes on from then on.",
+                definition.model
+            ));
+        }
+        if let Ok(mut started) = self.started.lock() {
+            started.insert(held.pid);
+        }
+        self.lab.going(true);
+        let said = self
+            .lab
+            .put_on_as(wanted, "fldigi", &format!("went to {name}"));
+        self.lab.going(false);
+        held.on = Some(wanted);
+        held.said = None;
+        keep(held);
+        Some(said)
     }
 
     /// Why the lab's profile for program `name` (executable `exe`,
@@ -1838,8 +2027,17 @@ impl Programs {
         if profiles::current(&self.lab.records, &now_in(&self.lab.definition), name).is_none() {
             return Some(format!(
                 "Lab profile: {exe} is {name}; the lab has no {name} profile for the {} yet, so \
-                 the radio is as it was.",
-                identity.model
+                 the radio is as it was.{}",
+                identity.model,
+                if crate::product::current().standalone {
+                    format!(
+                        " To make one, set the radio up as you want it for {name}, then pick \
+                         the tray's Save as lab profile > {name} and answer Yes; it goes on \
+                         each time {name} starts from then on."
+                    )
+                } else {
+                    String::new()
+                }
             ));
         }
         None
@@ -1850,6 +2048,12 @@ impl LabRadio {
     /// Puts the lab's profile for program `name` on the radio, says what
     /// became of it, and records it like any restore.
     fn put_on(&self, name: &str, exe: &str) -> String {
+        self.put_on_as(name, exe, "started")
+    }
+
+    /// Puts the lab's profile for program `name` on the radio because
+    /// `exe` did `what` ("started", say), and says what became of it.
+    fn put_on_as(&self, name: &str, exe: &str, what: &str) -> String {
         let definition = now_in(&self.definition);
         let Some(profile) = profiles::current(&self.records, &definition, name) else {
             return format!(
@@ -1879,7 +2083,7 @@ impl LabRadio {
             &definition,
         );
         let head = format!(
-            "Lab profile: {exe} started, so the {name} profile goes on ({}).",
+            "Lab profile: {exe} {what}, so the {name} profile goes on ({}).",
             profile.origin()
         );
         if plan.put.is_empty() && plan.kept_back.is_empty() {
@@ -2057,6 +2261,16 @@ impl Source for Programs {
         let why_not = self.not_now(pid, &short, name);
         if let Ok(mut connected) = self.connected.lock() {
             connected.insert(program, pid);
+        }
+        if name == "fldigi"
+            && let Ok(mut fldigi) = self.fldigi.lock()
+            && fldigi.is_none_or(|held| held.pid != pid)
+        {
+            *fldigi = Some(FldigiHeld {
+                pid,
+                on: why_not.is_none().then_some("fldigi"),
+                said: None,
+            });
         }
         match why_not {
             Some(why) if why.is_empty() => {}
@@ -2502,7 +2716,7 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
 /// join as) doesn't make a link. FieldLab's own Engine, linked to with no
 /// `--engine`, never stops the station (see `engine_link`).
 pub fn run(
-    port: Option<&str>,
+    wanted: Wanted<'_>,
     pretend: bool,
     listen: SocketAddr,
     limit: Duration,
@@ -2572,7 +2786,7 @@ pub fn run(
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(port, &running) else {
+            let Some(found) = wait_for_radio(wanted.port, wanted.flex, &running) else {
                 break;
             };
             run_found(
@@ -2640,6 +2854,33 @@ fn station_definition(definition: &Definition, standalone: bool) -> Definition {
     }
 }
 
+/// Says which radio the station found, and where.
+fn say_found(found: &Found) {
+    let identity = found.radio.identity();
+    // A FlexRadio on the network has a serial number but no USB or speed.
+    let baud = found.radio.baud();
+    println!(
+        "Found: {} {} on {}{}{}.",
+        identity.maker,
+        identity.model,
+        found.port,
+        found
+            .serial
+            .as_deref()
+            .map(|serial| if baud == 0 {
+                format!(" (serial {serial})")
+            } else {
+                format!(" (USB serial {serial})")
+            })
+            .unwrap_or_default(),
+        if baud == 0 {
+            String::new()
+        } else {
+            format!(", at {baud} baud")
+        }
+    );
+}
+
 /// Runs the station with the radio found, until stopped.
 fn run_found(
     mut found: Found,
@@ -2652,18 +2893,7 @@ fn run_found(
 ) -> Result<Ended, String> {
     let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
     let identity = found.radio.identity().clone();
-    println!(
-        "Found: {} {} on {}{}, at {} baud.",
-        identity.maker,
-        identity.model,
-        found.port,
-        found
-            .serial
-            .as_deref()
-            .map(|serial| format!(" (USB serial {serial})"))
-            .unwrap_or_default(),
-        found.radio.baud()
-    );
+    say_found(&found);
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = station_definition(found.radio.definition(), standalone);
     let checks: Checks = Arc::new(RwLock::new(definition.clone()));
@@ -2691,7 +2921,9 @@ fn run_found(
         .as_ref()
         .filter(|_| found.serial.is_some())
         .map(|uplink| start_profile_desk(uplink.clone(), programs.lab.clone()));
-    let server = rigctld_server::Server::start(listen, Arc::new(programs) as Arc<dyn Source>)?;
+    let programs = Arc::new(programs);
+    follow_fldigi_while_served(Arc::downgrade(&programs));
+    let server = rigctld_server::Server::start(listen, programs as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
     let kenwood = kenwood_ports(kenwood);
@@ -3116,6 +3348,21 @@ mod tests {
     use crate::rigdef;
     use crate::settings_record;
 
+    #[test]
+    fn finds_a_flexradio_by_its_address() {
+        let Ok(pretend) = crate::flex_pretend::PretendFlex::start("FLEX-6600", true) else {
+            return;
+        };
+        let found = super::find_flex(pretend.address());
+        assert!(found.is_ok(), "{:?}", found.as_ref().err());
+        let Ok(found) = found else { return };
+        assert_eq!(found.port, format!("the network at {}", pretend.address()));
+        assert_eq!(found.serial.as_deref(), Some("PRETEND-6600"));
+        assert_eq!(found.radio.definition().model, "FLEX-6600");
+        assert_eq!(found.radio.baud(), 0);
+        assert!(super::find_flex("127.0.0.1:1").is_err());
+    }
+
     /// What the pretend radio has for the setting `id` now, in hex.
     fn setting_now(shared: &Shared, id: &str) -> Option<String> {
         shared
@@ -3220,6 +3467,88 @@ mod tests {
         programs.connected(from(50_004), server);
         assert!(note_with("Lab profile").contains("couldn't tell which program"));
         assert_eq!(setting_now(&shared, "filter_width").as_deref(), Some("30"));
+        let _ = std::fs::remove_dir_all(&records);
+    }
+
+    #[test]
+    fn the_radio_follows_fldigi_onto_cw_and_off_it_again() {
+        let records = std::env::temp_dir().join(format!("lablog-fldigi-cw-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&records);
+        let (shared, lab, definition) = pretend_lab(&records);
+        let programs = Programs::new(
+            lab,
+            true,
+            Box::new(|program: SocketAddr, _| match program.port() {
+                50_010 => Ok((99, r"C:\Program Files\fldigi-4.2.05\fldigi.exe".to_owned())),
+                _ => Err("not found".to_owned()),
+            }),
+        );
+        let server = SocketAddr::from(([127, 0, 0, 1], 4532));
+        let fldigi = SocketAddr::from(([127, 0, 0, 1], 50_010));
+        let modem = |name: &'static str| move || Ok::<_, String>(name.to_owned());
+
+        // Not enrolled: nothing follows fldigi.
+        programs.connected(fldigi, server);
+        assert_eq!(programs.follow_fldigi(modem("CW")), None);
+        programs.gone(fldigi);
+        assert_eq!(programs.follow_fldigi(modem("CW")), None);
+        assert!(programs.fldigi.lock().is_ok_and(|held| held.is_none()));
+
+        assert!(
+            crate::enrollment::save(&crate::enrollment::path(&records, "PRETEND"), true).is_ok()
+        );
+        programs.connected(fldigi, server);
+        assert!(programs.lab.ready(), "the fldigi profile went on");
+        let for_data = setting_now(&shared, "agc");
+        assert_eq!(programs.follow_fldigi(modem("BPSK31")), None);
+
+        // On CW with no CW profile yet: said once, nothing changed.
+        let said = programs.follow_fldigi(modem("CW")).unwrap_or_default();
+        assert!(said.contains("no fldigi CW profile"), "{said}");
+        assert_eq!(programs.follow_fldigi(modem("CW")), None);
+        assert_eq!(setting_now(&shared, "agc"), for_data);
+
+        // With one saved, it goes on, once, and fldigi's goes back after.
+        let narrow = crate::engine::StockSetting {
+            id: "agc".to_owned(),
+            label: "AGC".to_owned(),
+            bytes: "03".to_owned(),
+            shown: None,
+        };
+        assert!(
+            crate::profiles::save_here(
+                &records,
+                &definition,
+                "fldigi CW",
+                vec![narrow],
+                "FL-1",
+                "now"
+            )
+            .is_ok()
+        );
+        let said = programs.follow_fldigi(modem("CW")).unwrap_or_default();
+        assert!(
+            said.contains("fldigi went to CW, so the fldigi CW profile goes on"),
+            "{said}"
+        );
+        assert_eq!(setting_now(&shared, "agc").as_deref(), Some("03"));
+        assert_eq!(programs.follow_fldigi(modem("CW")), None);
+        let said = programs.follow_fldigi(modem("RTTY")).unwrap_or_default();
+        assert!(
+            said.contains("fldigi went to RTTY, so the fldigi profile goes on"),
+            "{said}"
+        );
+        assert_eq!(setting_now(&shared, "agc"), for_data);
+
+        // fldigi not answering is said once; gone, it isn't followed.
+        let said = programs
+            .follow_fldigi(|| Err("refused".to_owned()))
+            .unwrap_or_default();
+        assert!(said.contains("couldn't ask fldigi"), "{said}");
+        assert_eq!(programs.follow_fldigi(|| Err("refused".to_owned())), None);
+        programs.gone(fldigi);
+        assert_eq!(programs.follow_fldigi(modem("CW")), None);
+        assert_eq!(setting_now(&shared, "agc"), for_data);
         let _ = std::fs::remove_dir_all(&records);
     }
 

@@ -1,0 +1,108 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# The stock profiles for the Yaesu FTDX10, one per program, built into
+# the Agent so a new radio needs no hand setup (brian, 2026-11-21: ship
+# stock profiles). None of these is proven on a real FTDX10 yet: the
+# FTDX10's definition has no setting checked on a real radio, so the Agent
+# puts them on only after a write check on that computer finds the
+# settings work (see write_check.rs). Each holds only what a cited source
+# says digital modes need: the transmit audio taken from USB, and the mode
+# where the program's own guide names it. Levels (drive, ALC) are left to
+# the Agent's drive offers, and anything a source doesn't give is left as
+# the radio has it; the operator saves their own over any of these from
+# the tray (Save as lab profile).
+#
+# Each setting is a setting id from rigs/yaesu/ftdx10.toml and the bytes the radio
+# sends and takes for it, in hex.
+
+maker = "Yaesu"
+model = "FTDX10"
+
+[[profiles]]
+name = "VARA"
+source = "The IC-7300's VARA profile (DATA-USB, from brian at FieldLab, 2026-10-28) carried to the FTDX10's DATA-U, with the audio path from the FTDX10 definition's digital_modes requirements. Not yet proven on a real FTDX10."
+
+# DATA-U (MD0 answers C): the mode is put on first, as it selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "43"
+
+# DATA MOD SOURCE REAR and DATA REAR SELECT USB: in the DATA modes the
+# radio otherwise takes transmit audio from the microphone or the DATA
+# jack, so the program would transmit silence (the definition's
+# digital_modes requirements, from the FTDX10 CAT operation reference
+# manual's EX010415 and EX010416).
+[[profiles.settings]]
+id = "data_mod_source"
+bytes = "01"
+
+[[profiles.settings]]
+id = "data_rear_select"
+bytes = "01"
+
+[[profiles]]
+name = "FT8"
+source = "WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; the audio path from the FTDX10 definition's digital_modes requirements. Not yet proven on a real FTDX10."
+
+# DATA-U (MD0 answers C): the mode is put on first, as it selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "43"
+
+# DATA MOD SOURCE REAR and DATA REAR SELECT USB: in the DATA modes the
+# radio otherwise takes transmit audio from the microphone or the DATA
+# jack, so the program would transmit silence (the definition's
+# digital_modes requirements, from the FTDX10 CAT operation reference
+# manual's EX010415 and EX010416).
+[[profiles.settings]]
+id = "data_mod_source"
+bytes = "01"
+
+[[profiles.settings]]
+id = "data_rear_select"
+bytes = "01"
+
+[[profiles]]
+name = "JS8"
+source = "JS8Call is built on WSJT-X; WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; the audio path from the FTDX10 definition's digital_modes requirements. Not yet proven on a real FTDX10."
+
+# DATA-U (MD0 answers C): the mode is put on first, as it selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "43"
+
+# DATA MOD SOURCE REAR and DATA REAR SELECT USB: in the DATA modes the
+# radio otherwise takes transmit audio from the microphone or the DATA
+# jack, so the program would transmit silence (the definition's
+# digital_modes requirements, from the FTDX10 CAT operation reference
+# manual's EX010415 and EX010416).
+[[profiles.settings]]
+id = "data_mod_source"
+bytes = "01"
+
+[[profiles.settings]]
+id = "data_rear_select"
+bytes = "01"
+
+[[profiles]]
+name = "fldigi"
+source = "fldigi wiki, beginners: tune \"at a popular spot (for example 14.070MHz, USB)\"; DATA-U for the rear audio path, from the FTDX10 definition's digital_modes requirements. Not yet proven on a real FTDX10."
+
+# DATA-U (MD0 answers C): the mode is put on first, as it selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "43"
+
+# DATA MOD SOURCE REAR and DATA REAR SELECT USB: in the DATA modes the
+# radio otherwise takes transmit audio from the microphone or the DATA
+# jack, so the program would transmit silence (the definition's
+# digital_modes requirements, from the FTDX10 CAT operation reference
+# manual's EX010415 and EX010416).
+[[profiles.settings]]
+id = "data_mod_source"
+bytes = "01"
+
+[[profiles.settings]]
+id = "data_rear_select"
+bytes = "01"

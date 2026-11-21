@@ -1,0 +1,98 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# The stock profiles for the Icom IC-9700, one per program, built into
+# the Agent so a new radio needs no hand setup (brian, 2026-11-21: ship
+# stock profiles). None of these is proven on a real IC-9700 yet: the
+# IC-9700's definition has no setting checked on a real radio, so the Agent
+# puts them on only after a write check on that computer finds the
+# settings work (see write_check.rs). Each holds only what a cited source
+# says digital modes need: the transmit audio taken from USB, and the mode
+# where the program's own guide names it. Levels (drive, ALC) are left to
+# the Agent's drive offers, and anything a source doesn't give is left as
+# the radio has it; the operator saves their own over any of these from
+# the tray (Save as lab profile).
+#
+# Each setting is a setting id from rigs/icom/ic-9700.toml and the bytes the radio
+# sends and takes for it, in hex.
+
+maker = "Icom"
+model = "IC-9700"
+
+[[profiles]]
+name = "VARA"
+source = "The IC-9700's digital_modes requirement only: VARA is used on FM (VARA FM) or SSB here, so the mode is left as the operator has it. Not yet proven on a real IC-9700."
+
+# DATA MOD USB: in data mode the radio otherwise takes transmit audio from
+# somewhere other than USB, so the program would transmit silence (the
+# definition's digital_modes requirement; code 03 from Icom's CI-V
+# reference).
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "FT8"
+source = "WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; the audio path from the IC-9700 definition's digital_modes requirements. Not yet proven on a real IC-9700."
+
+# USB (mode code 01) on FIL1, then data mode on: DATA-USB, as on the
+# IC-7300. Choosing the mode turns data mode off, so it goes first.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# DATA MOD USB: in data mode the radio otherwise takes transmit audio from
+# somewhere other than USB, so the program would transmit silence (the
+# definition's digital_modes requirement; code 03 from Icom's CI-V
+# reference).
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "JS8"
+source = "JS8Call is built on WSJT-X; WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; the audio path from the IC-9700 definition's digital_modes requirements. Not yet proven on a real IC-9700."
+
+# USB (mode code 01) on FIL1, then data mode on: DATA-USB, as on the
+# IC-7300. Choosing the mode turns data mode off, so it goes first.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# DATA MOD USB: in data mode the radio otherwise takes transmit audio from
+# somewhere other than USB, so the program would transmit silence (the
+# definition's digital_modes requirement; code 03 from Icom's CI-V
+# reference).
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
+
+[[profiles]]
+name = "fldigi"
+source = "fldigi wiki, beginners: tune \"at a popular spot (for example 14.070MHz, USB)\"; DATA-USB for the USB audio path, from the IC-9700 definition's digital_modes requirement. Not yet proven on a real IC-9700."
+
+# USB (mode code 01) on FIL1, then data mode on: DATA-USB, as on the
+# IC-7300. Choosing the mode turns data mode off, so it goes first.
+[[profiles.settings]]
+id = "mode_and_filter"
+bytes = "01 01"
+
+[[profiles.settings]]
+id = "data_mode_and_filter"
+bytes = "01 01"
+
+# DATA MOD USB: in data mode the radio otherwise takes transmit audio from
+# somewhere other than USB, so the program would transmit silence (the
+# definition's digital_modes requirement; code 03 from Icom's CI-V
+# reference).
+[[profiles.settings]]
+id = "data_mod"
+bytes = "03"
