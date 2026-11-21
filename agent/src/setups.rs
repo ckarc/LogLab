@@ -5,6 +5,10 @@
 //! when the Agent runs with no Engine, in files on this computer
 //! (Principle V). Either way a setup is kept whole and never overwritten; a
 //! newer setup of the same name is a new version, and the newest is used.
+//!
+//! An Agent standing alone (`--standalone`) also keeps its Lab Stock here:
+//! there is no LabLog and no administrator, so the operator's yes to
+//! `stock save` is the approval, and the newest saved is the one put on.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -54,6 +58,14 @@ pub trait Setups: Send {
         let _ = (record, settings);
         Err(NO_ENGINE.to_owned())
     }
+
+    /// Whether these setups stand alone (`--standalone`): Lab Stock and the
+    /// lab's profiles are kept and changed on this computer, with no
+    /// administrator, so `stock save` saves at once and `profile save`
+    /// works.
+    fn standalone(&self) -> bool {
+        false
+    }
 }
 
 /// Why Lab Stock isn't there when the Agent runs with no Engine.
@@ -88,14 +100,91 @@ impl Setups for Uplink {
 /// Setups kept in files in one folder on this computer.
 pub struct Local {
     folder: PathBuf,
+    /// Standing alone: Lab Stock is kept here too.
+    standalone: bool,
 }
 
 impl Local {
     /// Setups kept in `folder`.
     #[must_use]
     pub fn new(folder: PathBuf) -> Self {
-        Self { folder }
+        Self {
+            folder,
+            standalone: false,
+        }
     }
+
+    /// Setups, and Lab Stock, kept in `folder`, by an Agent standing alone.
+    #[must_use]
+    pub fn standalone(folder: PathBuf) -> Self {
+        Self {
+            folder,
+            standalone: true,
+        }
+    }
+
+    /// Every Lab Stock saved here for the radio `maker` `model`, oldest
+    /// first. A file that isn't one this Agent wrote is passed over.
+    fn stocks(&self, maker: &str, model: &str) -> Result<Vec<StockFile>, String> {
+        let prefix = stock_prefix(maker, model);
+        let entries = match fs::read_dir(&self.folder) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(format!("can't look in {}: {error}", self.folder.display())),
+        };
+        let mut stocks: Vec<StockFile> = entries
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| {
+                        name.starts_with(&prefix)
+                            && Path::new(name)
+                                .extension()
+                                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+                    })
+            })
+            .filter_map(|path| fs::read_to_string(path).ok())
+            .filter_map(|text| serde_json::from_str::<StockFile>(&text).ok())
+            .filter(|stock| stock.maker == maker && stock.model == model)
+            .collect();
+        stocks.sort_by_key(|stock| stock.id);
+        Ok(stocks)
+    }
+}
+
+/// One version of a model's Lab Stock, as an Agent standing alone keeps it:
+/// a file of its own, never overwritten.
+#[derive(Debug, Serialize, Deserialize)]
+struct StockFile {
+    /// The file format's version.
+    format: u32,
+    /// Its number on this computer: Lab Stock #3.
+    id: u64,
+    maker: String,
+    model: String,
+    /// The radio it was read from.
+    serial: Option<String>,
+    /// The computer it was read on.
+    station: String,
+    /// When it was read, in UTC.
+    saved_at: String,
+    settings: Vec<StockSetting>,
+}
+
+/// The start of the file names a model's Lab Stock is kept under.
+fn stock_prefix(maker: &str, model: &str) -> String {
+    format!("lab-stock-{maker}-{model}-")
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 /// One setup as a file on this computer keeps it.
@@ -224,6 +313,50 @@ impl Setups for Local {
     fn place(&self) -> String {
         format!("on this computer, in {}", self.folder.display())
     }
+
+    fn lab_stock(&self, maker: &str, model: &str) -> Result<Option<LabStock>, String> {
+        if !self.standalone {
+            return Err(NO_ENGINE.to_owned());
+        }
+        Ok(self.stocks(maker, model)?.pop().map(|stock| LabStock {
+            id: stock.id,
+            maker: stock.maker,
+            model: stock.model,
+            settings: stock.settings,
+        }))
+    }
+
+    fn propose_lab_stock(&self, record: &Record, settings: &[StockSetting]) -> Result<u64, String> {
+        if !self.standalone {
+            return Err(NO_ENGINE.to_owned());
+        }
+        if settings.is_empty() {
+            return Err("there are no settings to save".to_owned());
+        }
+        let id = self
+            .stocks(&record.maker, &record.model)?
+            .last()
+            .map_or(1, |stock| stock.id + 1);
+        let stock = StockFile {
+            format: 1,
+            id,
+            maker: record.maker.clone(),
+            model: record.model.clone(),
+            serial: record.serial.clone(),
+            station: record.computer.clone(),
+            saved_at: record.read_utc.clone(),
+            settings: settings.to_vec(),
+        };
+        let path = self.folder.join(format!(
+            "{}{id:04}.json",
+            stock_prefix(&record.maker, &record.model)
+        ));
+        settings_record::save(&path, &stock).map(|()| id)
+    }
+
+    fn standalone(&self) -> bool {
+        self.standalone
+    }
 }
 
 #[cfg(test)]
@@ -321,6 +454,53 @@ mod tests {
                 .is_err()
         );
         assert!(local.keep(&first, "").is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn stock(id: &str, bytes: &str) -> Vec<crate::engine::StockSetting> {
+        vec![crate::engine::StockSetting {
+            id: id.to_owned(),
+            label: id.to_owned(),
+            bytes: bytes.to_owned(),
+            shown: None,
+        }]
+    }
+
+    #[test]
+    fn standing_alone_keeps_lab_stock_here_and_the_newest_is_used() {
+        let dir = folder("stock");
+        let alone = Local::standalone(dir.clone());
+        assert!(alone.standalone());
+        let first = record(Some("A"), "2026-11-21T05:00:00Z", "00 05");
+        assert_eq!(alone.lab_stock("Icom", "IC-7300"), Ok(None));
+        assert_eq!(
+            alone.propose_lab_stock(&first, &stock("data_mod", "01")),
+            Ok(1)
+        );
+        assert_eq!(
+            alone.propose_lab_stock(&first, &stock("data_mod", "03")),
+            Ok(2)
+        );
+        assert!(alone.propose_lab_stock(&first, &[]).is_err());
+        let newest = alone.lab_stock("Icom", "IC-7300");
+        assert_eq!(
+            newest.as_ref().map(|s| s.as_ref().map(|s| s.id)),
+            Ok(Some(2))
+        );
+        assert_eq!(
+            newest.map(|s| s.map(|s| s.settings[0].bytes.clone())),
+            Ok(Some("03".to_owned()))
+        );
+        // Another model's is its own.
+        assert_eq!(alone.lab_stock("Icom", "IC-9700"), Ok(None));
+        // With no Engine, but not standing alone, Lab Stock is LabLog's alone.
+        let lab = Local::new(dir.clone());
+        assert!(!lab.standalone());
+        assert!(lab.lab_stock("Icom", "IC-7300").is_err());
+        assert!(
+            lab.propose_lab_stock(&first, &stock("data_mod", "01"))
+                .is_err()
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

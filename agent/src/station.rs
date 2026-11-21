@@ -361,6 +361,9 @@ enum Typed {
     Stock,
     /// Send the radio's settings to the Engine as a Lab Stock proposal.
     StockSave,
+    /// Standing alone: show what saving the radio's settings as this
+    /// program's lab profile would keep, and wait for a yes.
+    ProfileSave(&'static str),
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -413,6 +416,21 @@ fn typed(line: &str) -> Result<Typed, String> {
             "save" => Ok(Typed::StockSave),
             _ => Err("stock takes save or nothing: stock, or stock save".to_owned()),
         },
+        ("profile", rest) => {
+            let (save, program) = rest
+                .split_once(char::is_whitespace)
+                .map_or((rest, ""), |(save, program)| (save, program.trim()));
+            match (
+                save.eq_ignore_ascii_case("save"),
+                profiles::program_named(program),
+            ) {
+                (true, Some(program)) => Ok(Typed::ProfileSave(program)),
+                _ => Err(format!(
+                    "profile takes save and a program, one of {}: profile save VARA, say",
+                    profiles::PROGRAMS.join(", ")
+                )),
+            }
+        }
         ("help" | "?", "") => Ok(Typed::Help),
         _ => Err(format!("unknown command {line:?}")),
     }
@@ -425,7 +443,9 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          fix what stops a job working, auto on to let the Agent make its \
                          fixes without asking, enroll on to put the lab's profiles on this \
                          radio as programs start, stock to put the lab's Lab Stock on, stock \
-                         save to send the radio's settings as a Lab Stock proposal, or quit to \
+                         save to send the radio's settings as a Lab Stock proposal (standing \
+                         alone, to save them as the Lab Stock), profile save VARA (say) to save \
+                         the radio's settings as a lab profile when standing alone, or quit to \
                          stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
@@ -507,6 +527,138 @@ fn lab_locked(records: &std::path::Path, definition: &Definition, name: &str) ->
     ))
 }
 
+/// What `keep NAME` says: the radio's settings kept as setup NAME, or why
+/// not. The lab's profiles are locked: NAME can't be one of them.
+fn keep(
+    setups: &dyn Setups,
+    definition: &Definition,
+    name: &str,
+    read: impl FnOnce() -> Result<Record, String>,
+) -> String {
+    if let Some(said) = lab_locked(&records_folder(), definition, name) {
+        return if setups.standalone() {
+            standalone_locked(&said, name)
+        } else {
+            said
+        };
+    }
+    match read() {
+        Ok(record) => match setups.keep(&record, name) {
+            Ok(()) => format!(
+                "kept the radio's settings {} as setup {name} ({} settings)",
+                setups.place(),
+                record.settings.len()
+            ),
+            Err(error) => format!("setup {name} not kept: {error}"),
+        },
+        Err(why) => format!("setup {name} not kept: {why}"),
+    }
+}
+
+/// Why `keep NAME` is refused on an Agent standing alone: `said`, LabLog's
+/// way of changing a lab profile swapped for `profile save NAME`.
+fn standalone_locked(said: &str, name: &str) -> String {
+    let first = said
+        .split_once(", and only")
+        .map_or(said, |(first, _)| first);
+    let program = profiles::program_named(name).unwrap_or(name);
+    format!(
+        "{first}.\n-> To change it, set the radio up and type profile save {program}; to keep \
+         your own beside it, keep My {program}."
+    )
+}
+
+/// What `profile save PROGRAM` says, standing alone: what the program's
+/// lab profile would hold, as the radio has it now, left waiting for a
+/// yes, or why it can't.
+fn profile_save(
+    setups: &dyn Setups,
+    desk: &Desk,
+    definition: &Definition,
+    records: &std::path::Path,
+    program: &'static str,
+    read: impl FnOnce() -> Result<Record, String>,
+) -> String {
+    if !setups.standalone() {
+        return format!(
+            "Lab profile: the {program} profile not saved. At the lab, an administrator \
+             changes the lab's profiles in LabLog (Menu, Admin, Lab Profiles); profile save \
+             is for an Agent standing alone (--standalone)."
+        );
+    }
+    let record = match read() {
+        Ok(record) => record,
+        Err(why) => return format!("Lab profile: the {program} profile not saved: {why}"),
+    };
+    let settings = profiles::chosen(
+        records,
+        definition,
+        program,
+        crate::lab_stock::checked(&record, definition),
+    );
+    if settings.is_empty() {
+        return format!(
+            "Lab profile: the {program} profile not saved; none of the {}'s settings it would \
+             hold has been checked on a real radio yet, so it would put nothing on.",
+            record.model
+        );
+    }
+    let now_from = profiles::current(records, definition, program)
+        .map_or_else(|| "none yet".to_owned(), |profile| profile.origin());
+    let mut lines = vec![format!(
+        "Lab profile: saving the {program} profile for the {} ({now_from} now) keeps these {} \
+         settings as this radio has them. Every enrolled {} plugged in here gets it as {program}'s \
+         program starts. Nothing on the radio changes.",
+        record.model,
+        settings.len(),
+        record.model
+    )];
+    lines.extend(settings.iter().map(|setting| {
+        format!(
+            "  {}: {}",
+            setting.label,
+            setting.shown.as_deref().unwrap_or(&setting.bytes)
+        )
+    }));
+    let number = desk.ask(Asked::ProfileSave {
+        program,
+        record: Box::new(record),
+        settings,
+    });
+    lines.push(numbered(
+        &format!("-> Type yes to save it as the {program} profile; anything else changes nothing."),
+        number,
+    ));
+    lines.join("\n")
+}
+
+/// Saves `settings`, read from the radio in `record`, as `program`'s lab
+/// profile on this computer, after the operator's yes.
+fn profile_saved(
+    definition: &Definition,
+    records: &std::path::Path,
+    program: &str,
+    record: &Record,
+    settings: Vec<crate::engine::StockSetting>,
+) -> String {
+    match profiles::save_here(
+        records,
+        definition,
+        program,
+        settings,
+        &record.computer,
+        &record.read_utc,
+    ) {
+        Ok(id) => format!(
+            "Lab profile: saved the {program} profile for the {} on this computer, version #{id}. \
+             It goes on as {program}'s program starts from now on (restore {program} puts it on \
+             now).",
+            record.model
+        ),
+        Err(why) => format!("Lab profile: the {program} profile not saved: {why}"),
+    }
+}
+
 /// What `stock` says: what putting the model's Lab Stock on would change,
 /// left waiting for a yes, or why it can't.
 fn stock(
@@ -523,6 +675,11 @@ fn stock(
         Ok((now, Some(stock))) => {
             stock_offer(desk, crate::lab_stock::plan(&stock, &now, definition))
         }
+        Ok((now, None)) if setups.standalone() => format!(
+            "Lab Stock: none saved on this computer for the {} yet, so nothing changed.\n-> \
+             stock save saves this radio's settings as the {} Lab Stock.",
+            now.model, now.model
+        ),
         Ok((now, None)) => format!(
             "Lab Stock: none approved for the {} yet, so nothing changed.\n-> stock save \
              sends this radio's settings as a proposal; an administrator approves it in \
@@ -536,7 +693,17 @@ fn stock(
 /// What `stock save` says: what sending the radio's settings as a Lab
 /// Stock proposal takes, left waiting for a yes, since reading each
 /// filter's width means choosing each filter in turn.
-fn stock_save(desk: &Desk, definition: &Definition, now: Result<Record, String>) -> String {
+fn stock_save(
+    desk: &Desk,
+    definition: &Definition,
+    standalone: bool,
+    now: Result<Record, String>,
+) -> String {
+    let (sending, send) = if standalone {
+        ("saving this radio's", "save them as the Lab Stock")
+    } else {
+        ("sending this radio's", "send the proposal")
+    };
     let record = match now {
         Ok(record) => record,
         Err(why) => return format!("Lab Stock proposal not sent: {why}"),
@@ -552,24 +719,30 @@ fn stock_save(desk: &Desk, definition: &Definition, now: Result<Record, String>)
     let number = desk.ask(Asked::StockSave);
     let about = if crate::filter_widths::can_choose(definition) {
         format!(
-            "Lab Stock: sending this radio's {} settings as a proposal also reads each filter's \
-             width. The Agent chooses FIL1, FIL2 and FIL3 in turn on the mode the radio is on, \
-             then puts it back on the filter it is on now. Nothing else changes.",
-            settings.len()
+            "Lab Stock: {sending} {} settings{} also reads each filter's width. The Agent \
+             chooses FIL1, FIL2 and FIL3 in turn on the mode the radio is on, then puts it back \
+             on the filter it is on now. Nothing else changes.",
+            settings.len(),
+            if standalone { "" } else { " as a proposal" }
         )
     } else {
         format!(
-            "Lab Stock: the Agent reads this radio's {} settings and sends them as a proposal; \
-             it can't choose each filter on the {}, so filter widths other than the selected \
-             one aren't in it. Nothing on the radio changes.",
+            "Lab Stock: the Agent reads this radio's {} settings and {}; it can't choose each \
+             filter on the {}, so filter widths other than the selected one aren't in it. \
+             Nothing on the radio changes.",
             settings.len(),
+            if standalone {
+                "saves them as the Lab Stock"
+            } else {
+                "sends them as a proposal"
+            },
             record.model
         )
     };
     let lines = [
         about,
         numbered(
-            "-> Type yes to read them and send the proposal; anything else sends nothing.",
+            &format!("-> Type yes to read them and {send}; anything else changes nothing."),
             number,
         ),
     ];
@@ -606,6 +779,24 @@ fn stock_send(
         Err(why) => return format!("Lab Stock proposal not sent: {why}"),
     };
     let settings = crate::lab_stock::from_record(&record, definition, &widths);
+    let filters = if widths.is_empty() {
+        ""
+    } else {
+        ", with FIL1, FIL2 and FIL3's widths (the radio is back on the filter it was on),"
+    };
+    if setups.standalone() {
+        return match setups.propose_lab_stock(&record, &settings) {
+            Ok(number) => format!(
+                "Lab Stock: saved the radio's {} settings{filters} {} as the {}'s Lab Stock \
+                 #{number}. stock puts it on any {} plugged in here, after a yes.",
+                settings.len(),
+                setups.place(),
+                record.model,
+                record.model
+            ),
+            Err(why) => format!("Lab Stock not saved: {why}"),
+        };
+    }
     match setups.propose_lab_stock(&record, &settings) {
         Ok(number) => format!(
             "Lab Stock: sent the radio's {} settings{} to the Engine as proposal #{number} for \
@@ -706,21 +897,26 @@ fn start_typing(running: Arc<AtomicBool>) -> Typing {
     typing
 }
 
-/// Starts the operator's console. Setups are kept on the Engine when there
-/// is one, otherwise on this computer, so keep and restore work with no
-/// network (Principle V).
+/// Where setups are kept: on the Engine when there is one, otherwise on
+/// this computer, so keep and restore work with no network (Principle V);
+/// standing alone, Lab Stock too.
+fn setups_for(uplink: Option<Uplink>, standalone: bool) -> Box<dyn Setups> {
+    match uplink {
+        Some(uplink) => Box::new(uplink),
+        None if standalone => Box::new(crate::setups::Local::standalone(records_folder())),
+        None => Box::new(crate::setups::Local::new(records_folder())),
+    }
+}
+
+/// Starts the operator's console, with its setups kept in `setups`.
 fn start_console(
     shared: &Arc<Shared>,
-    uplink: Option<Uplink>,
+    setups: Box<dyn Setups>,
     serial: String,
     definition: Definition,
     record: &Record,
     typing: &Typing,
 ) -> Desk {
-    let setups: Box<dyn Setups> = match uplink {
-        Some(uplink) => Box::new(uplink),
-        None => Box::new(crate::setups::Local::new(records_folder())),
-    };
     println!("Setups: kept {}.", setups.place());
     println!("{TYPE_HELP}");
     let desk = Desk {
@@ -785,6 +981,13 @@ enum Asked {
     /// To read each filter's width and send the radio's settings as a Lab
     /// Stock proposal.
     StockSave,
+    /// Standing alone, to save these settings, as the radio of this record
+    /// has them, as this program's lab profile on this computer.
+    ProfileSave {
+        program: &'static str,
+        record: Box<Record>,
+        settings: Vec<crate::engine::StockSetting>,
+    },
 }
 
 /// What waits for the operator's yes, and its question number: shown last,
@@ -869,6 +1072,14 @@ const ENROLL_ASK: &str = "-> Type yes to enroll it in lab settings control; no l
 
 /// What the question to enroll a radio says first.
 fn enroll_about(model: &str, serial: &str) -> String {
+    if crate::product::current().standalone {
+        return format!(
+            "Lab profile: should RadioAgent set up this {model} (serial {serial})? Enrolled, it \
+             gets this computer's profile for each program put on as that program starts (VARA \
+             for VarAC, say). Left out (no), such as a borrowed radio, RadioAgent never changes \
+             it on its own; the tray's Lab radio menu changes that later."
+        );
+    }
     format!(
         "Lab profile: is this {model} (serial {serial}) a FieldLab radio? Enrolled, it gets \
          the lab's profile for each program put on as that program starts (VARA for VarAC, \
@@ -1167,7 +1378,21 @@ fn answer_waiting(
             format!("setup {} not put back; nothing changed.", plan.setup)
         }
         (Asked::StockSave, true) => stock_send(shared, setups, definition, &desk.serial),
+        (Asked::StockSave, false) if setups.standalone() => {
+            "Lab Stock not saved; nothing changed.".to_owned()
+        }
         (Asked::StockSave, false) => "Lab Stock proposal not sent; nothing changed.".to_owned(),
+        (
+            Asked::ProfileSave {
+                program,
+                record,
+                settings,
+            },
+            true,
+        ) => profile_saved(definition, &records_folder(), program, &record, settings),
+        (Asked::ProfileSave { program, .. }, false) => {
+            format!("Lab profile: the {program} profile not saved; it is as it was.")
+        }
         (Asked::Enroll, true) => desk.enroll(true),
         (Asked::Enroll, false) if no => desk.enroll(false),
         (Asked::Enroll, false) => {
@@ -1242,7 +1467,10 @@ fn console(
             ))),
             Ok(Typed::Enroll(Some(on))) => desk.enroll(on),
             Ok(Typed::Stock) => stock(setups, definition, desk, read()),
-            Ok(Typed::StockSave) => stock_save(desk, definition, read()),
+            Ok(Typed::StockSave) => stock_save(desk, definition, setups.standalone(), read()),
+            Ok(Typed::ProfileSave(p)) => {
+                profile_save(setups, desk, definition, &records_folder(), p, read)
+            }
             Ok(Typed::Show(name)) => show(shared, definition, &name),
             Ok(Typed::Fix) => match read() {
                 Ok(now) => {
@@ -1263,20 +1491,7 @@ fn console(
                 Err(why) => format!("not checked: {why}"),
             },
             Err(why) => format!("{why}\n-> {TYPE_HELP}"),
-            Ok(Typed::Keep(name)) if lab_locked(&records_folder(), definition, &name).is_some() => {
-                lab_locked(&records_folder(), definition, &name).unwrap_or_default()
-            }
-            Ok(Typed::Keep(name)) => match read() {
-                Ok(record) => match setups.keep(&record, &name) {
-                    Ok(()) => format!(
-                        "kept the radio's settings {} as setup {name} ({} settings)",
-                        setups.place(),
-                        record.settings.len()
-                    ),
-                    Err(error) => format!("setup {name} not kept: {error}"),
-                },
-                Err(why) => format!("setup {name} not kept: {why}"),
-            },
+            Ok(Typed::Keep(name)) => keep(setups, definition, &name, read),
             Ok(Typed::Compare) => match read().and_then(|now| {
                 setups
                     .kept(&now.maker, &now.model, serial)
@@ -2201,7 +2416,7 @@ pub fn run(
                 station,
             } => Some(uplink(engine, key_file, station.as_deref(), &running)?),
             EngineLink::FieldLab => fieldlab.as_mut().and_then(|link| link.uplink(&running)),
-            EngineLink::Off => None,
+            EngineLink::Off | EngineLink::Standalone => None,
         };
         let ended = if pretend {
             let found = Found {
@@ -2216,6 +2431,7 @@ pub fn run(
                 Link {
                     uplink,
                     joined: joined.as_deref(),
+                    standalone: *engine == EngineLink::Standalone,
                 },
                 &running,
                 &typing,
@@ -2232,6 +2448,7 @@ pub fn run(
                 Link {
                     uplink,
                     joined: joined.as_deref(),
+                    standalone: *engine == EngineLink::Standalone,
                 },
                 &running,
                 &typing,
@@ -2262,7 +2479,11 @@ pub fn run(
 /// the programs and the Engine, when there is one.
 fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate::carrier::Carrier> {
     let Some(uplink) = uplink else {
-        println!("QSOs: stay in each program's own log (LabLog isn't linked).");
+        if crate::product::current().standalone {
+            println!("QSOs: stay in each program's own log.");
+        } else {
+            println!("QSOs: stay in each program's own log (LabLog isn't linked).");
+        }
         return None;
     };
     let radio = Arc::clone(shared) as Arc<dyn Source>;
@@ -2284,7 +2505,7 @@ fn run_found(
     typing: &Typing,
     kenwood: Option<&str>,
 ) -> Result<Ended, String> {
-    let Link { uplink, joined } = link;
+    let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
     let identity = found.radio.identity().clone();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
@@ -2345,10 +2566,11 @@ fn run_found(
         println!("Virtual Kenwood: Windows only, so not started.");
     }
     let carrier = start_carrier(uplink.as_ref(), &shared);
+    let setups = setups_for(uplink, standalone);
     let desk = found
         .serial
         .clone()
-        .map(|serial| start_console(&shared, uplink, serial, definition.clone(), &record, typing));
+        .map(|serial| start_console(&shared, setups, serial, definition.clone(), &record, typing));
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
@@ -2413,6 +2635,9 @@ impl Ended {
 struct Link<'a> {
     uplink: Option<Uplink>,
     joined: Option<&'a AtomicBool>,
+    /// Standing alone (`--standalone`): Lab Stock and the lab's profiles
+    /// are kept, and changed, on this computer.
+    standalone: bool,
 }
 
 /// How long the radio may go unread before the Agent counts it gone and
@@ -2620,9 +2845,6 @@ pub fn check_writes_on(
 /// (Microsoft Learn, "Run and `RunOnce` Registry Keys").
 #[cfg(windows)]
 const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-/// The Agent's entry under it.
-#[cfg(windows)]
-const RUN_NAME: &str = "LabLog Station Agent";
 
 /// The command line Windows runs at sign-in: this program's tray, with
 /// `options` for the `station` it runs. Windows takes at most 260
@@ -2664,7 +2886,15 @@ pub fn startup(what: &str, options: &[String]) -> Result<(), String> {
                     .map_err(|error| format!("can't tell where the Agent is: {error}"))?;
                 let command = startup_command(&exe, options)?;
                 let done = reg(&[
-                    "add", RUN_KEY, "/v", RUN_NAME, "/t", "REG_SZ", "/d", &command, "/f",
+                    "add",
+                    RUN_KEY,
+                    "/v",
+                    crate::product::current().name,
+                    "/t",
+                    "REG_SZ",
+                    "/d",
+                    &command,
+                    "/f",
                 ])?;
                 if !done.status.success() {
                     return Err(format!(
@@ -2682,7 +2912,13 @@ pub fn startup(what: &str, options: &[String]) -> Result<(), String> {
                 Ok(())
             }
             "off" => {
-                let done = reg(&["delete", RUN_KEY, "/v", RUN_NAME, "/f"])?;
+                let done = reg(&[
+                    "delete",
+                    RUN_KEY,
+                    "/v",
+                    crate::product::current().name,
+                    "/f",
+                ])?;
                 if done.status.success() {
                     println!("Windows won't start the Agent at sign-in any more.");
                 } else {
@@ -2692,7 +2928,7 @@ pub fn startup(what: &str, options: &[String]) -> Result<(), String> {
                 Ok(())
             }
             "status" => {
-                let done = reg(&["query", RUN_KEY, "/v", RUN_NAME])?;
+                let done = reg(&["query", RUN_KEY, "/v", crate::product::current().name])?;
                 let text = String::from_utf8_lossy(&done.stdout);
                 match text.lines().find(|line| line.contains("REG_SZ")) {
                     Some(line) if done.status.success() => println!(
@@ -2946,6 +3182,7 @@ mod tests {
             settings: chosen,
             saved_by: "K9KSU".to_owned(),
             saved_at: "2026-10-30T00:40:00Z".to_owned(),
+            here: false,
         };
         let path = crate::profiles::saved_path(&records, "Icom", "IC-7300");
         assert!(crate::profiles::keep_saved(&path, std::slice::from_ref(&saved)).is_ok());
@@ -3086,7 +3323,7 @@ mod tests {
     fn typed_at_console(
         shared: &Shared,
         definition: &rigdef::Definition,
-        engine: &StockEngine,
+        engine: &dyn crate::setups::Setups,
         lines: &[&str],
     ) -> Desk {
         let desk = Desk {
@@ -3102,6 +3339,108 @@ mod tests {
         drop(send);
         super::console(shared, engine, definition, &desk, &receive);
         desk
+    }
+
+    /// An empty folder of its own for a test.
+    fn test_folder(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("lablog-alone-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn standing_alone_stock_save_saves_the_lab_stock_here_after_a_yes() {
+        use crate::setups::Setups as _;
+        let dir = test_folder("stock");
+        let local = crate::setups::Local::standalone(dir.clone());
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let desk = typed_at_console(&shared, &definition, &local, &["stock"]);
+        assert!(
+            desk.waiting.lock().is_ok_and(|slot| slot.is_none()),
+            "no Lab Stock yet, so nothing to put on"
+        );
+        let _ = typed_at_console(&shared, &definition, &local, &["stock save", "no"]);
+        assert!(
+            local
+                .lab_stock("Icom", "IC-7300")
+                .is_ok_and(|s| s.is_none()),
+            "no yes, nothing saved"
+        );
+        let _ = typed_at_console(&shared, &definition, &local, &["stock save", "yes"]);
+        let saved = local.lab_stock("Icom", "IC-7300");
+        let Ok(Some(stock)) = saved else {
+            unreachable!("saved after the yes: {saved:?}")
+        };
+        assert_eq!(stock.id, 1);
+        assert!(stock.settings.iter().any(|s| s.id == "data_mod"));
+        // Putting it on waits for a yes, as LabLog's does.
+        let desk = typed_at_console(&shared, &definition, &local, &["stock"]);
+        let waiting = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
+        let Some((1, super::Asked::Change(plan))) = waiting else {
+            unreachable!("the Lab Stock waits for a yes")
+        };
+        assert_eq!(plan.setup, "Lab Stock #1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn profile_save_works_only_standing_alone_and_waits_for_a_yes() {
+        assert_eq!(typed("profile save vara"), Ok(Typed::ProfileSave("VARA")));
+        assert_eq!(
+            typed("Profile SAVE fldigi"),
+            Ok(Typed::ProfileSave("fldigi"))
+        );
+        assert!(typed("profile save Winlink").is_err());
+        assert!(typed("profile").is_err());
+        let dir = test_folder("profile");
+        let (shared, definition) = transmitted([0, 0, 0]);
+        let read = || {
+            shared
+                .settings(|radio| settings_record::read(radio, Some("PRETEND"), UNIX_EPOCH, "FL-1"))
+        };
+        let desk = Desk {
+            waiting: Arc::new(Mutex::new(None)),
+            asked: Arc::new(AtomicU32::new(0)),
+            auto: Arc::new(AtomicBool::new(true)),
+            serial: "PRETEND".to_owned(),
+        };
+        let lab = crate::setups::Local::new(dir.clone());
+        let said = super::profile_save(&lab, &desk, &definition, &dir, "VARA", read);
+        assert!(said.contains("LabLog"), "{said}");
+        assert!(desk.waiting.lock().is_ok_and(|slot| slot.is_none()));
+
+        let alone = crate::setups::Local::standalone(dir.clone());
+        let said = super::profile_save(&alone, &desk, &definition, &dir, "VARA", read);
+        assert!(said.contains("built into the Agent now"), "{said}");
+        let waiting = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
+        let Some((
+            1,
+            super::Asked::ProfileSave {
+                program,
+                record,
+                settings,
+            },
+        )) = waiting
+        else {
+            unreachable!("saving a profile waits for a yes, auto mode or not")
+        };
+        assert_eq!(program, "VARA");
+        let built_in: Vec<String> = crate::profiles::find("Icom", "IC-7300", "VARA")
+            .map(|p| p.ids().map(str::to_owned).collect())
+            .unwrap_or_default();
+        let ids: Vec<String> = settings.iter().map(|s| s.id.clone()).collect();
+        assert_eq!(
+            ids, built_in,
+            "the VARA profile's own settings, in its order"
+        );
+        let said = super::profile_saved(&definition, &dir, program, &record, settings);
+        assert!(said.contains("version #1"), "{said}");
+        let now = crate::profiles::current(&dir, &definition, "VARA");
+        assert_eq!(
+            now.map(|p| p.origin()).as_deref(),
+            Some("saved on this computer, version #1")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
