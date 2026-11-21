@@ -42,7 +42,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 use crate::auto_mode;
@@ -913,10 +913,11 @@ fn start_console(
     shared: &Arc<Shared>,
     setups: Box<dyn Setups>,
     serial: String,
-    definition: Definition,
+    checks: &Checks,
     record: &Record,
     typing: &Typing,
 ) -> Desk {
+    let definition = now_in(checks);
     println!("Setups: kept {}.", setups.place());
     println!("{TYPE_HELP}");
     let desk = Desk {
@@ -930,27 +931,24 @@ fn start_console(
     if desk.auto.load(Ordering::SeqCst) {
         println!("Auto mode: on, so the Agent makes its fixes without asking (auto off asks).");
     }
-    let enrolled = enrollment::load(&enrollment::path(&records_folder(), &desk.serial));
-    let lab_model = profiles::any_here(&records_folder(), &definition);
-    let plan = crate::restore::fixes(record, &definition);
-    if lab_model && enrolled.is_none() {
-        // One question waits at a time, so the fix offer waits until fix
-        // is typed; enrolled, the lab's profile sets the rest anyway.
-        let number = desk.ask(Asked::Enroll);
+    if setups.standalone()
+        && crate::write_check::unchecked(&definition)
+        && crate::write_check::worked_here(&records_folder(), &definition.maker, &definition.model)
+            .is_none()
+    {
+        // Nothing of this model is checked yet, so nothing could be fixed:
+        // the check comes first, and the other questions after it.
+        let number = desk.ask(Asked::CheckWrites {
+            record: Box::new(record.clone()),
+        });
         println!(
             "{}\n{}",
-            enroll_about(&record.model, &desk.serial),
-            numbered(ENROLL_ASK, number)
+            check_about(&definition),
+            numbered(CHECK_ASK, number)
         );
     } else {
-        if lab_model {
-            println!("{}", enrollment::said(enrolled));
-        }
-        if !plan.put.is_empty() {
-            println!(
-                "{}",
-                desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan)
-            );
+        for line in first_offers(shared, &desk, &definition, record) {
+            println!("{line}");
         }
     }
     let (lines, typed_lines) = mpsc::channel();
@@ -959,11 +957,12 @@ fn start_console(
     }
     let shared = Arc::clone(shared);
     let console_desk = desk.clone();
+    let checks = Arc::clone(checks);
     std::thread::spawn(move || {
         console(
             &shared,
             setups.as_ref(),
-            &definition,
+            &checks,
             &console_desk,
             &typed_lines,
         );
@@ -971,10 +970,104 @@ fn start_console(
     desk
 }
 
+/// What the Agent offers as it starts with a radio: to enroll it, on a
+/// model the lab has profiles for and a radio not yet asked about, or
+/// else to fix what stops digital modes working. Returns the lines to show.
+fn first_offers(
+    shared: &Shared,
+    desk: &Desk,
+    definition: &Definition,
+    record: &Record,
+) -> Vec<String> {
+    let mut lines = Vec::new();
+    let enrolled = enrollment::load(&enrollment::path(&records_folder(), &desk.serial));
+    let lab_model = profiles::any_here(&records_folder(), definition);
+    let plan = crate::restore::fixes(record, definition);
+    if lab_model && enrolled.is_none() {
+        // One question waits at a time, so the fix offer waits until fix
+        // is typed; enrolled, the lab's profile sets the rest anyway.
+        let number = desk.ask(Asked::Enroll);
+        lines.push(format!(
+            "{}\n{}",
+            enroll_about(&record.model, &desk.serial),
+            numbered(ENROLL_ASK, number)
+        ));
+    } else {
+        if lab_model {
+            lines.push(enrollment::said(enrolled));
+        }
+        if !plan.put.is_empty() {
+            lines.push(desk.propose(shared, &fix_about(&plan), &fix_ask(&plan), plan));
+        }
+    }
+    lines
+}
+
+/// How to answer the first-time write check.
+const CHECK_ASK: &str = "-> Type yes to check now (a minute or so); no leaves every setting                          alone, and it asks again next time it starts.";
+
+/// What the question to check a model's settings says first.
+fn check_about(definition: &Definition) -> String {
+    let count = definition.settings.iter().filter(|s| s.write).count();
+    format!(
+        "Write check: {} hasn't checked which of the {}'s settings it can set, so it sets none          of them yet. Check now? Nothing changes: it writes each of {count} settings' own value          back to it and reads it again. The ones that work count as checked on this computer,          so the fixes digital modes need can go on after your yes.",
+        crate::product::current().name,
+        definition.model
+    )
+}
+
+/// Runs the write check on the radio the station holds, one setting at a
+/// time so programs still reach it between them, keeps the report, and
+/// counts the settings that worked as checked in `checks`. Returns the
+/// lines to show. The report is kept in `records`.
+fn check_here(
+    shared: &Shared,
+    checks: &Checks,
+    serial: &str,
+    records: &std::path::Path,
+) -> Vec<String> {
+    let definition = now_in(checks);
+    crate::print_event(&format!(
+        "Write check: writing back {} settings' own values...",
+        definition.settings.iter().filter(|s| s.write).count()
+    ));
+    let report = crate::write_check::check_with(
+        &definition,
+        |setting| {
+            shared
+                .settings(|radio| crate::write_check::write_back_exposed(radio, setting))
+                .map_err(crate::rig::RadioError)
+                .and_then(|back| back)
+        },
+        Some(serial),
+        std::time::SystemTime::now(),
+        &settings_record::computer_name(),
+        |_, _| {},
+    );
+    let mut lines = report.lines();
+    let path = crate::write_check::path_for(records, &report);
+    match settings_record::save(&path, &report) {
+        Ok(()) => {
+            lines.push(format!("Recorded in {}.", path.display()));
+            let checked = crate::write_check::with_checks_here(&definition, records);
+            if let Ok(mut now) = checks.write() {
+                *now = checked;
+            }
+        }
+        // Unkept, the check isn't evidence, so nothing counts as checked.
+        Err(error) => lines.push(format!("Write check not kept, so nothing counts: {error}")),
+    }
+    lines
+}
+
 /// What a question asks the operator.
 enum Asked {
     /// To make this change to the radio.
     Change(crate::restore::Plan),
+    /// To check which of the radio's settings the Agent can set, writing
+    /// each one's own value back, on a model none of whose settings is
+    /// checked; then to ask what would have been asked, from `record`.
+    CheckWrites { record: Box<Record> },
     /// Whether the radio is one of the lab's, to enroll in lab settings
     /// control.
     Enroll,
@@ -1348,8 +1441,9 @@ fn answer_waiting(
     desk: &Desk,
     typed: &Result<Typed, String>,
     setups: &dyn Setups,
-    definition: &Definition,
+    checks: &Checks,
 ) -> bool {
+    let definition = &now_in(checks);
     let pending = desk.waiting.lock().ok().and_then(|mut slot| slot.take());
     let Some((number, asked)) = pending else {
         return false;
@@ -1370,6 +1464,20 @@ fn answer_waiting(
     };
     let no = matches!(typed, Ok(Typed::No));
     crate::print_event(&match (asked, yes) {
+        (Asked::CheckWrites { record }, true) => {
+            let mut lines = check_here(shared, checks, &desk.serial, &records_folder());
+            lines.extend(first_offers(shared, desk, &now_in(checks), &record));
+            lines.join("\n")
+        }
+        (Asked::CheckWrites { record }, false) => {
+            let mut lines = vec![format!(
+                "Write check: not run, so {} sets none of the {}'s settings.",
+                crate::product::current().name,
+                record.model
+            )];
+            lines.extend(first_offers(shared, desk, definition, &record));
+            lines.join("\n")
+        }
         (Asked::Change(plan), true) => restore(shared, &plan, &desk.serial),
         (Asked::Change(plan), false) if plan.fixes => {
             "nothing fixed; the radio is as it was.".to_owned()
@@ -1409,7 +1517,7 @@ fn answer_waiting(
 fn console(
     shared: &Shared,
     setups: &dyn Setups,
-    definition: &Definition,
+    checks: &Checks,
     desk: &Desk,
     lines: &mpsc::Receiver<String>,
 ) {
@@ -1426,9 +1534,10 @@ fn console(
     };
     for line in lines {
         let typed = typed(&line);
-        if answer_waiting(shared, desk, &typed, setups, definition) {
+        if answer_waiting(shared, desk, &typed, setups, checks) {
             continue;
         }
+        let definition = &now_in(checks);
         let said = match typed {
             // Quit is read, and acted on, where the operator's typing is.
             Ok(Typed::Nothing | Typed::Quit) => continue,
@@ -1619,13 +1728,27 @@ type Identify = Box<dyn Fn(SocketAddr, SocketAddr) -> Result<(u32, String), Stri
 /// to go on.
 const PROFILE_WAIT: Duration = Duration::from_secs(15);
 
+/// The radio's definition as the station uses it, shared so that a write
+/// check run at the console counts at once everywhere.
+type Checks = Arc<RwLock<Definition>>;
+
+/// The definition in `checks`, as it is now.
+fn now_in(checks: &Checks) -> Definition {
+    checks.read().map_or_else(
+        |held| held.into_inner().clone(),
+        |definition| definition.clone(),
+    )
+}
+
 /// The radio this `station` serves, and what the lab's profiles need to
 /// know about it.
 #[derive(Clone)]
 struct LabRadio {
     shared: Arc<Shared>,
     serial: String,
-    definition: Definition,
+    /// The radio's definition, with the settings a check on this computer
+    /// found the Agent can set counted as checked once it has been run.
+    definition: Checks,
     /// The records folder, where a radio's enrollment is kept.
     records: std::path::PathBuf,
     /// How many profiles are going on now; a program's transmission waits
@@ -1657,12 +1780,12 @@ struct Programs {
 impl Programs {
     /// The radio `station` serves, with serial number `serial` if known,
     /// telling programs apart the way Windows can.
-    fn for_station(shared: &Arc<Shared>, serial: Option<&str>, definition: &Definition) -> Self {
+    fn for_station(shared: &Arc<Shared>, serial: Option<&str>, definition: &Checks) -> Self {
         Self::new(
             LabRadio {
                 shared: Arc::clone(shared),
                 serial: serial.unwrap_or_default().to_owned(),
-                definition: definition.clone(),
+                definition: Arc::clone(definition),
                 records: records_folder(),
                 going_on: Arc::new((Mutex::new(0), Condvar::new())),
                 known: Arc::new(Mutex::new(None)),
@@ -1712,7 +1835,7 @@ impl Programs {
                  control, so the Agent left it as it is."
             ));
         }
-        if profiles::current(&self.lab.records, &self.lab.definition, name).is_none() {
+        if profiles::current(&self.lab.records, &now_in(&self.lab.definition), name).is_none() {
             return Some(format!(
                 "Lab profile: {exe} is {name}; the lab has no {name} profile for the {} yet, so \
                  the radio is as it was.",
@@ -1727,10 +1850,11 @@ impl LabRadio {
     /// Puts the lab's profile for program `name` on the radio, says what
     /// became of it, and records it like any restore.
     fn put_on(&self, name: &str, exe: &str) -> String {
-        let Some(profile) = profiles::current(&self.records, &self.definition, name) else {
+        let definition = now_in(&self.definition);
+        let Some(profile) = profiles::current(&self.records, &definition, name) else {
             return format!(
                 "Lab profile: no {name} profile for the {}.",
-                self.definition.model
+                definition.model
             );
         };
         let ids: Vec<&str> = profile.ids().collect();
@@ -1750,9 +1874,9 @@ impl LabRadio {
         };
         let plan = crate::restore::plan(
             &format!("{name} lab profile"),
-            profile.kept(&self.definition),
+            profile.kept(&definition),
             &now,
-            &self.definition,
+            &definition,
         );
         let head = format!(
             "Lab profile: {exe} started, so the {name} profile goes on ({}).",
@@ -1812,7 +1936,8 @@ impl LabRadio {
             Ok(record) => record,
             Err(why) => return failed(why),
         };
-        let settings = crate::lab_stock::checked(&record, &self.definition);
+        let definition = now_in(&self.definition);
+        let settings = crate::lab_stock::checked(&record, &definition);
         if settings.is_empty() {
             return failed(format!(
                 "none of the {}'s settings has been checked on a real radio yet, so a profile \
@@ -1820,7 +1945,7 @@ impl LabRadio {
                 record.model
             ));
         }
-        let profile = profiles::current(&self.records, &self.definition, program);
+        let profile = profiles::current(&self.records, &definition, program);
         let changed = self.known.lock().ok().and_then(|known| {
             known.as_ref().map(|known| {
                 settings
@@ -1843,7 +1968,7 @@ impl LabRadio {
             settings,
             profile: profile
                 .as_ref()
-                .map(|p| p.shown(&self.definition))
+                .map(|p| p.shown(&definition))
                 .unwrap_or_default(),
             profile_from: profile
                 .as_ref()
@@ -2023,7 +2148,7 @@ fn start_profile_desk(uplink: Uplink, lab: LabRadio) -> ProfileDesk {
 /// says when one changes. `said` is the last problem said, so it is said
 /// once.
 fn fetch_profiles(uplink: &Uplink, lab: &LabRadio, said: &mut Option<String>) {
-    let definition = &lab.definition;
+    let definition = &now_in(&lab.definition);
     let saved = match uplink.lab_profiles(&definition.maker, &definition.model) {
         Ok(saved) => saved,
         Err(error) => {
@@ -2504,6 +2629,17 @@ fn start_carrier(uplink: Option<&Uplink>, shared: &Arc<Shared>) -> Option<crate:
 /// The serial number the pretend radio's settings are kept under.
 const PRETEND_SERIAL: &str = "PRETEND";
 
+/// The radio's definition as the station uses it: standing alone, with the
+/// settings a check on this computer found work counted as checked, that
+/// check being the evidence (Principle XVII; see `check_here`).
+fn station_definition(definition: &Definition, standalone: bool) -> Definition {
+    if standalone {
+        crate::write_check::with_checks_here(definition, &records_folder())
+    } else {
+        definition.clone()
+    }
+}
+
 /// Runs the station with the radio found, until stopped.
 fn run_found(
     mut found: Found,
@@ -2529,7 +2665,8 @@ fn run_found(
         found.radio.baud()
     );
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
-    let definition = found.radio.definition().clone();
+    let definition = station_definition(found.radio.definition(), standalone);
+    let checks: Checks = Arc::new(RwLock::new(definition.clone()));
     if let Some(uplink) = &uplink {
         sync(uplink, &record, &definition);
     }
@@ -2546,7 +2683,7 @@ fn run_found(
         let _ = (&sound, &on_air);
         println!("Audio: carried on Windows only.");
     }
-    let programs = Programs::for_station(&shared, found.serial.as_deref(), &definition);
+    let programs = Programs::for_station(&shared, found.serial.as_deref(), &checks);
     if let Ok(mut known) = programs.lab.known.lock() {
         *known = Some(record.clone());
     }
@@ -2579,7 +2716,7 @@ fn run_found(
     let desk = found
         .serial
         .clone()
-        .map(|serial| start_console(&shared, setups, serial, definition.clone(), &record, typing));
+        .map(|serial| start_console(&shared, setups, serial, &checks, &record, typing));
     let mut offer_drive = after_unkey(&shared, &definition, desk, &on_air);
     println!("Ctrl-C or quit stops.");
     #[cfg(windows)]
@@ -2965,7 +3102,7 @@ pub fn startup(what: &str, options: &[String]) -> Result<(), String> {
 mod tests {
     use std::net::SocketAddr;
     use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-    use std::sync::{Arc, Mutex};
+    use std::sync::{Arc, Mutex, RwLock};
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
@@ -3009,7 +3146,7 @@ mod tests {
         let lab = LabRadio {
             shared: Arc::clone(&shared),
             serial: "PRETEND".to_owned(),
-            definition,
+            definition: Arc::new(RwLock::new(definition)),
             records: records.clone(),
             going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
             known: Arc::new(Mutex::new(None)),
@@ -3109,7 +3246,7 @@ mod tests {
         let lab = LabRadio {
             shared: Arc::clone(&shared),
             serial: "PRETEND".to_owned(),
-            definition: definition.clone(),
+            definition: Arc::new(RwLock::new(definition.clone())),
             records: records.to_owned(),
             going_on: Arc::new((Mutex::new(0), std::sync::Condvar::new())),
             known: Arc::new(Mutex::new(Some(started))),
@@ -3346,7 +3483,8 @@ mod tests {
             let _ = send.send((*line).to_owned());
         }
         drop(send);
-        super::console(shared, engine, definition, &desk, &receive);
+        let checks = Arc::new(RwLock::new(definition.clone()));
+        super::console(shared, engine, &checks, &desk, &receive);
         desk
     }
 
@@ -3389,6 +3527,49 @@ mod tests {
             unreachable!("the Lab Stock waits for a yes")
         };
         assert_eq!(plan.setup, "Lab Stock #1");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_first_write_check_counts_at_once_for_everything_the_station_does() {
+        let definition = rigdef::built_in()
+            .ok()
+            .and_then(|all| all.into_iter().find(|d| d.model == "IC-9700"))
+            .unwrap_or_else(|| unreachable!("the IC-9700 is built in"));
+        assert!(crate::write_check::unchecked(&definition));
+        let radio = CivRadio::find(
+            PretendPort::new(PretendCiv::new(&definition), 115_200),
+            std::slice::from_ref(&definition),
+        )
+        .unwrap_or_else(|error| unreachable!("{error}"));
+        let shared = Shared::with_transmit(Box::new(radio), Duration::from_mins(1));
+        let before = shared
+            .settings(|radio| settings_record::read(radio, Some("NEW"), UNIX_EPOCH, "FL-1"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        let checks = Arc::new(RwLock::new(definition));
+        // As the programs' side of the station holds it.
+        let programs_see = Arc::clone(&checks);
+        let dir = test_folder("first-check");
+        std::fs::create_dir_all(&dir).unwrap_or_else(|error| unreachable!("{error}"));
+        let lines = super::check_here(&shared, &checks, "NEW", &dir);
+        assert!(lines[0].starts_with("Wrote back"), "{lines:?}");
+        assert!(
+            lines.iter().any(|l| l.starts_with("Recorded in")),
+            "{lines:?}"
+        );
+        assert!(!crate::write_check::unchecked(&super::now_in(
+            &programs_see
+        )));
+        let after = shared
+            .settings(|radio| settings_record::read(radio, Some("NEW"), UNIX_EPOCH, "FL-1"))
+            .unwrap_or_else(|why| unreachable!("{why}"));
+        assert_eq!(
+            before.settings, after.settings,
+            "nothing changed on the radio"
+        );
+        // Kept, it counts again when the station next starts.
+        let again = crate::write_check::with_checks_here(&super::now_in(&checks), &dir);
+        assert_eq!(again, super::now_in(&checks));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
