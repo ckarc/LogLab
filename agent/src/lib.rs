@@ -41,6 +41,7 @@ mod enrollment;
 mod filter_widths;
 #[cfg(any(windows, test))]
 mod fldigi;
+mod fldigi_rpc;
 mod flex;
 mod flex_pretend;
 mod flex_settings;

@@ -33,10 +33,20 @@ const MAX_SAVED_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The profile files built into the Agent, by their path under
 /// `profiles/`; a test fails if a file there is missing here.
-const BUILT_IN: [(&str, &str); 1] = [(
-    "icom/ic-7300.toml",
-    include_str!("../profiles/icom/ic-7300.toml"),
-)];
+const BUILT_IN: [(&str, &str); 3] = [
+    (
+        "icom/ic-7300.toml",
+        include_str!("../profiles/icom/ic-7300.toml"),
+    ),
+    (
+        "icom/ic-9700.toml",
+        include_str!("../profiles/icom/ic-9700.toml"),
+    ),
+    (
+        "yaesu/ftdx10.toml",
+        include_str!("../profiles/yaesu/ftdx10.toml"),
+    ),
+];
 
 /// One model's profiles, as its file has them.
 #[derive(Debug, Deserialize)]
@@ -198,8 +208,13 @@ pub fn from_saved(saved: &SavedProfile, definition: &Definition) -> Option<Profi
     })
 }
 
-/// The programs a profile is for, as the tray names them.
-pub const PROGRAMS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+/// The programs a profile is for, as the tray names them. `fldigi CW` is
+/// fldigi on one of its CW modems (see `fldigi_rpc`): it goes on in place
+/// of `fldigi` while fldigi is on CW.
+pub const PROGRAMS: [&str; 6] = ["VARA", "FT8", "JS8", "fldigi", "fldigi CW", "SSTV"];
+
+/// The profile for fldigi on CW.
+pub const FLDIGI_CW: &str = "fldigi CW";
 
 /// `program` as [`PROGRAMS`] spells it, if it is one of them.
 #[must_use]
@@ -401,6 +416,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&records);
         assert_eq!(program_named(" js8 "), Some("JS8"));
         assert_eq!(program_named("Winlink"), None);
+        assert_eq!(program_named("FLDIGI cw"), Some("fldigi CW"));
         let checked = |bytes: &str| {
             ["usb_mod_level", "agc", "data_mod"]
                 .iter()
@@ -586,11 +602,16 @@ mod tests {
             let Some(definition) = definition else {
                 continue;
             };
+            // A model with settings checked on a real radio has its profiles
+            // hold only those; one with none yet (a stock profile, put on
+            // only after a write check on that computer) only ones the
+            // Agent may change.
+            let proven = definition.settings.iter().any(|s| s.write_checked);
             for profile in &file.profiles {
                 for setting in &profile.settings {
                     let summary = definition.settings.iter().find(|s| s.id == setting.id);
                     assert!(
-                        summary.is_some_and(|s| s.write && s.write_checked),
+                        summary.is_some_and(|s| s.write && (s.write_checked || !proven)),
                         "{path} {}: {} isn't a setting the Agent may write",
                         profile.name,
                         setting.id
@@ -604,6 +625,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn new_models_get_stock_profiles_that_set_the_usb_audio_path() {
+        for (maker, model, audio) in [
+            (
+                "Yaesu",
+                "FTDX10",
+                vec![("data_mod_source", "01"), ("data_rear_select", "01")],
+            ),
+            ("Icom", "IC-9700", vec![("data_mod", "03")]),
+        ] {
+            assert!(any_for(maker, model));
+            for program in ["VARA", "FT8", "JS8", "fldigi"] {
+                let settings: Vec<(String, String)> = find(maker, model, program)
+                    .map(|p| p.settings.into_iter().map(|s| (s.id, s.bytes)).collect())
+                    .unwrap_or_default();
+                for (id, bytes) in &audio {
+                    assert!(
+                        settings.iter().any(|(i, b)| i == id && b == bytes),
+                        "{model} {program}: {settings:?}"
+                    );
+                }
+            }
+            // Nothing a source doesn't give: the operator saves these.
+            assert_eq!(find(maker, model, "SSTV"), None);
+            assert_eq!(find(maker, model, super::FLDIGI_CW), None);
+        }
+        // DATA-U on the FTDX10 (MD0 C); the IC-9700's VARA leaves FM or SSB
+        // to the operator.
+        let ftdx_ft8 = find("Yaesu", "FTDX10", "FT8")
+            .map(|p| p.settings)
+            .unwrap_or_default();
+        assert_eq!(
+            ftdx_ft8.first().map(|s| (s.id.as_str(), s.bytes.as_str())),
+            Some(("mode", "43"))
+        );
+        let vara = find("Icom", "IC-9700", "VARA")
+            .map(|p| p.settings)
+            .unwrap_or_default();
+        assert!(vara.iter().all(|s| s.id == "data_mod"));
     }
 
     #[test]
