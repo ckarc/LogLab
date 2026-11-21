@@ -190,8 +190,7 @@ pub fn as_vara_names_it(device: &str, held: Option<&str>, others: &[String]) -> 
 pub fn find() -> Option<PathBuf> {
     PLACES
         .iter()
-        .map(|place| Path::new(place).join("VARA.ini"))
-        .find(|path| path.is_file())
+        .find_map(|place| crate::settings_file::in_place(place, "VARA.ini"))
 }
 
 /// What happened to VARA's settings file.
@@ -238,7 +237,7 @@ fn write_whole(path: &Path, bytes: &[u8], changed: &str) -> Result<(), String> {
     let temporary = folder.join("VARA.ini.lablog-new");
     fs::write(&temporary, changed.as_bytes())
         .and_then(|()| fs::rename(&temporary, path))
-        .map_err(|error| format!("can't write {}: {error}", path.display()))
+        .map_err(|error| crate::settings_file::write_failed(path, &error))
 }
 
 /// The file VARA's settings were in when the Agent first changed them, next
