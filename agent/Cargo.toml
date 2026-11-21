@@ -13,6 +13,16 @@ repository = "https://github.com/ckarc/loglab"
 publish = false
 default-run = "loglab-agent"
 
+# Two programs from one library (src/lib.rs): the LabLog Station Agent, and
+# RadioAgent, its radio side standing alone with no server (src/product.rs).
+[[bin]]
+name = "loglab-agent"
+path = "src/main.rs"
+
+[[bin]]
+name = "RadioAgent"
+path = "src/bin/radioagent.rs"
+
 [dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1", features = ["derive"] }

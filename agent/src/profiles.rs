@@ -14,6 +14,10 @@
 //! a copy in its records folder, so the newest it heard of is used when
 //! LabLog can't be reached (Principle V). The built-in one is used only
 //! while LabLog has none for that program.
+//!
+//! An Agent standing alone (`--standalone`) has no LabLog: its operator
+//! replaces a program's profile on this computer instead, with
+//! `profile save VARA` (say), into the same file LabLog's copy is kept in.
 
 use std::fs;
 use std::io::Write as _;
@@ -58,6 +62,10 @@ pub struct Profile {
     /// `None` for the one built into the Agent.
     #[serde(skip)]
     pub lablog: Option<u64>,
+    /// Saved on this computer by an Agent standing alone; its version
+    /// number is then this computer's, in `lablog`.
+    #[serde(skip)]
+    pub here: bool,
 }
 
 /// One setting of a profile.
@@ -174,12 +182,98 @@ pub fn from_saved(saved: &SavedProfile, definition: &Definition) -> Option<Profi
     (!settings.is_empty()).then(|| Profile {
         name: saved.program.clone(),
         source: format!(
-            "LabLog version #{}, saved by {} at {}",
-            saved.id, saved.saved_by, saved.saved_at
+            "{} version #{}, saved by {} at {}",
+            if saved.here {
+                "this computer's"
+            } else {
+                "LabLog"
+            },
+            saved.id,
+            saved.saved_by,
+            saved.saved_at
         ),
         settings,
         lablog: Some(saved.id),
+        here: saved.here,
     })
+}
+
+/// The programs a profile is for, as the tray names them.
+pub const PROGRAMS: [&str; 5] = ["VARA", "FT8", "JS8", "fldigi", "SSTV"];
+
+/// `program` as [`PROGRAMS`] spells it, if it is one of them.
+#[must_use]
+pub fn program_named(program: &str) -> Option<&'static str> {
+    PROGRAMS
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(program.trim()))
+        .copied()
+}
+
+/// The settings `profile save PROGRAM` puts in a radio's profile: the ones
+/// the program's profile now has, as the radio has them; or, where the
+/// model has no profile for it yet, every setting the Agent may write (as
+/// LabLog's Lab Profiles page offers them).
+#[must_use]
+pub fn chosen(
+    records: &Path,
+    definition: &Definition,
+    program: &str,
+    checked: Vec<StockSetting>,
+) -> Vec<StockSetting> {
+    let Some(profile) = current(records, definition, program) else {
+        return checked;
+    };
+    let ids: Vec<&str> = profile.ids().collect();
+    let mut chosen: Vec<StockSetting> = checked
+        .into_iter()
+        .filter(|setting| ids.contains(&setting.id.as_str()))
+        .collect();
+    // In the profile's own order, which is the order they are written in.
+    chosen.sort_by_key(|setting| ids.iter().position(|id| *id == setting.id));
+    chosen
+}
+
+/// Saves `settings` on this computer as the profile for `program` on a
+/// radio of `definition`'s model, in place of LabLog's or the Agent's own,
+/// as the newest version; read on `computer` at `read_utc`. Returns its
+/// version number. Earlier versions are kept in the file.
+///
+/// # Errors
+///
+/// It isn't a profile the Agent could put on, or the file could not be
+/// written.
+pub fn save_here(
+    records: &Path,
+    definition: &Definition,
+    program: &str,
+    settings: Vec<StockSetting>,
+    computer: &str,
+    read_utc: &str,
+) -> Result<u64, String> {
+    let path = saved_path(records, &definition.maker, &definition.model);
+    let mut saved = load_saved(&path);
+    let id = saved.iter().map(|s| s.id).max().unwrap_or(0) + 1;
+    let profile = SavedProfile {
+        id,
+        maker: definition.maker.clone(),
+        model: definition.model.clone(),
+        program: program.to_owned(),
+        settings,
+        saved_by: format!("the operator at {computer}"),
+        saved_at: read_utc.to_owned(),
+        here: true,
+    };
+    if from_saved(&profile, definition).is_none() {
+        return Err(format!(
+            "it holds a setting the Agent may not put on a {}",
+            definition.model
+        ));
+    }
+    // The newest first: it is the one used.
+    saved.insert(0, profile);
+    keep_saved(&path, &saved)?;
+    Ok(id)
 }
 
 /// The profile for `program` on a radio of `definition`'s model: the one
@@ -208,10 +302,11 @@ impl Profile {
     /// Where it is from, in a few words: LabLog's version, or the Agent.
     #[must_use]
     pub fn origin(&self) -> String {
-        self.lablog.map_or_else(
-            || "built into the Agent".to_owned(),
-            |id| format!("saved in LabLog, version #{id}"),
-        )
+        match (self.lablog, self.here) {
+            (None, _) => "built into the Agent".to_owned(),
+            (Some(id), true) => format!("saved on this computer, version #{id}"),
+            (Some(id), false) => format!("saved in LabLog, version #{id}"),
+        }
     }
 
     /// Its settings as LabLog shows them: id, the setting's name on the
@@ -263,7 +358,10 @@ impl Profile {
 mod tests {
     use std::path::Path;
 
-    use super::{BUILT_IN, ModelFile, any_for, any_here, current, find, from_saved, saved_path};
+    use super::{
+        BUILT_IN, ModelFile, Profile, any_for, any_here, chosen, current, find, from_saved,
+        load_saved, program_named, save_here, saved_path,
+    };
     use crate::engine::{SavedProfile, StockSetting};
     use crate::rigdef;
 
@@ -292,7 +390,103 @@ mod tests {
                 .collect(),
             saved_by: "K9KSU".to_owned(),
             saved_at: "2026-10-30T00:40:00Z".to_owned(),
+            here: false,
         }
+    }
+
+    #[test]
+    fn a_profile_saved_here_takes_the_place_of_the_built_in_one() {
+        let definition = ic7300();
+        let records = std::env::temp_dir().join(format!("lablog-here-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&records);
+        assert_eq!(program_named(" js8 "), Some("JS8"));
+        assert_eq!(program_named("Winlink"), None);
+        let checked = |bytes: &str| {
+            ["usb_mod_level", "agc", "data_mod"]
+                .iter()
+                .map(|id| StockSetting {
+                    id: (*id).to_owned(),
+                    label: (*id).to_owned(),
+                    bytes: bytes.to_owned(),
+                    shown: None,
+                })
+                .collect::<Vec<_>>()
+        };
+        // The VARA profile's settings only, in its order; SSTV has none
+        // built in, so every setting offered.
+        let chosen_ids = |program| {
+            chosen(&records, &definition, program, checked("01"))
+                .into_iter()
+                .map(|s| s.id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(chosen_ids("VARA"), ["usb_mod_level", "data_mod"]);
+        assert_eq!(chosen_ids("SSTV"), ["usb_mod_level", "agc", "data_mod"]);
+
+        let vara = chosen(&records, &definition, "VARA", checked("01"));
+        assert_eq!(
+            save_here(
+                &records,
+                &definition,
+                "VARA",
+                vara,
+                "FL-1",
+                "2026-11-21T05:00:00Z"
+            ),
+            Ok(1)
+        );
+        let sstv = chosen(&records, &definition, "SSTV", checked("02"));
+        assert_eq!(
+            save_here(
+                &records,
+                &definition,
+                "SSTV",
+                sstv,
+                "FL-1",
+                "2026-11-21T05:01:00Z"
+            ),
+            Ok(2)
+        );
+        let vara = chosen(&records, &definition, "VARA", checked("03"));
+        assert_eq!(
+            save_here(
+                &records,
+                &definition,
+                "VARA",
+                vara,
+                "FL-1",
+                "2026-11-21T05:02:00Z"
+            ),
+            Ok(3)
+        );
+        let now = current(&records, &definition, "vara");
+        assert_eq!(now.as_ref().and_then(|p| p.lablog), Some(3), "the newest");
+        assert!(now.as_ref().is_some_and(|p| p.here));
+        assert_eq!(
+            now.as_ref().map(Profile::origin).as_deref(),
+            Some("saved on this computer, version #3")
+        );
+        assert!(
+            now.is_some_and(|p| p.settings.iter().all(|s| s.bytes == "03")),
+            "as the radio had them"
+        );
+        assert_eq!(
+            current(&records, &definition, "SSTV").and_then(|p| p.lablog),
+            Some(2)
+        );
+        // A setting the Agent may not write is refused, and nothing changes.
+        let bad = vec![StockSetting {
+            id: "no_such_setting".to_owned(),
+            label: String::new(),
+            bytes: "01".to_owned(),
+            shown: None,
+        }];
+        assert!(save_here(&records, &definition, "FT8", bad, "FL-1", "now").is_err());
+        assert_eq!(
+            load_saved(&saved_path(&records, "Icom", "IC-7300")).len(),
+            3
+        );
+        let _ = std::fs::remove_dir_all(&records);
     }
 
     #[test]
@@ -312,10 +506,10 @@ mod tests {
             saved(5, "SSTV", &[("agc", "01")]),
         ];
         assert!(super::keep_saved(&path, &kept).is_ok());
-        assert_eq!(super::load_saved(&path), kept);
+        assert_eq!(load_saved(&path), kept);
         let vara = current(&records, &definition, "vara");
         assert_eq!(vara.as_ref().and_then(|p| p.lablog), Some(4));
-        let ids: Vec<&str> = vara.iter().flat_map(super::Profile::ids).collect();
+        let ids: Vec<&str> = vara.iter().flat_map(Profile::ids).collect();
         assert_eq!(ids, ["data_mod", "rf_power"]);
         assert_eq!(
             current(&records, &definition, "SSTV").and_then(|p| p.lablog),

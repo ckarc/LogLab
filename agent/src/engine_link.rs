@@ -16,7 +16,9 @@
 //!   isn't running), setups are kept on this computer, as with no Engine,
 //!   and that is said once (Principle V).
 //!
-//! `--engine none` links to no Engine at all.
+//! `--engine none` links to no Engine at all. `--standalone` links to none
+//! and reads no MQTT broker either: the Agent stands alone on this computer,
+//! keeping Lab Stock and the lab's profiles here too.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -42,6 +44,10 @@ pub enum EngineLink {
     FieldLab,
     /// None (`--engine none`).
     Off,
+    /// None, and nothing else that needs a server either (`--standalone`):
+    /// no MQTT broker, and Lab Stock and the lab's profiles are kept and
+    /// changed on this computer, by whoever runs it.
+    Standalone,
     /// The one given with `--engine` and `--key-file`, and the station to
     /// ask to join as when the key file has no key.
     Given {

@@ -20,11 +20,9 @@
 // for its tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-/// Where `station`'s output is kept, beside the Agent.
-pub const LOG_NAME: &str = "loglab-agent.log";
-
-/// The log as "Open log" shows it, newest first, in Windows' temp folder.
-pub const LOG_VIEW_NAME: &str = "loglab-agent-newest-first.txt";
+// Where `station`'s output is kept, beside the program, and the file
+// "Open log" shows it in, newest first, in Windows' temp folder: each
+// program's own (`crate::product`).
 
 /// How long a line stays in the log: older lines are dropped each time the
 /// tray starts `station`.
@@ -386,6 +384,9 @@ pub enum Choice {
         /// Send a proposal instead.
         save: bool,
     },
+    /// Standing alone: save the radio's settings as this program's lab
+    /// profile (after a yes).
+    ProfileSave(&'static str),
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -429,6 +430,7 @@ impl Choice {
             Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
             Self::Stock { save: false } => "stock".to_owned(),
             Self::Stock { save: true } => "stock save".to_owned(),
+            Self::ProfileSave(program) => format!("profile save {program}"),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -721,6 +723,7 @@ mod tests {
         assert_eq!(Choice::Enroll(false).typed(), "enroll off");
         assert_eq!(Choice::Stock { save: false }.typed(), "stock");
         assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
+        assert_eq!(Choice::ProfileSave("VARA").typed(), "profile save VARA");
         assert_eq!(
             Choice::Answer {
                 number: 3,

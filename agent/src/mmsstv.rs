@@ -126,8 +126,7 @@ pub fn set(path: &Path, input: &str) -> Result<Outcome, String> {
 pub fn find() -> Option<PathBuf> {
     PLACES
         .iter()
-        .map(|place| Path::new(place).join("Mmsstv.ini"))
-        .find(|path| path.is_file())
+        .find_map(|place| settings_file::in_place(place, "Mmsstv.ini"))
 }
 
 #[cfg(test)]

@@ -145,6 +145,18 @@ pub fn sound_devices(text: &str) -> (Option<String>, Option<String>) {
     (read("SoundInName"), read("SoundOutName"))
 }
 
+/// The call and grid square the file `text` says the program sends:
+/// (call, grid), each only if set.
+#[must_use]
+pub fn station(text: &str) -> (Option<String>, Option<String>) {
+    let read = |key| {
+        ini::value(text, GROUP, key)
+            .map(|raw| decode(&raw))
+            .filter(|value| !value.trim().is_empty())
+    };
+    (read("MyCall"), read("MyGrid"))
+}
+
 /// `text` changed to say what `wanted` says, and what changed.
 ///
 /// # Errors
@@ -247,6 +259,19 @@ mod tests {
             call: None,
             grid: None,
         }
+    }
+
+    #[test]
+    fn reads_the_call_and_grid_the_program_sends() {
+        let file = "[Configuration]\r\nMyCall=K9KSU\r\nMyGrid=EN52WA\r\n";
+        assert_eq!(
+            super::station(file),
+            (Some("K9KSU".to_owned()), Some("EN52WA".to_owned()))
+        );
+        assert_eq!(
+            super::station("[Configuration]\r\nMyCall=\r\n"),
+            (None, None)
+        );
     }
 
     #[test]

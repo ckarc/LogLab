@@ -121,6 +121,16 @@ jobs:
           path: agent/target/release/loglab-agent.exe
           if-no-files-found: error
           retention-days: 30
+      # RadioAgent, the radio side standing alone, from the same release
+      # build: its own download, as it is handed out on its own.
+      - name: Keep RadioAgent for download
+        if: matrix.os == 'windows-latest'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: RadioAgent-windows
+          path: agent/target/release/RadioAgent.exe
+          if-no-files-found: error
+          retention-days: 30
 
   licenses:
     name: License check
