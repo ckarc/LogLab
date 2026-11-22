@@ -282,10 +282,8 @@ struct Face {
     /// profile, one item per program in [`crate::profiles::PROGRAMS`].
     profile_menu: nwg::Menu,
     profile_save: Vec<nwg::MenuItem>,
-    /// Use a FlexRadio on the network, or stop using it.
-    flex_menu: nwg::Menu,
-    flex_use: nwg::MenuItem,
-    flex_stop: nwg::MenuItem,
+    /// The "Use FlexRadio" checkmark.
+    flex: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -412,27 +410,16 @@ impl Face {
         Ok(face)
     }
 
-    /// The FlexRadio menu: use a FlexRadio on the network, or stop using
-    /// it and go back to USB radios.
+    /// The "Use FlexRadio" checkmark: on, the Agent takes the free
+    /// FlexRadio when a radio program opens; off, USB radios. It starts off.
     fn flex_items(&mut self) -> Result<(), String> {
         built(
-            nwg::Menu::builder()
-                .text("FlexRadio")
+            nwg::MenuItem::builder()
+                .text("Use FlexRadio")
+                .check(false)
                 .parent(&self.menu)
-                .build(&mut self.flex_menu),
-        )?;
-        for (text, item) in [
-            ("Use a FlexRadio on the network", &mut self.flex_use),
-            ("Stop using it: back to USB radios", &mut self.flex_stop),
-        ] {
-            built(
-                nwg::MenuItem::builder()
-                    .text(text)
-                    .parent(&self.flex_menu)
-                    .build(item),
-            )?;
-        }
-        Ok(())
+                .build(&mut self.flex),
+        )
     }
 
     /// The Lab Stock menu: put the model's Lab Stock on, or send the
@@ -543,11 +530,8 @@ impl Face {
         if handle == self.quit.handle {
             return Some(Choice::Quit);
         }
-        if handle == self.flex_use.handle {
-            return Some(Choice::Flex);
-        }
-        if handle == self.flex_stop.handle {
-            return Some(Choice::FlexStop);
+        if handle == self.flex.handle {
+            return Some(Choice::FlexOn(!self.flex.checked()));
         }
         for (program, item) in crate::profiles::PROGRAMS.iter().zip(&self.profile_save) {
             if item.handle == handle {
@@ -624,7 +608,11 @@ impl Tray {
 
     fn start(&mut self) {
         match start_station(&self.exe, &self.options, &self.log, &self.inbox) {
-            Ok(station) => self.station = Some(station),
+            Ok(station) => {
+                // A new station starts with USB radios, the checkmark off.
+                self.face.flex.set_checked(false);
+                self.station = Some(station);
+            }
             Err(why) => self.face.notify(&why),
         }
     }
@@ -638,6 +626,9 @@ impl Tray {
             self.face
                 .notify("The Agent isn't running just now; it starts again shortly.");
             return;
+        }
+        if let Choice::FlexOn(on) = choice {
+            self.face.flex.set_checked(on);
         }
         self.type_line(&choice.typed());
         self.awaiting = Some(choice);
@@ -744,9 +735,9 @@ impl Tray {
         std::thread::spawn(move || {
             for (serial, what) in offers {
                 let text = format!(
-                    "Use the FlexRadio {what} on this computer?\n\nYes: the Agent lets go of \
-                     any USB radio and uses this FlexRadio once SmartSDR is open here with a \
-                     slice; closing SmartSDR goes back to USB radios.\nNo: leave it alone."
+                    "More than one FlexRadio is free. Use the FlexRadio {what} on this \
+                     computer?\n\nYes: the Agent uses this FlexRadio, opening SmartSDR for it.\n\
+                     No: leave it alone."
                 );
                 if boxed(&text, true) {
                     inbox.send(Incoming::FlexPicked(serial));
@@ -808,8 +799,8 @@ impl Tray {
                     Some(Choice::Compare) => {
                         std::thread::spawn(move || boxed(&text, false));
                     }
-                    Some(Choice::Flex) => self.offer_flex(text),
                     Some(_) => self.face.notify(&text),
+                    None if text.starts_with(crate::flex_pick::WHICH) => self.offer_flex(text),
                     None => {
                         if let Some(balloon) = said.balloon() {
                             self.face.notify(&format!("{}{balloon}", self.model));

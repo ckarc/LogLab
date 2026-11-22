@@ -238,11 +238,14 @@ fn wait_for_radio(
     while running.load(Ordering::SeqCst) {
         // A pick made while waiting is acted on at once.
         pick.take_changed();
-        let flex = pick.current();
-        match flex
-            .as_deref()
-            .map_or_else(|| find(port, running), find_flex)
-        {
+        let tried = if pick.checked() {
+            flex_footwork(pick)
+        } else {
+            pick.current()
+                .as_deref()
+                .map_or_else(|| find(port, running), find_flex)
+        };
+        match tried {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {
@@ -263,6 +266,96 @@ fn wait_for_radio(
         }
     }
     None
+}
+
+/// The footwork the "Use FlexRadio" checkmark asks for, one look: once a
+/// radio program is open, takes the one free FlexRadio on the network (or
+/// asks which, once, when there are several), opens SmartSDR for it if it
+/// isn't open, and finds the radio once SmartSDR has its slice.
+fn flex_footwork(pick: &crate::flex_pick::Pick) -> Result<Found, String> {
+    let programs = radio_programs_open();
+    let open_smartsdr = pick.open_smartsdr_now(!programs.is_empty());
+    if pick.current().is_none() {
+        if programs.is_empty() {
+            return Err(
+                "Use FlexRadio is on; the Agent takes the FlexRadio when a radio program \
+                 opens (WSJT-X, JS8Call, fldigi, VARA, MMSSTV, Winlink Express).\n-> Open \
+                 one, or turn Use FlexRadio off for USB radios."
+                    .to_owned(),
+            );
+        }
+        let heard = crate::flex::discover(FLEX_LISTEN)?;
+        pick.heard(&heard);
+        let free = crate::flex_pick::free(&heard, crate::flex::here_toward);
+        match free.as_slice() {
+            [] if heard.is_empty() => {
+                return Err(format!(
+                    "Use FlexRadio is on, but no FlexRadio said it is on this network in {} \
+                     s.\n-> Is it on, and on this computer's network?",
+                    FLEX_LISTEN.as_secs()
+                ));
+            }
+            [] => {
+                return Err(
+                    "Use FlexRadio is on, but every FlexRadio on the network is in use by \
+                     another computer.\n-> The Agent takes one once it is free."
+                        .to_owned(),
+                );
+            }
+            [one] => {
+                crate::print_event(&format!(
+                    "FlexRadio: Use FlexRadio is on and {} is open, so the Agent uses {}.",
+                    programs.join(", "),
+                    crate::flex_pick::described(one)
+                ));
+                pick.chose(&one.serial);
+            }
+            many => {
+                let serials: Vec<String> = many.iter().map(|radio| radio.serial.clone()).collect();
+                if pick.ask_which(&serials) {
+                    crate::print_event(&format!(
+                        "{}\n{}",
+                        crate::flex_pick::WHICH,
+                        crate::flex_pick::offered(&heard, crate::flex::here_toward)
+                    ));
+                }
+                return Err(
+                    "Use FlexRadio is on, and more than one FlexRadio is free.\n-> Pick \
+                     one (flex use SERIAL)."
+                        .to_owned(),
+                );
+            }
+        }
+    }
+    let flex = pick.current().unwrap_or_default();
+    let found = find_flex(&flex);
+    if found.is_err() && open_smartsdr {
+        match crate::smartsdr::open() {
+            Ok(Some(exe)) => crate::print_event(&format!(
+                "SmartSDR: opened it for {} ({exe}); the Agent takes the FlexRadio once \
+                 SmartSDR has its slice.",
+                programs.join(", ")
+            )),
+            Ok(None) => {}
+            Err(why) => crate::print_event(&format!("SmartSDR: {why}")),
+        }
+    }
+    found
+}
+
+/// The radio programs the Agent sets up that are open now, by the names
+/// they are shown by.
+fn radio_programs_open() -> Vec<&'static str> {
+    #[cfg(windows)]
+    {
+        let mut open: Vec<&'static str> = open_programs(&tasklist()).into_iter().collect();
+        open.sort_unstable();
+        open
+    }
+    #[cfg(not(windows))]
+    {
+        Vec::new()
+    }
 }
 
 /// Where settings records are kept: `records` beside the Agent.
@@ -1022,8 +1115,9 @@ fn start_typing(running: Arc<AtomicBool>, pick: Arc<crate::flex_pick::Pick>) -> 
 }
 
 /// What a `flex` line asks, answered: `flex` lists the `FlexRadio` radios on the
-/// network, `flex use SERIAL` picks one, `flex stop` goes back to USB
-/// radios. `None` for any other line.
+/// network, `flex on` is the tray's "Use FlexRadio" checkmark, `flex use
+/// SERIAL` picks one, `flex off` and `flex stop` go back to USB radios.
+/// `None` for any other line.
 fn flex_typed(line: &str, pick: &crate::flex_pick::Pick) -> Option<String> {
     let mut words = line.split_whitespace();
     if !words.next()?.eq_ignore_ascii_case("flex") {
@@ -1041,9 +1135,14 @@ fn flex_typed(line: &str, pick: &crate::flex_pick::Pick) -> Option<String> {
         [word, serial] if word.eq_ignore_ascii_case("use") => {
             pick.use_serial(serial, crate::flex::here_toward)
         }
-        [word] if word.eq_ignore_ascii_case("stop") => pick.stop(),
-        _ => "flex takes nothing, use SERIAL, or stop: flex lists the FlexRadios on the \
-              network, flex use SERIAL uses one, flex stop goes back to USB radios."
+        [word] if word.eq_ignore_ascii_case("on") => pick.on(),
+        [word] if word.eq_ignore_ascii_case("stop") || word.eq_ignore_ascii_case("off") => {
+            pick.stop()
+        }
+        _ => "flex takes nothing, on, off, use SERIAL, or stop: flex lists the FlexRadios \
+              on the network, flex on uses the free one once a radio program opens (opening \
+              SmartSDR for it), flex use SERIAL uses one, flex off or flex stop goes back to \
+              USB radios."
             .to_owned(),
     })
 }
@@ -2969,6 +3068,11 @@ fn said_after(ended: Ended, pick: &crate::flex_pick::Pick) -> bool {
         Ended::Joined => {
             "LabLog: joined, so the Agent starts again with the link to LabLog.".to_owned()
         }
+        Ended::Switched if pick.checked() && pick.current().is_none() => {
+            "Radio: let go of it; Use FlexRadio is on, so the Agent takes the FlexRadio when a \
+             radio program opens."
+                .to_owned()
+        }
         Ended::Switched => pick.current().map_or_else(
             || "Radio: let go of the FlexRadio; looking for USB radios.".to_owned(),
             |flex| format!("Radio: let go of it; looking for the FlexRadio {flex}."),
@@ -3545,6 +3649,15 @@ mod tests {
         );
         assert_eq!(super::flex_typed("keep FT8", &pick), None);
         assert_eq!(super::flex_typed("flexible", &pick), None);
+        assert!(
+            super::flex_typed("flex on", &pick)
+                .is_some_and(|said| said.contains("Use FlexRadio is on"))
+        );
+        assert!(pick.checked());
+        assert!(
+            super::flex_typed("Flex OFF", &pick).is_some_and(|said| said.contains("goes back"))
+        );
+        assert!(!pick.checked());
         let pick = crate::flex_pick::Pick::starting_with(Some("any"));
         assert!(
             super::flex_typed("flex stop", &pick).is_some_and(|said| said.contains("goes back"))
