@@ -634,12 +634,34 @@ pub fn describe(radio: &Discovered, here: Option<IpAddr>) -> Vec<String> {
 /// What the Agent saw through SmartSDR's binding, as the `flex` command
 /// shows it.
 #[must_use]
-pub fn describe_look(look: &Look) -> Vec<String> {
+pub fn describe_look(look: &Look, heard: bool) -> Vec<String> {
     let Some(bound) = look.bound else {
-        return vec![
+        let mut lines: Vec<String> = look
+            .clients
+            .iter()
+            .map(|client| {
+                format!(
+                    "  the radio lists {}{}",
+                    client.program.as_deref().unwrap_or("a GUI client"),
+                    client
+                        .station
+                        .as_ref()
+                        .map(|s| format!(" (station {s})"))
+                        .unwrap_or_default()
+                )
+            })
+            .collect();
+        lines.push(if !heard {
+            "  its broadcast wasn't heard, so which SmartSDR runs on this computer can't be \
+             told; Windows Firewall must let this program take UDP 4992 from the LAN"
+                .to_owned()
+        } else if look.clients.is_empty() {
+            "  SmartSDR is not open on any computer, so there is no slice to see".to_owned()
+        } else {
             "  SmartSDR is not open on this computer, so its slice can't be seen from here"
-                .to_owned(),
-        ];
+                .to_owned()
+        });
+        return lines;
     };
     let mut lines = vec![format!(
         "  following SmartSDR on this computer (client 0x{bound:08X})"
@@ -741,11 +763,11 @@ pub fn run(address: Option<&str>) -> Result<(), String> {
     };
     let radio = heard.iter().find(|r| r.address.ip() == chosen.ip());
     if radio.is_none() {
-        println!("{} was not heard; showing what its API says.", chosen.ip());
+        println!("{} was not heard; asking its API.", chosen.ip());
     }
     let here = radio.and_then(|r| r.client_here(here_toward(chosen.ip())));
     let look = look(chosen, here)?;
-    for line in describe_look(&look) {
+    for line in describe_look(&look, radio.is_some()) {
         println!("{line}");
     }
     Ok(())
@@ -1048,7 +1070,7 @@ mod tests {
             ]
         );
         assert_eq!(seen.bound, Some(0x38F7_B742));
-        let shown = describe_look(&seen).join("\n");
+        let shown = describe_look(&seen, true).join("\n");
         assert!(
             shown.contains(
                 "slice A (0): 29.250000 MHz DIGU filter 0-3000 Hz, DAX channel 1 TRANSMIT active"
@@ -1081,10 +1103,20 @@ mod tests {
         };
         assert_eq!(seen.clients.len(), 1);
         assert_eq!(seen.bound, None);
+        let shown = describe_look(&seen, true).join("\n");
         assert!(
-            describe_look(&seen)
+            shown.contains("the radio lists SmartSDR-Win (station FL-1)"),
+            "{shown}"
+        );
+        assert!(shown.contains("not open on this computer"), "{shown}");
+        // Its broadcast not heard (Windows Firewall, as at FL-1 with a
+        // renamed exe): it can't tell, and says why.
+        let shown = describe_look(&seen, false).join("\n");
+        assert!(shown.contains("can't be told; Windows Firewall"), "{shown}");
+        assert!(
+            describe_look(&Look::default(), true)
                 .join("\n")
-                .contains("not open on this computer")
+                .contains("not open on any computer")
         );
         // No SmartSDR at all, though discovery said one was here.
         let Some((address, radio)) = fake_radio(false) else {
