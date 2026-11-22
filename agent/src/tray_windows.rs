@@ -104,6 +104,8 @@ enum Incoming {
     Answered { number: u32, yes: bool },
     /// Time to start `station` again.
     Restart,
+    /// The operator picked the FlexRadio of this serial number.
+    FlexPicked(String),
 }
 
 /// The queue to the tray, and how to wake it.
@@ -280,6 +282,10 @@ struct Face {
     /// profile, one item per program in [`crate::profiles::PROGRAMS`].
     profile_menu: nwg::Menu,
     profile_save: Vec<nwg::MenuItem>,
+    /// Use a FlexRadio on the network, or stop using it.
+    flex_menu: nwg::Menu,
+    flex_use: nwg::MenuItem,
+    flex_stop: nwg::MenuItem,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -399,10 +405,34 @@ impl Face {
         if standalone {
             face.profile_items()?;
         }
+        face.flex_items()?;
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
         Ok(face)
+    }
+
+    /// The FlexRadio menu: use a FlexRadio on the network, or stop using
+    /// it and go back to USB radios.
+    fn flex_items(&mut self) -> Result<(), String> {
+        built(
+            nwg::Menu::builder()
+                .text("FlexRadio")
+                .parent(&self.menu)
+                .build(&mut self.flex_menu),
+        )?;
+        for (text, item) in [
+            ("Use a FlexRadio on the network", &mut self.flex_use),
+            ("Stop using it: back to USB radios", &mut self.flex_stop),
+        ] {
+            built(
+                nwg::MenuItem::builder()
+                    .text(text)
+                    .parent(&self.flex_menu)
+                    .build(item),
+            )?;
+        }
+        Ok(())
     }
 
     /// The Lab Stock menu: put the model's Lab Stock on, or send the
@@ -512,6 +542,12 @@ impl Face {
         }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
+        }
+        if handle == self.flex_use.handle {
+            return Some(Choice::Flex);
+        }
+        if handle == self.flex_stop.handle {
+            return Some(Choice::FlexStop);
         }
         for (program, item) in crate::profiles::PROGRAMS.iter().zip(&self.profile_save) {
             if item.handle == handle {
@@ -688,7 +724,36 @@ impl Tray {
                     self.start();
                 }
             }
+            Incoming::FlexPicked(serial) => {
+                let choice = Choice::FlexUse(serial);
+                self.type_line(&choice.typed());
+                self.awaiting = Some(choice);
+            }
         }
+    }
+
+    /// Offers each FlexRadio `flex` said is free, one Yes/No box at a
+    /// time; a yes picks it. With none free, says what `flex` heard.
+    fn offer_flex(&self, said: String) {
+        let offers = crate::flex_pick::offers(&said);
+        if offers.is_empty() {
+            std::thread::spawn(move || boxed(&said, false));
+            return;
+        }
+        let inbox = self.inbox.clone();
+        std::thread::spawn(move || {
+            for (serial, what) in offers {
+                let text = format!(
+                    "Use the FlexRadio {what} on this computer?\n\nYes: the Agent lets go of \
+                     any USB radio and uses this FlexRadio once SmartSDR is open here with a \
+                     slice; closing SmartSDR goes back to USB radios.\nNo: leave it alone."
+                );
+                if boxed(&text, true) {
+                    inbox.send(Incoming::FlexPicked(serial));
+                    return;
+                }
+            }
+        });
     }
 
     fn heard(&mut self, event: &str, pending: &mut Option<(u32, String, String)>) {
@@ -743,6 +808,7 @@ impl Tray {
                     Some(Choice::Compare) => {
                         std::thread::spawn(move || boxed(&text, false));
                     }
+                    Some(Choice::Flex) => self.offer_flex(text),
                     Some(_) => self.face.notify(&text),
                     None => {
                         if let Some(balloon) = said.balloon() {

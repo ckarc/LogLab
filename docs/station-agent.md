@@ -50,6 +50,22 @@ program that asks (see "Sharing a radio" below).
   FlexRadio on its own; `--flex` is the operator's choice, as a FlexRadio
   on the network may be another station's. `--flex-pretend` tries it
   without a radio. Not yet tried on a real FlexRadio.
+
+  Picking a FlexRadio while the Agent runs: the tray's **FlexRadio > Use a
+  FlexRadio on the network** (or `flex` at the station's console) lists the
+  FlexRadios heard on the network, leaving out any another computer uses
+  (from the broadcast's `gui_client_ips` or `inuse_ip`, where the radio
+  sends them), and offers each free one in a Yes/No box; a yes types
+  `flex use SERIAL`. The station lets go of its USB radio once nothing is
+  transmitting, and serves the FlexRadio once SmartSDR is open on this
+  computer with a slice (a FlexRadio's slices belong to a GUI client such
+  as SmartSDR). When the FlexRadio is lost, as when SmartSDR closes and its
+  slice goes, or on **Stop using it: back to USB radios** (`flex stop`), the
+  station goes back to USB radios. The pick isn't kept: each start of the
+  Agent begins with USB radios, unless it was started with `--flex`. Whether
+  the radio's broadcast still says who uses it on SmartSDR v4, and whether
+  the Agent can hear broadcasts while SmartSDR runs on the same computer,
+  are not yet tried on a real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,
