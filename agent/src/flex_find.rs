@@ -713,11 +713,13 @@ pub fn describe_look(look: &Look, heard: bool) -> Vec<String> {
         .bands
         .values()
         .filter_map(|band| {
-            Some(format!(
-                "{} m {} W",
-                band.get("band_name")?,
-                band.get("rfpower")?
-            ))
+            let name = band.get("band_name")?;
+            let unit = if name.bytes().all(|b| b.is_ascii_digit()) {
+                " m"
+            } else {
+                ""
+            };
+            Some(format!("{name}{unit} {} W", band.get("rfpower")?))
         })
         .collect();
     if !bands.is_empty() {
@@ -1038,6 +1040,7 @@ mod tests {
                          max_power_level=100\nS6292CF1B|{FL1_TRANSMIT}\n\
                          S6292CF1B|transmit band 5 band_name=40 rfpower=10 tunepower=25\n\
                          S6292CF1B|transmit band 16 band_name=10 rfpower=100 tunepower=10\n\
+                         S6292CF1B|transmit band 17 band_name=GEN rfpower=100 tunepower=10\n\
                          R{seq}|0|\n"
                     ),
                     _ => format!("R{seq}|0|\n"),
@@ -1084,7 +1087,7 @@ mod tests {
             "{shown}"
         );
         assert!(
-            shown.contains("power by band: 40 m 10 W, 10 m 100 W"),
+            shown.contains("power by band: 40 m 10 W, 10 m 100 W, GEN 100 W"),
             "{shown}"
         );
     }
