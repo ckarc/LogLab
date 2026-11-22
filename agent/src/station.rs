@@ -141,35 +141,7 @@ fn find_flex(address: &str) -> Result<Found, String> {
     } else {
         address
     };
-    let address = if address == "any" {
-        let heard = crate::flex::discover(FLEX_LISTEN)?;
-        match heard.as_slice() {
-            [] => {
-                return Err(format!(
-                    "no FlexRadio said it is on this network in {} s.\n\
-                     -> Is it on, and on the same network as this computer? Or give its \
-                     address: --flex 192.168.1.20",
-                    FLEX_LISTEN.as_secs()
-                ));
-            }
-            [one] => one.address.to_string(),
-            many => {
-                let list: Vec<String> = many
-                    .iter()
-                    .map(|r| format!("{} {} at {}", r.model, r.serial, r.address.ip()))
-                    .collect();
-                return Err(format!(
-                    "more than one FlexRadio is on this network: {}.\n\
-                     -> Start the station with --flex and the address of the one to use.",
-                    list.join(", ")
-                ));
-            }
-        }
-    } else if let Some(heard) = by_serial(address)? {
-        heard
-    } else {
-        address.to_owned()
-    };
+    let address = flex_address(address)?;
     let mut radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
     // No slice yet: SmartSDR on this computer isn't open, or has none. The
     // station waits for one rather than serving a radio it can't tune.
@@ -187,6 +159,41 @@ fn find_flex(address: &str) -> Result<Found, String> {
         serial,
         network_audio,
     })
+}
+
+/// Where the FlexRadio `wanted` is: `any`, the one FlexRadio heard on the
+/// network; a serial number, the radio with it; otherwise `wanted` itself,
+/// an address.
+///
+/// # Errors
+///
+/// With `any`, none or more than one FlexRadio is heard; or the discovery
+/// port can't be opened.
+pub fn flex_address(wanted: &str) -> Result<String, String> {
+    if wanted != "any" {
+        return Ok(by_serial(wanted)?.unwrap_or_else(|| wanted.to_owned()));
+    }
+    let heard = crate::flex::discover(FLEX_LISTEN)?;
+    match heard.as_slice() {
+        [] => Err(format!(
+            "no FlexRadio said it is on this network in {} s.\n\
+             -> Is it on, and on the same network as this computer? Or give its \
+             address: --flex 192.168.1.20",
+            FLEX_LISTEN.as_secs()
+        )),
+        [one] => Ok(one.address.to_string()),
+        many => {
+            let list: Vec<String> = many
+                .iter()
+                .map(|r| format!("{} {} at {}", r.model, r.serial, r.address.ip()))
+                .collect();
+            Err(format!(
+                "more than one FlexRadio is on this network: {}.\n\
+                 -> Give the address of the one to use with --flex.",
+                list.join(", ")
+            ))
+        }
+    }
 }
 
 /// A FlexRadio's serial number, as `flex use` picks it, looked for in
