@@ -1806,9 +1806,15 @@ fn carried(
         (Some(cable), _) => println!(
             "Audio: programs' transmit audio, played into \"{cable}\", goes to the radio while it is keyed."
         ),
-        (None, why) => println!(
+        (None, why) if station.radio_playing.is_some() => println!(
             "Audio: transmit audio doesn't go through the Agent: {}.\n  -> Until it does, \
              a program's sound output must go straight to the radio's USB sound device.",
+            why.as_deref().unwrap_or("no transmit cable")
+        ),
+        (None, why) => println!(
+            "Audio: the radio can't get a program's transmit audio: {}.\n  -> A radio on \
+             the network has no sound device here, so programs need the second virtual \
+             cable to transmit through; programs' sound outputs are left as they are.",
             why.as_deref().unwrap_or("no transmit cable")
         ),
     }
@@ -1893,14 +1899,13 @@ fn vara(station: &crate::audio_windows::Station) {
         )),
         // Without a transmit cable, VARA plays straight into the radio's
         // own USB sound device, so it doesn't transmit silence.
-        output: Some(vara::as_vara_names_it(
-            station
-                .transmit_cable
-                .as_deref()
-                .unwrap_or(&station.radio_playing),
-            now.output.as_deref(),
-            &playing,
-        )),
+        // A radio on the network with no transmit cable has nowhere VARA
+        // could play, so its sound output is left as it is.
+        output: station
+            .transmit_cable
+            .as_deref()
+            .or(station.radio_playing.as_deref())
+            .map(|to| vara::as_vara_names_it(to, now.output.as_deref(), &playing)),
     };
     match vara::set(&path, &wanted) {
         Ok(Outcome::AlreadySet) => println!(
