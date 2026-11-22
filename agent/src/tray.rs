@@ -387,6 +387,12 @@ pub enum Choice {
     /// Standing alone: save the radio's settings as this program's lab
     /// profile (after a yes).
     ProfileSave(&'static str),
+    /// List the `FlexRadio` radios on the network, to pick one.
+    Flex,
+    /// Use the FlexRadio of this serial number.
+    FlexUse(String),
+    /// Stop using the FlexRadio: back to USB radios.
+    FlexStop,
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -431,6 +437,9 @@ impl Choice {
             Self::Stock { save: false } => "stock".to_owned(),
             Self::Stock { save: true } => "stock save".to_owned(),
             Self::ProfileSave(program) => format!("profile save {program}"),
+            Self::Flex => "flex".to_owned(),
+            Self::FlexUse(serial) => format!("flex use {serial}"),
+            Self::FlexStop => "flex stop".to_owned(),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -724,6 +733,12 @@ mod tests {
         assert_eq!(Choice::Stock { save: false }.typed(), "stock");
         assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(Choice::ProfileSave("VARA").typed(), "profile save VARA");
+        assert_eq!(Choice::Flex.typed(), "flex");
+        assert_eq!(
+            Choice::FlexUse("1234-5678".to_owned()).typed(),
+            "flex use 1234-5678"
+        );
+        assert_eq!(Choice::FlexStop.typed(), "flex stop");
         assert_eq!(
             Choice::Answer {
                 number: 3,

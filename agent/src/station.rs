@@ -160,16 +160,41 @@ fn find_flex(address: &str) -> Result<Found, String> {
                 ));
             }
         }
+    } else if let Some(heard) = by_serial(address)? {
+        heard
     } else {
         address.to_owned()
     };
-    let radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
+    let mut radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
+    // No slice yet: SmartSDR on this computer isn't open, or has none. The
+    // station waits for one rather than serving a radio it can't tune.
+    crate::rig::Radio::read(&mut radio).map_err(|error| {
+        format!(
+            "{error}.\n-> Open SmartSDR on this computer, with a slice (flex stop goes back to \
+             USB radios)."
+        )
+    })?;
     let serial = radio.serial().map(str::to_owned);
     Ok(Found {
         radio: Box::new(radio),
         port: format!("the network at {address}"),
         serial,
     })
+}
+
+/// A FlexRadio's serial number, as `flex use` picks it, looked for in
+/// the radios' discovery broadcasts: the address of the one with it, or
+/// `None` when `wanted` looks like an address (it has a dot or colon) or no
+/// radio heard has it.
+fn by_serial(wanted: &str) -> Result<Option<String>, String> {
+    if wanted.contains(['.', ':']) {
+        return Ok(None);
+    }
+    let heard = crate::flex::discover(FLEX_LISTEN)?;
+    Ok(heard
+        .iter()
+        .find(|radio| radio.serial == wanted)
+        .map(|radio| radio.address.to_string()))
 }
 
 /// Which radio the operator asked the station for: the one on a serial
@@ -190,10 +215,20 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, flex: Option<&str>, running: &AtomicBool) -> Option<Found> {
+fn wait_for_radio(
+    port: Option<&str>,
+    pick: &crate::flex_pick::Pick,
+    running: &AtomicBool,
+) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
-        match flex.map_or_else(|| find(port, running), find_flex) {
+        // A pick made while waiting is acted on at once.
+        pick.take_changed();
+        let flex = pick.current();
+        match flex
+            .as_deref()
+            .map_or_else(|| find(port, running), find_flex)
+        {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {
@@ -206,7 +241,10 @@ fn wait_for_radio(port: Option<&str>, flex: Option<&str>, running: &AtomicBool) 
             }
         }
         let until = std::time::Instant::now() + LOOK_AGAIN;
-        while running.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        while running.load(Ordering::SeqCst)
+            && !pick.has_changed()
+            && std::time::Instant::now() < until
+        {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -511,8 +549,9 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          radio as programs start, stock to put the lab's Lab Stock on, stock \
                          save to send the radio's settings as a Lab Stock proposal (standing \
                          alone, to save them as the Lab Stock), profile save VARA (say) to save \
-                         the radio's settings as a lab profile when standing alone, or quit to \
-                         stop the Agent.";
+                         the radio's settings as a lab profile when standing alone, flex to \
+                         list the FlexRadios on the network (flex use SERIAL to use one, flex \
+                         stop to go back to USB radios), or quit to stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -933,7 +972,7 @@ struct Typing {
 
 /// Starts reading what the operator types, until quit or the input
 /// closes; either turns `running` false.
-fn start_typing(running: Arc<AtomicBool>) -> Typing {
+fn start_typing(running: Arc<AtomicBool>, pick: Arc<crate::flex_pick::Pick>) -> Typing {
     let typing = Typing {
         to_console: Arc::new(Mutex::new(None)),
     };
@@ -943,6 +982,11 @@ fn start_typing(running: Arc<AtomicBool>) -> Typing {
             let Ok(line) = line else { break };
             if typed(&line) == Ok(Typed::Quit) {
                 break;
+            }
+            // Picking a FlexRadio works with or without a radio found.
+            if let Some(said) = flex_typed(&line, &pick) {
+                crate::print_event(&said);
+                continue;
             }
             let console = slot.lock().ok().and_then(|slot| slot.clone());
             match console {
@@ -961,6 +1005,33 @@ fn start_typing(running: Arc<AtomicBool>) -> Typing {
         running.store(false, Ordering::SeqCst);
     });
     typing
+}
+
+/// What a `flex` line asks, answered: `flex` lists the `FlexRadio` radios on the
+/// network, `flex use SERIAL` picks one, `flex stop` goes back to USB
+/// radios. `None` for any other line.
+fn flex_typed(line: &str, pick: &crate::flex_pick::Pick) -> Option<String> {
+    let mut words = line.split_whitespace();
+    if !words.next()?.eq_ignore_ascii_case("flex") {
+        return None;
+    }
+    let rest: Vec<&str> = words.collect();
+    Some(match rest.as_slice() {
+        [] => match crate::flex::discover(FLEX_LISTEN) {
+            Ok(heard) => {
+                pick.heard(&heard);
+                crate::flex_pick::offered(&heard, crate::flex::here_toward)
+            }
+            Err(why) => format!("FlexRadio: {why}"),
+        },
+        [word, serial] if word.eq_ignore_ascii_case("use") => {
+            pick.use_serial(serial, crate::flex::here_toward)
+        }
+        [word] if word.eq_ignore_ascii_case("stop") => pick.stop(),
+        _ => "flex takes nothing, use SERIAL, or stop: flex lists the FlexRadios on the \
+              network, flex use SERIAL uses one, flex stop goes back to USB radios."
+            .to_owned(),
+    })
 }
 
 /// Where setups are kept: on the Engine when there is one, otherwise on
@@ -2728,7 +2799,8 @@ pub fn run(
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
-    let typing = start_typing(Arc::clone(&running));
+    let pick = Arc::new(crate::flex_pick::Pick::starting_with(wanted.flex));
+    let typing = start_typing(Arc::clone(&running), Arc::clone(&pick));
     let mut stated = stated.clone();
     if stated.no_bus {
         stated.mqtt = None;
@@ -2780,13 +2852,14 @@ pub fn run(
                     uplink,
                     joined: joined.as_deref(),
                     standalone: *engine == EngineLink::Standalone,
+                    pick: &pick,
                 },
                 &running,
                 &typing,
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(wanted.port, wanted.flex, &running) else {
+            let Some(found) = wait_for_radio(wanted.port, &pick, &running) else {
                 break;
             };
             run_found(
@@ -2797,30 +2870,49 @@ pub fn run(
                     uplink,
                     joined: joined.as_deref(),
                     standalone: *engine == EngineLink::Standalone,
+                    pick: &pick,
                 },
                 &running,
                 &typing,
                 kenwood,
             )?
         };
-        match ended {
-            Ended::Stopped => break,
-            Ended::Joined => {
-                crate::print_event(
-                    "LabLog: joined, so the Agent starts again with the link to LabLog.",
-                );
-                continue;
-            }
-            Ended::Lost => {}
+        if !said_after(ended, &pick) {
+            break;
         }
-        crate::print_event(&format!(
-            "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
-             -> The Agent looks for a radio again; plug in any radio it knows.",
-            LOST_AFTER.as_secs()
-        ));
     }
     println!("stopped");
     Ok(())
+}
+
+/// Whether the station lets go of the radio for a new FlexRadio pick now:
+/// only once the radio is off the air, so no transmission is cut off.
+fn switch_now(pick: &crate::flex_pick::Pick, on_air: &AtomicBool) -> bool {
+    pick.has_changed() && !on_air.load(Ordering::SeqCst)
+}
+
+/// Says why the station let go of the radio, and whether it goes on to
+/// look for one again (`false`: asked to stop).
+fn said_after(ended: Ended, pick: &crate::flex_pick::Pick) -> bool {
+    let said = match ended {
+        Ended::Stopped => return false,
+        Ended::Joined => {
+            "LabLog: joined, so the Agent starts again with the link to LabLog.".to_owned()
+        }
+        Ended::Switched => pick.current().map_or_else(
+            || "Radio: let go of the FlexRadio; looking for USB radios.".to_owned(),
+            |flex| format!("Radio: let go of it; looking for the FlexRadio {flex}."),
+        ),
+        Ended::Lost => pick.lost().unwrap_or_else(|| {
+            format!(
+                "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
+                 -> The Agent looks for a radio again; plug in any radio it knows.",
+                LOST_AFTER.as_secs()
+            )
+        }),
+    };
+    crate::print_event(&said);
+    true
 }
 
 /// Starts carrying QSOs, the radio's state and who LabLog logs as between
@@ -2891,7 +2983,7 @@ fn run_found(
     typing: &Typing,
     kenwood: Option<&str>,
 ) -> Result<Ended, String> {
-    let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
+    let (uplink, joined, standalone, pick) = (link.uplink, link.joined, link.standalone, link.pick);
     let identity = found.radio.identity().clone();
     say_found(&found);
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
@@ -2956,6 +3048,7 @@ fn run_found(
     let serving = AtomicBool::new(true);
     let mut lost = Lost::default();
     let mut relink = false;
+    let mut switched = false;
     crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
         offer_drive();
         #[cfg(windows)]
@@ -2963,7 +3056,10 @@ fn run_found(
             watching.watch(station, &on_air, server.address());
         }
         relink |= joined.is_some_and(|joined| joined.swap(false, Ordering::SeqCst));
-        if relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+        // A new FlexRadio pick waits for the radio to be off the air, so no
+        // transmission is cut off.
+        switched |= switch_now(pick, &on_air);
+        if switched || relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
             serving.store(false, Ordering::SeqCst);
         }
     });
@@ -2980,11 +3076,14 @@ fn run_found(
     if let Ok(mut slot) = typing.to_console.lock() {
         *slot = None;
     }
+    if switched && running.load(Ordering::SeqCst) {
+        return Ok(Ended::Switched);
+    }
     Ok(Ended::after(running, relink))
 }
 
 /// How a station run ended.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Ended {
     /// Asked to stop.
     Stopped,
@@ -2992,6 +3091,8 @@ enum Ended {
     Lost,
     /// FieldLab's Engine let this station in, so it starts again linked.
     Joined,
+    /// The operator picked a FlexRadio, or stopped using one.
+    Switched,
 }
 
 impl Ended {
@@ -3016,6 +3117,8 @@ struct Link<'a> {
     /// Standing alone (`--standalone`): Lab Stock and the lab's profiles
     /// are kept, and changed, on this computer.
     standalone: bool,
+    /// The FlexRadio the operator picked, if any: a new pick ends this run.
+    pick: &'a crate::flex_pick::Pick,
 }
 
 /// How long the radio may go unread before the Agent counts it gone and
@@ -3347,6 +3450,40 @@ mod tests {
     use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
+
+    #[test]
+    fn a_flexradio_pick_waits_until_the_radio_is_off_the_air() {
+        let pick = crate::flex_pick::Pick::default();
+        let on_air = AtomicBool::new(false);
+        assert!(!super::switch_now(&pick, &on_air));
+        assert!(
+            super::flex_typed("flex stop", &pick).is_some_and(|said| said.contains("none in use"))
+        );
+        assert!(
+            super::flex_typed("FLEX use 1234", &pick)
+                .is_some_and(|said| said.contains("wasn't heard"))
+        );
+        assert!(
+            super::flex_typed("flex use", &pick).is_some_and(|said| said.starts_with("flex takes"))
+        );
+        assert_eq!(super::flex_typed("keep FT8", &pick), None);
+        assert_eq!(super::flex_typed("flexible", &pick), None);
+        let pick = crate::flex_pick::Pick::starting_with(Some("any"));
+        assert!(
+            super::flex_typed("flex stop", &pick).is_some_and(|said| said.contains("goes back"))
+        );
+        on_air.store(true, Ordering::SeqCst);
+        assert!(
+            !super::switch_now(&pick, &on_air),
+            "never while transmitting"
+        );
+        on_air.store(false, Ordering::SeqCst);
+        assert!(super::switch_now(&pick, &on_air));
+        // Back to USB radios: the station looks again, and says why.
+        assert!(super::said_after(super::Ended::Switched, &pick));
+        assert!(super::said_after(super::Ended::Lost, &pick));
+        assert!(!super::said_after(super::Ended::Stopped, &pick));
+    }
 
     #[test]
     fn finds_a_flexradio_by_its_address() {

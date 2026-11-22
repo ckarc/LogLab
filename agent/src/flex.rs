@@ -596,6 +596,55 @@ pub struct Discovered {
     pub name: Option<String>,
     /// Where its API listens.
     pub address: SocketAddr,
+    /// The computers its GUI clients (SmartSDR, say) run on, from its
+    /// `gui_client_ips` or else `inuse_ip`; `None` when it says neither,
+    /// so whether it is in use can't be told.
+    pub used_from: Option<Vec<IpAddr>>,
+}
+
+impl Discovered {
+    /// Whether a computer other than `here` uses it: `None` when the
+    /// radio doesn't say.
+    #[must_use]
+    pub fn used_elsewhere(&self, here: Option<IpAddr>) -> Option<bool> {
+        let used_from = self.used_from.as_ref()?;
+        Some(used_from.iter().any(|ip| Some(*ip) != here))
+    }
+}
+
+/// The most computers kept from one broadcast's list of GUI clients.
+const MOST_CLIENTS: usize = 8;
+
+/// The computers a discovery broadcast says use the radio. Its words are
+/// split at spaces only here: `gui_client_ips` lists addresses with
+/// commas. Seen in a FLEX-6400's broadcast on `SmartSDR` v3.1 (posted on
+/// FlexRadio's community forum, thread 8023915) as `status=Available
+/// inuse_ip=... gui_client_ips=...`; not on the API wiki's Discovery
+/// Protocol page, so `None` when absent.
+fn used_from(text: &str) -> Option<Vec<IpAddr>> {
+    let field = |key: &str| {
+        text.split(' ')
+            .find_map(|word| word.strip_prefix(key)?.strip_prefix('='))
+    };
+    let ips = |value: &str| -> Vec<IpAddr> {
+        value
+            .split(',')
+            .filter_map(|ip| ip.trim().parse().ok())
+            .take(MOST_CLIENTS)
+            .collect()
+    };
+    field("gui_client_ips")
+        .map(ips)
+        .or_else(|| field("inuse_ip").map(ips))
+}
+
+/// This computer's address on the way to `radio`: what the radio sees its
+/// clients here come from. Nothing is sent.
+#[must_use]
+pub fn here_toward(radio: IpAddr) -> Option<IpAddr> {
+    let socket = UdpSocket::bind((IpAddr::from([0, 0, 0, 0]), 0)).ok()?;
+    socket.connect((radio, DISCOVERY_PORT)).ok()?;
+    socket.local_addr().ok().map(|address| address.ip())
 }
 
 /// What a discovery broadcast says: `key=value` words (model, serial,
@@ -635,6 +684,7 @@ pub fn discovery(packet: &[u8]) -> Option<Discovered> {
         serial: serial.to_owned(),
         name,
         address: SocketAddr::new(ip, port),
+        used_from: used_from(text),
     })
 }
 
@@ -1809,6 +1859,7 @@ mod tests {
                 address: "192.168.1.50:4992"
                     .parse()
                     .unwrap_or_else(|_| unreachable!()),
+                used_from: None,
             })
         );
         for bad in [
@@ -1824,6 +1875,40 @@ mod tests {
         meters[15] = 0x02;
         meters[14] = 0x80;
         assert_eq!(discovery(&meters), None);
+    }
+
+    #[test]
+    fn reads_which_computers_use_a_radio() {
+        let ip =
+            |text: &str| -> std::net::IpAddr { text.parse().unwrap_or_else(|_| unreachable!()) };
+        let heard = |text: &str| discovery(&discovery_packet(text));
+        let used = heard(
+            "model=FLEX-6400 serial=1 ip=192.168.1.50 status=In_Use inuse_ip=192.168.1.54 \
+             gui_client_ips=192.168.1.54,192.168.1.60 gui_client_hosts=SHACK,FL-2",
+        );
+        let used = used.as_ref().and_then(|radio| radio.used_from.clone());
+        assert_eq!(used, Some(vec![ip("192.168.1.54"), ip("192.168.1.60")]));
+        // Only inuse_ip, as the FLEX-6400 on v3.1 sent when free.
+        let free = heard("model=FLEX-6400 serial=1 ip=192.168.1.50 status=Available inuse_ip=");
+        assert_eq!(
+            free.as_ref().and_then(|r| r.used_from.clone()),
+            Some(Vec::new())
+        );
+        assert_eq!(free.and_then(|r| r.used_elsewhere(None)), Some(false));
+        let mine = heard("model=FLEX-6400 serial=1 ip=192.168.1.50 gui_client_ips=192.168.1.54");
+        assert_eq!(
+            mine.as_ref()
+                .and_then(|r| r.used_elsewhere(Some(ip("192.168.1.54")))),
+            Some(false)
+        );
+        assert_eq!(
+            mine.and_then(|r| r.used_elsewhere(Some(ip("192.168.1.99")))),
+            Some(true)
+        );
+        // Saying neither: can't tell.
+        let silent = heard("model=FLEX-6400 serial=1 ip=192.168.1.50");
+        assert_eq!(silent.and_then(|r| r.used_elsewhere(None)), None);
+        assert!(super::here_toward(ip("127.0.0.1")).is_some());
     }
 
     #[test]
