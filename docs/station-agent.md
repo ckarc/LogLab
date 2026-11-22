@@ -66,6 +66,17 @@ program that asks (see "Sharing a radio" below).
   the radio's broadcast still says who uses it on SmartSDR v4, and whether
   the Agent can hear broadcasts while SmartSDR runs on the same computer,
   are not yet tried on a real FlexRadio.
+
+  A FlexRadio's audio (Windows) is carried by the Agent itself, with no
+  DAX program: it opens a second API connection, asks for the followed
+  slice's audio on DAX channel 1 (`stream create type=dax_rx`) and to be
+  its transmit audio source (`dax audio set 1 tx=1`, `stream create
+  type=dax_tx`), in the reduced form (24 kHz, 16-bit mono). Receive audio
+  plays into VB-CABLE and transmit audio comes from the transmit cable,
+  exactly as for a USB radio, so programs need no change between the two;
+  transmit audio is sent only while the Agent has the radio keyed. The
+  radio's transmit audio source must be DAX. The packet layout comes from
+  nDAX (MIT), read for the facts. Not yet tried on a real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,

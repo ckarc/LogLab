@@ -359,6 +359,67 @@ impl Station {
         })
     }
 
+    /// The same for a radio whose audio comes over the network (a
+    /// FlexRadio, see `flex_audio`): `receive`, filled from the network,
+    /// plays into VB-CABLE, and a program's transmit audio is taken from
+    /// the transmit cable into [`Station::transmit`], for the network side
+    /// to send while the radio is keyed.
+    ///
+    /// # Errors
+    ///
+    /// VB-CABLE isn't found, or a device can't be opened.
+    pub fn start_network(receive: Arc<Buffer>) -> Result<Self, String> {
+        let host = cpal::default_host();
+        let (cable, cable_name) = find(
+            listed(host.output_devices())?,
+            crate::audio::RECEIVE_CABLE,
+            "playing",
+        )
+        .map_err(|_| {
+            "VB-CABLE isn't installed, so the radio's audio can't reach programs: install VB-Audio's VB-CABLE".to_owned()
+        })?;
+        let (errors, heard) = mpsc::channel();
+        let mut streams = vec![open_playback(
+            &cable,
+            &cable
+                .default_output_config()
+                .map_err(|error| format!("can't read {cable_name:?}'s format: {error}"))?,
+            Arc::clone(&receive),
+            None,
+            errors.clone(),
+        )?];
+        let (transmit, transmit_cable, no_transmit) = match transmit_cable(&host) {
+            Ok((from, from_name, playing)) => {
+                let from_config = from
+                    .default_input_config()
+                    .map_err(|error| format!("can't read {from_name:?}'s format: {error}"))?;
+                let buffer = Buffer::new(from_config.sample_rate());
+                streams.push(open_capture(
+                    &from,
+                    &from_config,
+                    Arc::clone(&buffer),
+                    errors.clone(),
+                )?);
+                (Some(buffer), Some(playing), None)
+            }
+            Err(why) => (None, None, Some(why)),
+        };
+        for stream in &streams {
+            stream
+                .play()
+                .map_err(|error| format!("can't start a sound device: {error}"))?;
+        }
+        Ok(Self {
+            receive,
+            transmit,
+            transmit_cable,
+            no_transmit,
+            radio_playing: "the FlexRadio, over the network".to_owned(),
+            errors: heard,
+            _streams: streams,
+        })
+    }
+
     /// The receive level since the last call, and what to do about it.
     pub fn receive_hint(&self) -> Option<&'static str> {
         level_hint(self.receive.take_peak_dbfs())

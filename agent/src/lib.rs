@@ -43,6 +43,8 @@ mod filter_widths;
 mod fldigi;
 mod fldigi_rpc;
 mod flex;
+#[cfg(any(windows, test))]
+mod flex_audio;
 mod flex_pick;
 mod flex_pretend;
 mod flex_settings;
@@ -197,7 +199,7 @@ Usage:
                                        at station, and a Yes/No box asks
                                        before the radio is changed
                                        (Windows only)
-  loglab-agent check-writes [--civ PORT | --flex ADDRESS]
+  loglab-agent check-writes [--civ PORT | --flex ADDRESS|any]
                                        find out which of the radio's
                                        settings the Agent can set: writes
                                        each one's own value back and reads
@@ -297,7 +299,7 @@ Usage:
                                        type help there
                                        for its commands (keep, restore,
                                        stock save, profile save VARA, ...)
-  RadioAgent check-writes [--civ PORT | --flex ADDRESS]
+  RadioAgent check-writes [--civ PORT | --flex ADDRESS|any]
                                        find out which of the radio's
                                        settings can be set (asks first)
   RadioAgent audio-devices             list this computer's sound devices
@@ -1609,9 +1611,13 @@ pub fn start(program: &'static product::Product) -> ExitCode {
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
         Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
-        Ok(Command::CheckWritesFlex(address)) => FlexRadio::open(&address)
-            .map_err(|error| error.to_string())
-            .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None)),
+        Ok(Command::CheckWritesFlex(wanted)) => {
+            station::flex_address(&wanted).and_then(|address| {
+                FlexRadio::open(&address)
+                    .map_err(|error| error.to_string())
+                    .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None))
+            })
+        }
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {

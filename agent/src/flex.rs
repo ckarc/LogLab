@@ -549,7 +549,7 @@ pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
 
 /// The payload of a whole VITA-49 packet whose packet class code is
 /// `class`, or `None` for any other packet.
-fn vita_payload(packet: &[u8], class: u16) -> Option<&[u8]> {
+pub(crate) fn vita_payload(packet: &[u8], class: u16) -> Option<&[u8]> {
     let word = |at: usize| {
         packet
             .get(at..at + 4)
@@ -795,6 +795,8 @@ pub struct FlexRadio {
     meters_asked: bool,
     /// The radio's address: meter packets from anywhere else are ignored.
     radio_ip: IpAddr,
+    /// Where its API listens.
+    api: SocketAddr,
     /// The last forward power and SWR readings, raw, and when.
     forward: Option<(i16, Instant)>,
     swr: Option<(i16, Instant)>,
@@ -838,6 +840,7 @@ impl FlexRadio {
             meters: None,
             meters_asked: false,
             radio_ip: target.ip(),
+            api: target,
             forward: None,
             swr: None,
             definition: flex_settings::definition("FlexRadio"),
@@ -885,6 +888,19 @@ impl FlexRadio {
         }
         radio.definition = flex_settings::definition(&radio.identity.model);
         Ok(radio)
+    }
+
+    /// The slice the Agent follows (the transmit slice, else the active
+    /// one), by its number, if one is open.
+    #[must_use]
+    pub fn slice_index(&self) -> Option<u8> {
+        self.board.chosen().map(|(index, _)| *index)
+    }
+
+    /// Where the radio's API listens.
+    #[must_use]
+    pub fn address(&self) -> SocketAddr {
+        self.api
     }
 
     /// Its serial number, as it said in its `info` answer.
