@@ -2,18 +2,26 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! Which FlexRadio, if any, this computer's station uses, as the operator
-//! picks it: from the tray's FlexRadio menu, or by typing `flex`, `flex use
-//! SERIAL` and `flex stop` at the station's console.
+//! picks it: with the tray's "Use FlexRadio" checkmark (`flex on` and
+//! `flex off` at the station's console), or by typing `flex`, `flex use
+//! SERIAL` and `flex stop`.
+//!
+//! With the checkmark on, the station does the footwork once a radio
+//! program (WSJT-X, `JS8Call`, fldigi, VARA, MMSSTV, Winlink Express) is
+//! open: it takes the one free FlexRadio on the network (asking which, when
+//! there are several), opens SmartSDR if it isn't open, and uses its slice.
 //!
 //! USB radios are found as they always were. A FlexRadio on the network may
 //! be another station's, so the Agent uses one only once the operator picks
 //! it here, or starts the Agent with `--flex` (Principle IX). A FlexRadio
 //! another computer uses is not offered and can't be picked.
 //!
-//! A pick from here is not kept: once the FlexRadio is lost (`SmartSDR`
-//! closed, so its slice went, or the radio turned off), or the operator
-//! stops using it, the station goes back to USB radios, and the next start
-//! of the Agent begins with USB radios too.
+//! A pick from here is not kept: the next start of the Agent (at the next
+//! Windows sign-in, say) begins with the checkmark off and USB radios, so a
+//! computer never picks a FlexRadio by itself. A FlexRadio picked with
+//! `flex use` that is lost (SmartSDR closed, so its slice went, or the
+//! radio turned off) goes back to USB radios; with the checkmark on, the
+//! station waits for a FlexRadio again instead, until it is turned off.
 
 use std::net::IpAddr;
 use std::sync::Mutex;
@@ -35,6 +43,14 @@ pub struct Pick {
     /// The radios heard by the last `flex`, so `flex use` is checked
     /// against what was offered.
     heard: Mutex<Vec<Discovered>>,
+    /// The "Use FlexRadio" checkmark (`flex on`).
+    checked: AtomicBool,
+    /// Whether the Agent opened SmartSDR for the radio programs open now,
+    /// so it opens it once for them, not again after someone closes it.
+    opened: AtomicBool,
+    /// The free radios last asked about, so the operator is asked which
+    /// one once, not on every look.
+    asked: Mutex<Vec<String>>,
 }
 
 impl Pick {
@@ -68,6 +84,60 @@ impl Pick {
         self.changed.load(Ordering::SeqCst)
     }
 
+    /// Whether the "Use FlexRadio" checkmark is on.
+    #[must_use]
+    pub fn checked(&self) -> bool {
+        self.checked.load(Ordering::SeqCst)
+    }
+
+    /// `flex on`: the "Use FlexRadio" checkmark. Says what becomes of it.
+    pub fn on(&self) -> String {
+        if !self.checked.swap(true, Ordering::SeqCst) {
+            self.opened.store(false, Ordering::SeqCst);
+            if let Ok(mut asked) = self.asked.lock() {
+                asked.clear();
+            }
+            self.given.store(false, Ordering::SeqCst);
+            self.changed.store(true, Ordering::SeqCst);
+        }
+        "FlexRadio: Use FlexRadio is on. When a radio program opens (WSJT-X, JS8Call, \
+         fldigi, VARA, MMSSTV, Winlink Express), the Agent takes the free FlexRadio, opens \
+         SmartSDR if it isn't open, and uses its slice. flex off goes back to USB radios."
+            .to_owned()
+    }
+
+    /// Takes `serial` as the FlexRadio to use, found by the footwork the
+    /// checkmark asks for: the station is already looking for it.
+    pub fn chose(&self, serial: &str) {
+        if let Ok(mut slot) = self.chosen.lock() {
+            *slot = Some(serial.to_owned());
+        }
+    }
+
+    /// Whether to open SmartSDR for the radio programs open now: `true`
+    /// the first time it is asked while they are open. `programs_open`
+    /// false starts over, for the next radio program to open.
+    pub fn open_smartsdr_now(&self, programs_open: bool) -> bool {
+        if !programs_open {
+            self.opened.store(false, Ordering::SeqCst);
+            return false;
+        }
+        !self.opened.swap(true, Ordering::SeqCst)
+    }
+
+    /// Whether to ask the operator which of the `free` radios to use:
+    /// only when they differ from the ones last asked about.
+    pub fn ask_which(&self, free: &[String]) -> bool {
+        let Ok(mut asked) = self.asked.lock() else {
+            return false;
+        };
+        if asked.as_slice() == free {
+            return false;
+        }
+        *asked = free.to_vec();
+        true
+    }
+
     fn set(&self, chosen: Option<String>) {
         if let Ok(mut slot) = self.chosen.lock() {
             *slot = chosen;
@@ -86,6 +156,13 @@ impl Pick {
         let was = self.current()?;
         if let Ok(mut slot) = self.chosen.lock() {
             *slot = None;
+        }
+        if self.checked() {
+            return Some(format!(
+                "FlexRadio: {was} is gone (SmartSDR closed, or the radio is off). Use \
+                 FlexRadio is still on, so the Agent waits for a FlexRadio again (flex off \
+                 goes back to USB radios)."
+            ));
         }
         Some(format!(
             "FlexRadio: {was} is gone (SmartSDR closed, or the radio is off), so the Agent \
@@ -125,9 +202,11 @@ impl Pick {
         )
     }
 
-    /// `flex stop`: back to USB radios. Says what became of it.
+    /// `flex stop` (or `flex off`, the checkmark turned off): back to USB
+    /// radios. Says what became of it.
     pub fn stop(&self) -> String {
-        if self.current().is_none() {
+        let was_checked = self.checked.swap(false, Ordering::SeqCst);
+        if self.current().is_none() && !was_checked {
             return "FlexRadio: none in use; the Agent uses USB radios.".to_owned();
         }
         self.set(None);
@@ -152,6 +231,10 @@ pub fn described(radio: &Discovered) -> String {
         radio.address.ip()
     )
 }
+
+/// How the station asks which FlexRadio to use, when the checkmark is on
+/// and several are free; the tray reads it and offers each.
+pub const WHICH: &str = "FlexRadio: more than one is free; which one should the Agent use?";
 
 /// The start of each line of `flex`'s answer that offers a radio; the
 /// tray reads these.
@@ -184,6 +267,15 @@ pub fn offered(radios: &[Discovered], here: impl Fn(IpAddr) -> Option<IpAddr>) -
         lines.push(line);
     }
     lines.join("\n")
+}
+
+/// The `radios` no other computer uses, the ones the checkmark may take.
+#[must_use]
+pub fn free(radios: &[Discovered], here: impl Fn(IpAddr) -> Option<IpAddr>) -> Vec<&Discovered> {
+    radios
+        .iter()
+        .filter(|radio| radio.used_elsewhere(here(radio.address.ip())) != Some(true))
+        .collect()
 }
 
 /// The radios `flex`'s answer offers, as (serial number, what it is), for
@@ -244,6 +336,11 @@ mod tests {
             .map(|(serial, _)| serial)
             .collect();
         assert_eq!(serials, ["FREE-1", "MINE-2", "QUIET-4"]);
+        let free: Vec<&str> = free(&radios, here)
+            .iter()
+            .map(|radio| radio.serial.as_str())
+            .collect();
+        assert_eq!(free, ["FREE-1", "MINE-2", "QUIET-4"]);
         assert!(offered(&[], here).starts_with("FlexRadio: none said"));
         assert!(offers("free: nothing -> flex use two words").is_empty());
     }
@@ -286,6 +383,57 @@ mod tests {
         assert!(pick.stop().contains("goes back to USB radios"));
         assert!(pick.take_changed());
         assert!(pick.stop().contains("none in use"));
+    }
+
+    #[test]
+    fn the_checkmark_waits_for_a_flexradio_until_it_is_turned_off() {
+        let pick = Pick::default();
+        assert!(!pick.checked());
+        assert!(pick.on().contains("Use FlexRadio is on"));
+        assert!(pick.checked());
+        assert!(pick.take_changed());
+        // On again changes nothing.
+        pick.on();
+        assert!(!pick.take_changed());
+        assert_eq!(pick.current(), None);
+        pick.chose("FREE-1");
+        assert_eq!(pick.current().as_deref(), Some("FREE-1"));
+        assert!(!pick.has_changed());
+        // Lost with the checkmark on: it waits for a FlexRadio again.
+        assert!(
+            pick.lost()
+                .is_some_and(|said| said.contains("waits for a FlexRadio again"))
+        );
+        assert!(pick.checked());
+        assert_eq!(pick.current(), None);
+        // Off: back to USB radios.
+        assert!(pick.stop().contains("goes back to USB radios"));
+        assert!(!pick.checked());
+        assert!(pick.take_changed());
+        assert!(pick.stop().contains("none in use"));
+    }
+
+    #[test]
+    fn opens_smartsdr_once_for_the_programs_open() {
+        let pick = Pick::default();
+        assert!(!pick.open_smartsdr_now(false));
+        assert!(pick.open_smartsdr_now(true));
+        // Closed by someone while the programs stay open: left closed.
+        assert!(!pick.open_smartsdr_now(true));
+        // The programs closed; the next one to open gets it again.
+        assert!(!pick.open_smartsdr_now(false));
+        assert!(pick.open_smartsdr_now(true));
+    }
+
+    #[test]
+    fn asks_which_flexradio_once_for_the_same_ones() {
+        let pick = Pick::default();
+        let free = ["A".to_owned(), "B".to_owned()];
+        assert!(pick.ask_which(&free));
+        assert!(!pick.ask_which(&free));
+        assert!(pick.ask_which(&free[..1]));
+        pick.on();
+        assert!(pick.ask_which(&free[..1]));
     }
 
     #[test]

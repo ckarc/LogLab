@@ -78,6 +78,7 @@ mod serial_radio;
 mod settings_file;
 mod settings_record;
 mod setups;
+mod smartsdr;
 mod station;
 mod tray;
 #[cfg(windows)]
