@@ -37,6 +37,7 @@ The Station Agent's crates, compiled into its single executable:
 | winapi-build     | Build time only (native-windows-gui dependency) | MIT                            |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
 | windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
+| socket2          | Hearing FlexRadio radios beside SmartSDR (shared UDP port) | MIT OR Apache-2.0 |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |
 | serde_derive, syn, proc-macro2, quote | Build time only (serde's derive) | MIT OR Apache-2.0  |
 | cfg_aliases      | Build time only (nix dependency)          | MIT                              |

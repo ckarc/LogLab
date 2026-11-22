@@ -696,14 +696,29 @@ pub fn discovery(packet: &[u8]) -> Option<Discovered> {
 /// The discovery port can't be opened: most often another program on this
 /// computer (SmartSDR) holds it.
 pub fn discover(wait: Duration) -> Result<Vec<Discovered>, String> {
-    let socket = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).map_err(|error| {
+    let socket = shared_discovery_socket().map_err(|error| {
         format!(
             "can't listen for FlexRadio radios on UDP port {DISCOVERY_PORT} ({error}); \
-             another program, such as SmartSDR, may hold it.\n\
+             another program may hold it alone.\n\
              -> Give the radio's address instead: --flex 192.168.1.20"
         )
     })?;
     heard_on(&socket, wait)
+}
+
+/// A socket on the discovery port that shares it with `SmartSDR`.
+/// `SmartSDR` holds UDP 4992 while it runs; with `SO_REUSEADDR` set before
+/// the bind, a second program binds beside it and hears each broadcast too.
+/// Tried on FL-1 (Windows 11, `SmartSDR` 4.3.19, 2026-11-22): without it
+/// the bind fails (error 10048); with it, six broadcasts in 5 s, once
+/// Windows Firewall let that program take inbound UDP 4992.
+fn shared_discovery_socket() -> io::Result<UdpSocket> {
+    use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    let here = SocketAddr::new(IpAddr::from([0, 0, 0, 0]), DISCOVERY_PORT);
+    socket.bind(&SockAddr::from(here))?;
+    Ok(socket.into())
 }
 
 /// The radios heard on `socket` within `wait`.
@@ -1298,6 +1313,16 @@ mod tests {
     };
     use crate::flex_pretend::PretendFlex;
     use crate::rig::{Exposes, Keyable, Mode, Radio, Reading, Tunable, Tuning, TxMeters, Vfo};
+
+    #[test]
+    fn shares_the_discovery_port_with_another_program() {
+        // As SmartSDR holds it: one socket on the port, then the Agent's
+        // beside it.
+        let first = super::shared_discovery_socket();
+        let second = super::shared_discovery_socket();
+        assert!(first.is_ok(), "{first:?}");
+        assert!(second.is_ok(), "{second:?}");
+    }
 
     #[test]
     fn sorts_lines() {
