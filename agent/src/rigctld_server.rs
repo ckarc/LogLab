@@ -695,13 +695,16 @@ impl Server {
     ///
     /// The address isn't on this computer, or can't be listened on.
     pub fn start(address: SocketAddr, source: Arc<dyn Source>) -> Result<Self, String> {
-        if !address.ip().is_loopback() {
-            return Err(format!(
-                "the rigctld server must listen on this computer, like 127.0.0.1:4532, not {address}: the protocol has no sign-in (Principle XXI)"
-            ));
-        }
-        let listener = TcpListener::bind(address)
-            .map_err(|error| format!("can't listen at {address}: {error}"))?;
+        Self::start_on(hold(address)?, source)
+    }
+
+    /// Starts answering on `listener`, from [`hold`]: programs that
+    /// connected while it was held are answered first.
+    ///
+    /// # Errors
+    ///
+    /// The listener can't be used.
+    pub fn start_on(listener: TcpListener, source: Arc<dyn Source>) -> Result<Self, String> {
         let address = listener
             .local_addr()
             .map_err(|error| format!("can't tell where it is listening: {error}"))?;
@@ -725,6 +728,24 @@ impl Server {
     pub fn address(&self) -> SocketAddr {
         self.address
     }
+}
+
+/// Opens the programs' port at `address`, which must be on this computer,
+/// without answering on it yet: a program connecting is kept waiting (the
+/// system holds its connection) until [`Server::start_on`] answers.
+/// Hamlib's NET rigctl waits 10 s for an answer and tries 5 times
+/// (`netrigctl.c`: `.timeout = 10000`, `.retry = 5`).
+///
+/// # Errors
+///
+/// The address isn't on this computer, or can't be listened on.
+pub fn hold(address: SocketAddr) -> Result<TcpListener, String> {
+    if !address.ip().is_loopback() {
+        return Err(format!(
+            "the rigctld server must listen on this computer, like 127.0.0.1:4532, not {address}: the protocol has no sign-in (Principle XXI)"
+        ));
+    }
+    TcpListener::bind(address).map_err(|error| format!("can't listen at {address}: {error}"))
 }
 
 impl Drop for Server {
@@ -1202,7 +1223,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, refused_hint, respond};
+    use super::{
+        METER_EVERY, Reply, Server, Shared, Source, hold, meter_note, refused_hint, respond,
+    };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
@@ -1510,6 +1533,33 @@ mod tests {
             .err()
             .unwrap_or_default();
         assert!(error.contains("must listen on this computer"), "{error}");
+    }
+
+    #[test]
+    fn answers_a_program_that_connected_while_the_port_was_held() {
+        let address: SocketAddr = "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable!());
+        let held = hold(address).unwrap_or_else(|error| unreachable!("{error}"));
+        let address = held
+            .local_addr()
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        // The program connects and asks before anything answers.
+        let mut stream =
+            TcpStream::connect(address).unwrap_or_else(|error| unreachable!("{error}"));
+        stream
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        stream
+            .write_all(b"\\chk_vfo\n")
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let _server = Server::start_on(held, pretend_ic_7300())
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        let mut answer = String::new();
+        BufReader::new(stream)
+            .read_line(&mut answer)
+            .unwrap_or_else(|error| unreachable!("{error}"));
+        assert_eq!(answer.trim_end(), "0");
+        let beyond: SocketAddr = "0.0.0.0:0".parse().unwrap_or_else(|_| unreachable!());
+        assert!(hold(beyond).is_err());
     }
 
     #[test]
