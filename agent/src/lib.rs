@@ -1615,7 +1615,12 @@ pub fn start(program: &'static product::Product) -> ExitCode {
             station::flex_address(&wanted).and_then(|address| {
                 FlexRadio::open(&address)
                     .map_err(|error| error.to_string())
-                    .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None))
+                    .and_then(|radio| {
+                        // The report keeps the radio's own serial, from its
+                        // `info` answer, as it does a USB radio's.
+                        let serial = radio.serial().map(str::to_owned);
+                        station::check_writes_on(Box::new(radio), &address, serial.as_deref())
+                    })
             })
         }
         Ok(Command::AudioDevices) => audio_devices(),
