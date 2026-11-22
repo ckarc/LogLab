@@ -24,6 +24,7 @@ The Station Agent's crates, compiled into its single executable:
 | toml_parser, toml_datetime, serde_spanned | toml dependencies | MIT OR Apache-2.0                |
 | winnow           | toml dependency (parsing)                 | MIT                              |
 | serialport       | A radio's COM port, for the CI-V driver   | MPL-2.0                          |
+| socket2          | Hearing FlexRadio radios beside SmartSDR (shared UDP port) | MIT OR Apache-2.0 |
 | unescaper        | serialport dependency                     | MIT OR GPL-3.0-only (used under MIT) |
 | scopeguard       | serialport dependency (Linux and macOS)   | MIT OR Apache-2.0                |
 | core-foundation, core-foundation-sys, io-kit-sys, mach2 | serialport dependencies (macOS) | MIT OR Apache-2.0; mach2 BSD-2-Clause OR MIT OR Apache-2.0 |

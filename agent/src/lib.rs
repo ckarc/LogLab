@@ -43,6 +43,7 @@ mod filter_widths;
 mod fldigi;
 mod fldigi_rpc;
 mod flex;
+mod flex_find;
 mod flex_pretend;
 mod flex_settings;
 mod hamlib;
@@ -202,6 +203,10 @@ Usage:
                                        whether Windows starts the tray each
                                        time you sign in, and with which
                                        options (--engine, say)
+  loglab-agent flex [ADDRESS]          list the FlexRadio radios on the
+                                       network and who uses each; then show
+                                       the slice SmartSDR has open on this
+                                       computer (changes nothing)
   loglab-agent audio-devices           list this computer's sound devices
   loglab-agent rx-audio --from RADIO-SOUND [--to CABLE]
                                        receive: play the radio's audio into
@@ -294,6 +299,8 @@ Usage:
   RadioAgent check-writes [--civ PORT | --flex ADDRESS]
                                        find out which of the radio's
                                        settings can be set (asks first)
+  RadioAgent flex [ADDRESS]            list the FlexRadio radios and who
+                                       uses each; show SmartSDR's slice here
   RadioAgent audio-devices             list this computer's sound devices
   RadioAgent check-rig PATH...         check rig definition files
   RadioAgent read RADIO                read the radio once and print it
@@ -318,7 +325,7 @@ fn parse_radio_agent(args: &[String]) -> Result<Command, String> {
         None => Ok(Command::Startup("on".to_owned(), Vec::new())),
         Some(
             "help" | "--help" | "-h" | "--version" | "station" | "tray" | "startup"
-            | "check-writes" | "audio-devices" | "check-rig" | "read",
+            | "check-writes" | "audio-devices" | "check-rig" | "read" | "flex",
         ) => parse(args).map(|command| match command {
             Command::Station {
                 port,
@@ -424,6 +431,8 @@ enum Command {
     CheckWrites(Option<String>),
     /// `check-writes --flex ADDRESS`.
     CheckWritesFlex(String),
+    /// `flex [ADDRESS]`: find FlexRadio radios and see SmartSDR's slice.
+    Flex(Option<String>),
     Run {
         engine: String,
         key_file: String,
@@ -488,12 +497,24 @@ fn number<T: std::str::FromStr>(flag: &str, value: &str) -> Result<T, String> {
         .map_err(|_| format!("{flag} needs a number, not {value:?}"))
 }
 
+/// `flex [ADDRESS]`.
+fn flex_command(rest: &[String]) -> Result<Command, String> {
+    match rest {
+        [] => Ok(Command::Flex(None)),
+        [address] if !address.starts_with('-') => Ok(Command::Flex(Some(address.clone()))),
+        _ => Err("flex takes at most a radio's address, such as flex 192.168.1.20".to_owned()),
+    }
+}
+
 fn parse(args: &[String]) -> Result<Command, String> {
     let Some((verb, rest)) = args.split_first() else {
         return Ok(Command::Help);
     };
     if matches!(verb.as_str(), "help" | "--help" | "-h" | "--version") {
         return Ok(Command::Help);
+    }
+    if verb == "flex" {
+        return flex_command(rest);
     }
     if verb == "audio-devices" {
         return if rest.is_empty() {
@@ -1583,6 +1604,7 @@ pub fn start(program: &'static product::Product) -> ExitCode {
         Ok(Command::CheckWritesFlex(address)) => FlexRadio::open(&address)
             .map_err(|error| error.to_string())
             .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None)),
+        Ok(Command::Flex(address)) => flex_find::run(address.as_deref()),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1985,6 +2007,13 @@ mod tests {
     #[test]
     fn reads_the_audio_commands() {
         assert_eq!(parse(&args("audio-devices")), Ok(Command::AudioDevices));
+        assert_eq!(parse(&args("flex")), Ok(Command::Flex(None)));
+        assert_eq!(
+            parse(&args("flex 10.73.10.233")),
+            Ok(Command::Flex(Some("10.73.10.233".to_owned())))
+        );
+        assert!(parse(&args("flex --flex 10.73.10.233")).is_err());
+        assert!(parse(&args("flex a b")).is_err());
         assert_eq!(
             parse(&args("rx-audio --from CODEC")),
             Ok(Command::RxAudio {
