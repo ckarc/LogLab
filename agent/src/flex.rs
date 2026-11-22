@@ -716,6 +716,10 @@ fn shared_discovery_socket() -> io::Result<UdpSocket> {
     use socket2::{Domain, Protocol, SockAddr, Socket, Type};
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
+    // On macOS and the BSDs, SO_REUSEADDR lets a second socket share only
+    // a multicast address; sharing a port as here takes SO_REUSEPORT too.
+    #[cfg(unix)]
+    socket.set_reuse_port(true)?;
     let here = SocketAddr::new(IpAddr::from([0, 0, 0, 0]), DISCOVERY_PORT);
     socket.bind(&SockAddr::from(here))?;
     Ok(socket.into())
