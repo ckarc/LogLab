@@ -1062,8 +1062,27 @@ fn answer(get: Get, extended: bool, source: &dyn Source) -> String {
     out
 }
 
+/// VFO names Hamlib reads back (its `rig_parse_vfo`); a program reading
+/// any other name, such as a FlexRadio's "Slice A", takes it as no VFO and
+/// gives up (WSJT-X's "Rig Control Error" on FL-1's FLEX-8400, 2026-11-22).
+const HAMLIB_VFOS: [&str; 16] = [
+    "VFOA", "VFOB", "VFOC", "currVFO", "VFO", "MEM", "Main", "Sub", "TX", "RX", "MainA", "MainB",
+    "MainC", "SubA", "SubB", "SubC",
+];
+
+/// The VFO a reading names, in Hamlib's words: the one the radio said if
+/// Hamlib knows it, else VFO A (a FlexRadio's slice is served as VFO A).
+fn hamlib_vfo(reading: &Reading) -> String {
+    reading
+        .vfo
+        .as_deref()
+        .filter(|vfo| HAMLIB_VFOS.contains(vfo))
+        .unwrap_or("VFOA")
+        .to_owned()
+}
+
 fn reading_values(get: Get, reading: &Reading) -> Vec<(&'static str, String)> {
-    let vfo = reading.vfo.clone().unwrap_or_else(|| "VFOA".to_owned());
+    let vfo = hamlib_vfo(reading);
     match get {
         Get::Frequency => vec![("Frequency", reading.frequency_hz.to_string())],
         Get::SplitFrequency => vec![("TX Frequency", reading.frequency_hz.to_string())],
@@ -1242,6 +1261,21 @@ mod tests {
         assert_eq!(text("s"), "0\nVFOA\n");
         assert_eq!(text("\\chk_vfo"), "0\n");
         assert_eq!(text("\\get_powerstat"), "1\n");
+    }
+
+    #[test]
+    fn names_a_flexradio_slice_as_hamlib_does() {
+        let reading = |vfo: Option<&str>| Reading {
+            frequency_hz: 14_074_000,
+            mode: Some(Mode::DataUsb),
+            passband_hz: None,
+            ptt: Some(false),
+            vfo: vfo.map(str::to_owned),
+        };
+        assert_eq!(super::hamlib_vfo(&reading(Some("Slice A"))), "VFOA");
+        assert_eq!(super::hamlib_vfo(&reading(Some("VFOB"))), "VFOB");
+        assert_eq!(super::hamlib_vfo(&reading(Some("Main"))), "Main");
+        assert_eq!(super::hamlib_vfo(&reading(None)), "VFOA");
     }
 
     #[test]
