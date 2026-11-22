@@ -62,6 +62,9 @@ struct Found {
     radio: Box<dyn SerialRadio>,
     port: String,
     serial: Option<String>,
+    /// For a FlexRadio: where its API listens and the slice the Agent
+    /// follows, for its audio over the network.
+    network_audio: Option<(SocketAddr, u8)>,
 }
 
 /// Finds the radio on `port`, or, with none given, on whichever serial port
@@ -76,6 +79,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
             radio,
             port: port.to_owned(),
             serial: None,
+            network_audio: None,
         });
     }
     let candidates = civ_serial::radio_ports(&definitions)?;
@@ -104,6 +108,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
                     radio,
                     port: candidate.port,
                     serial: candidate.serial,
+                    network_audio: None,
                 });
             }
             Err(why) => tried.push(format!("{}: {why}", candidate.port)),
@@ -175,10 +180,12 @@ fn find_flex(address: &str) -> Result<Found, String> {
         )
     })?;
     let serial = radio.serial().map(str::to_owned);
+    let network_audio = radio.slice_index().map(|slice| (radio.address(), slice));
     Ok(Found {
         radio: Box::new(radio),
         port: format!("the network at {address}"),
         serial,
+        network_audio,
     })
 }
 
@@ -1760,7 +1767,15 @@ fn audio(sound: Option<&str>, on_air: Arc<AtomicBool>) -> Option<crate::audio_wi
         println!("Audio: this radio's definition doesn't name its USB sound device.");
         return None;
     };
-    let station = match Station::start(sound, on_air) {
+    carried(Station::start(sound, on_air))
+}
+
+/// Says how the audio is carried, or why it isn't, and points VARA at it.
+#[cfg(windows)]
+fn carried(
+    started: Result<crate::audio_windows::Station, String>,
+) -> Option<crate::audio_windows::Station> {
+    let station = match started {
         Ok(station) => station,
         Err(why) => {
             println!("Audio: not carried ({why})");
@@ -1792,6 +1807,48 @@ fn audio(sound: Option<&str>, on_air: Arc<AtomicBool>) -> Option<crate::audio_wi
     }
     vara(&station);
     Some(station)
+}
+
+/// A FlexRadio's audio, carried by the Agent over the network (see
+/// `flex_audio`), into the same cables a USB radio's goes through, so
+/// programs need no change between the two.
+#[cfg(windows)]
+fn flex_audio(
+    radio: SocketAddr,
+    slice: u8,
+    on_air: Arc<AtomicBool>,
+) -> (
+    Option<crate::audio_windows::Station>,
+    Option<crate::flex_audio::FlexAudio>,
+) {
+    let receive = crate::audio::Buffer::new(crate::flex_audio::RATE);
+    let Some(station) = carried(crate::audio_windows::Station::start_network(Arc::clone(
+        &receive,
+    ))) else {
+        return (None, None);
+    };
+    match crate::flex_audio::FlexAudio::start(
+        radio,
+        slice,
+        receive,
+        station.transmit.clone(),
+        on_air,
+    ) {
+        Ok(network) => {
+            println!(
+                "Audio: the FlexRadio's slice audio comes over the network (DAX channel {}), \
+                 with no DAX program.\n  -> For transmit audio, the radio's transmit audio \
+                 source must be DAX (SmartSDR's transmit panel: DAX on; the setting \
+                 \"tx_dax\" here).",
+                crate::flex_audio::CHANNEL
+            );
+            (Some(station), Some(network))
+        }
+        Err(why) => {
+            println!("Audio: the FlexRadio's audio isn't carried ({why}).");
+            (Some(station), None)
+        }
+    }
 }
 
 /// Points VARA's sound devices at the Agent's cables, if VARA isn't running.
@@ -2843,6 +2900,7 @@ pub fn run(
                 radio: Box::new(crate::civ_pretend_radio().map_err(|error| error.to_string())?),
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
+                network_audio: None,
             };
             run_found(
                 found,
@@ -2993,16 +3051,20 @@ fn run_found(
         sync(uplink, &record, &definition);
     }
     let sound = definition.usb_audio.clone();
+    let network_audio = found.network_audio;
     let (notes, heard) = mpsc::channel();
     #[cfg(windows)]
     let vara_notes = notes.clone();
     let shared = Arc::new(Shared::with_transmit(found.radio, limit).with_notes(notes));
     let on_air = shared.on_air();
     #[cfg(windows)]
-    let station = audio(sound.as_deref(), Arc::clone(&on_air));
+    let (station, flex_audio) = match network_audio {
+        Some((radio, slice)) => flex_audio(radio, slice, Arc::clone(&on_air)),
+        None => (audio(sound.as_deref(), Arc::clone(&on_air)), None),
+    };
     #[cfg(not(windows))]
     {
-        let _ = (&sound, &on_air);
+        let _ = (&sound, &on_air, network_audio);
         println!("Audio: carried on Windows only.");
     }
     let programs = Programs::for_station(&shared, found.serial.as_deref(), &checks);
@@ -3070,6 +3132,8 @@ fn run_found(
     drop(carrier);
     drop(profile_desk);
     drop(server);
+    #[cfg(windows)]
+    drop(flex_audio);
     #[cfg(windows)]
     drop(station);
     // The console lets go of the radio, so it can be found again.
@@ -3273,6 +3337,7 @@ pub fn check_writes_on(
         radio,
         port: port.to_owned(),
         serial: serial.map(str::to_owned),
+        network_audio: None,
     };
     let definition = found.radio.definition().clone();
     let changeable = definition.settings.iter().filter(|s| s.write).count();

@@ -43,6 +43,8 @@ mod filter_widths;
 mod fldigi;
 mod fldigi_rpc;
 mod flex;
+#[cfg(any(windows, test))]
+mod flex_audio;
 mod flex_pick;
 mod flex_pretend;
 mod flex_settings;
