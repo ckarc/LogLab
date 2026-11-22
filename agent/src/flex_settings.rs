@@ -17,9 +17,11 @@
 //! FlexRadio's API wiki (TCPIP-slice, TCPIP-transmit, TCPIP-filt) and, where
 //! the wiki is silent, from `AetherSDR`'s reading of the radio (facts only,
 //! no code: Principle XVI). Where the two names differ (`mic_level` is set
-//! as `miclevel`), both are kept. None of it is checked on a real radio,
-//! so none of it is `write_checked`: the Agent reads and records, but writes
-//! nothing until `check-writes` has run on one.
+//! as `miclevel`), both are kept. `check-writes` ran on a FLEX-8400
+//! (`SmartSDR` 4.3.19, 2026-11-22): the radio took 40 of the 44 back, so
+//! on that model those 40 are `write_checked` and the Agent may write them.
+//! It refused the other four ([`REFUSED`]), and on any other model nothing
+//! is checked yet, so the Agent reads and records but writes nothing.
 //!
 //! Values are kept as the other drivers keep theirs, so the record and
 //! restore code reads them the same way: a level as two BCD bytes, a
@@ -94,6 +96,19 @@ const fn setting(
         set,
         kind,
     }
+}
+
+/// The models `check-writes` has run on.
+const CHECKED_ON: &[&str] = &["FLEX-8400"];
+
+/// The settings a FLEX-8400 refused when `check-writes` wrote back its own
+/// value: `slice set N rf_gain=0` and `transmit set mic_selection=MIC`
+/// (error 5000002D), and `apf` and `apf_level` in USB (error 50000061).
+const REFUSED: &[&str] = &["rf_gain", "apf", "apf_level", "mic_selection"];
+
+/// Whether `check-writes` found the radio takes setting `id` on `model`.
+fn write_checked(model: &str, id: &str) -> bool {
+    CHECKED_ON.contains(&model) && !REFUSED.contains(&id)
 }
 
 use Kind::{Level, Raw, Switch, Words};
@@ -436,7 +451,7 @@ pub fn definition(model: &str) -> Definition {
             digits: None,
             write: true,
             verified: false,
-            write_checked: false,
+            write_checked: write_checked(model, setting.id),
             moves: false,
             selects: setting.id == "mode",
             per_selection: setting.object == Filter
@@ -553,7 +568,7 @@ pub fn set_command(setting: &FlexSetting, slice: u8, text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{FAMILY, SETTINGS, definition, find, set_command, to_bytes, to_text};
+    use super::{FAMILY, REFUSED, SETTINGS, definition, find, set_command, to_bytes, to_text};
 
     #[test]
     fn every_setting_has_its_own_id_and_reads_back_as_it_was_read() {
@@ -623,6 +638,16 @@ mod tests {
                 .iter()
                 .all(|s| s.write && !s.write_checked && !s.verified)
         );
+        // Checked on a FLEX-8400: all but the four it refused.
+        let checked = definition("FLEX-8400");
+        let refused: Vec<&str> = checked
+            .settings
+            .iter()
+            .filter(|s| !s.write_checked)
+            .map(|s| s.id.as_str())
+            .collect();
+        assert_eq!(refused, REFUSED);
+        assert_eq!(checked.settings.len() - refused.len(), 40);
         let mode = flex.settings.iter().find(|s| s.id == "mode");
         assert!(mode.is_some_and(|m| m.selects && m.raw));
         let filter = flex.settings.iter().find(|s| s.id == "filter");
