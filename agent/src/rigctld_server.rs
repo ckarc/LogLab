@@ -695,16 +695,13 @@ impl Server {
     ///
     /// The address isn't on this computer, or can't be listened on.
     pub fn start(address: SocketAddr, source: Arc<dyn Source>) -> Result<Self, String> {
-        Self::start_on(hold(address)?, source)
-    }
-
-    /// Starts answering on `listener`, from [`hold`]: programs that
-    /// connected while it was held are answered first.
-    ///
-    /// # Errors
-    ///
-    /// The listener can't be used.
-    pub fn start_on(listener: TcpListener, source: Arc<dyn Source>) -> Result<Self, String> {
+        if !address.ip().is_loopback() {
+            return Err(format!(
+                "the rigctld server must listen on this computer, like 127.0.0.1:4532, not {address}: the protocol has no sign-in (Principle XXI)"
+            ));
+        }
+        let listener = TcpListener::bind(address)
+            .map_err(|error| format!("can't listen at {address}: {error}"))?;
         let address = listener
             .local_addr()
             .map_err(|error| format!("can't tell where it is listening: {error}"))?;
@@ -728,24 +725,6 @@ impl Server {
     pub fn address(&self) -> SocketAddr {
         self.address
     }
-}
-
-/// Opens the programs' port at `address`, which must be on this computer,
-/// without answering on it yet: a program connecting is kept waiting (the
-/// system holds its connection) until [`Server::start_on`] answers.
-/// Hamlib's NET rigctl waits 10 s for an answer and tries 5 times
-/// (`netrigctl.c`: `.timeout = 10000`, `.retry = 5`).
-///
-/// # Errors
-///
-/// The address isn't on this computer, or can't be listened on.
-pub fn hold(address: SocketAddr) -> Result<TcpListener, String> {
-    if !address.ip().is_loopback() {
-        return Err(format!(
-            "the rigctld server must listen on this computer, like 127.0.0.1:4532, not {address}: the protocol has no sign-in (Principle XXI)"
-        ));
-    }
-    TcpListener::bind(address).map_err(|error| format!("can't listen at {address}: {error}"))
 }
 
 impl Drop for Server {
@@ -1083,27 +1062,8 @@ fn answer(get: Get, extended: bool, source: &dyn Source) -> String {
     out
 }
 
-/// VFO names Hamlib reads back (its `rig_parse_vfo`); a program reading
-/// any other name, such as a FlexRadio's "Slice A", takes it as no VFO and
-/// gives up (WSJT-X's "Rig Control Error" on FL-1's FLEX-8400, 2026-11-22).
-const HAMLIB_VFOS: [&str; 16] = [
-    "VFOA", "VFOB", "VFOC", "currVFO", "VFO", "MEM", "Main", "Sub", "TX", "RX", "MainA", "MainB",
-    "MainC", "SubA", "SubB", "SubC",
-];
-
-/// The VFO a reading names, in Hamlib's words: the one the radio said if
-/// Hamlib knows it, else VFO A (a FlexRadio's slice is served as VFO A).
-fn hamlib_vfo(reading: &Reading) -> String {
-    reading
-        .vfo
-        .as_deref()
-        .filter(|vfo| HAMLIB_VFOS.contains(vfo))
-        .unwrap_or("VFOA")
-        .to_owned()
-}
-
 fn reading_values(get: Get, reading: &Reading) -> Vec<(&'static str, String)> {
-    let vfo = hamlib_vfo(reading);
+    let vfo = reading.vfo.clone().unwrap_or_else(|| "VFOA".to_owned());
     match get {
         Get::Frequency => vec![("Frequency", reading.frequency_hz.to_string())],
         Get::SplitFrequency => vec![("TX Frequency", reading.frequency_hz.to_string())],
@@ -1223,9 +1183,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use super::{
-        METER_EVERY, Reply, Server, Shared, Source, hold, meter_note, refused_hint, respond,
-    };
+    use super::{METER_EVERY, Reply, Server, Shared, Source, meter_note, refused_hint, respond};
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
     use crate::hamlib::{HamlibRadio, Source as Hamlib};
@@ -1284,21 +1242,6 @@ mod tests {
         assert_eq!(text("s"), "0\nVFOA\n");
         assert_eq!(text("\\chk_vfo"), "0\n");
         assert_eq!(text("\\get_powerstat"), "1\n");
-    }
-
-    #[test]
-    fn names_a_flexradio_slice_as_hamlib_does() {
-        let reading = |vfo: Option<&str>| Reading {
-            frequency_hz: 14_074_000,
-            mode: Some(Mode::DataUsb),
-            passband_hz: None,
-            ptt: Some(false),
-            vfo: vfo.map(str::to_owned),
-        };
-        assert_eq!(super::hamlib_vfo(&reading(Some("Slice A"))), "VFOA");
-        assert_eq!(super::hamlib_vfo(&reading(Some("VFOB"))), "VFOB");
-        assert_eq!(super::hamlib_vfo(&reading(Some("Main"))), "Main");
-        assert_eq!(super::hamlib_vfo(&reading(None)), "VFOA");
     }
 
     #[test]
@@ -1533,33 +1476,6 @@ mod tests {
             .err()
             .unwrap_or_default();
         assert!(error.contains("must listen on this computer"), "{error}");
-    }
-
-    #[test]
-    fn answers_a_program_that_connected_while_the_port_was_held() {
-        let address: SocketAddr = "127.0.0.1:0".parse().unwrap_or_else(|_| unreachable!());
-        let held = hold(address).unwrap_or_else(|error| unreachable!("{error}"));
-        let address = held
-            .local_addr()
-            .unwrap_or_else(|error| unreachable!("{error}"));
-        // The program connects and asks before anything answers.
-        let mut stream =
-            TcpStream::connect(address).unwrap_or_else(|error| unreachable!("{error}"));
-        stream
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap_or_else(|error| unreachable!("{error}"));
-        stream
-            .write_all(b"\\chk_vfo\n")
-            .unwrap_or_else(|error| unreachable!("{error}"));
-        let _server = Server::start_on(held, pretend_ic_7300())
-            .unwrap_or_else(|error| unreachable!("{error}"));
-        let mut answer = String::new();
-        BufReader::new(stream)
-            .read_line(&mut answer)
-            .unwrap_or_else(|error| unreachable!("{error}"));
-        assert_eq!(answer.trim_end(), "0");
-        let beyond: SocketAddr = "0.0.0.0:0".parse().unwrap_or_else(|_| unreachable!());
-        assert!(hold(beyond).is_err());
     }
 
     #[test]

@@ -43,9 +43,6 @@ mod filter_widths;
 mod fldigi;
 mod fldigi_rpc;
 mod flex;
-#[cfg(any(windows, test))]
-mod flex_audio;
-mod flex_pick;
 mod flex_pretend;
 mod flex_settings;
 mod hamlib;
@@ -78,7 +75,6 @@ mod serial_radio;
 mod settings_file;
 mod settings_record;
 mod setups;
-mod smartsdr;
 mod station;
 mod tray;
 #[cfg(windows)]
@@ -156,8 +152,7 @@ Usage:
                                        once (--tx-limit, up to 600); both
                                        --civ, --cat, --flex, or their
                                        -pretend, only
-  loglab-agent station [--civ PORT | --flex ADDRESS|any | --civ-pretend |
-                    --flex-pretend] [--listen 127.0.0.1:4532]
+  loglab-agent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS]
                     [--engine URL --key-file FILE [--station NAME] | --engine none]
                     [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]
@@ -169,9 +164,6 @@ Usage:
                                        programs like VarAC and WSJT-X tune
                                        and key it (as serve --allow-transmit)
                                        (it waits for the radio if it is off);
-                                       --flex ADDRESS for a FlexRadio on the
-                                       network, or --flex any for the one
-                                       FlexRadio there;
                                        keeps the radio's settings in
                                        LabLog for every computer (type
                                        keep NAME to keep a setup): with no
@@ -200,7 +192,7 @@ Usage:
                                        at station, and a Yes/No box asks
                                        before the radio is changed
                                        (Windows only)
-  loglab-agent check-writes [--civ PORT | --flex ADDRESS|any]
+  loglab-agent check-writes [--civ PORT | --flex ADDRESS]
                                        find out which of the radio's
                                        settings the Agent can set: writes
                                        each one's own value back and reads
@@ -283,8 +275,7 @@ Usage:
   RadioAgent startup on [station's options] | off | status
                                        whether Windows starts the tray each
                                        time you sign in
-  RadioAgent station [--civ PORT | --flex ADDRESS|any | --civ-pretend |
-                    --flex-pretend] [--listen 127.0.0.1:4532]
+  RadioAgent station [--civ PORT | --civ-pretend] [--listen 127.0.0.1:4532]
                     [--tx-limit SECONDS] [--kenwood PORT]
                     [--grid GRID] [--call CALL]
                                        the same in a console window: finds
@@ -300,7 +291,7 @@ Usage:
                                        type help there
                                        for its commands (keep, restore,
                                        stock save, profile save VARA, ...)
-  RadioAgent check-writes [--civ PORT | --flex ADDRESS|any]
+  RadioAgent check-writes [--civ PORT | --flex ADDRESS]
                                        find out which of the radio's
                                        settings can be set (asks first)
   RadioAgent audio-devices             list this computer's sound devices
@@ -331,7 +322,6 @@ fn parse_radio_agent(args: &[String]) -> Result<Command, String> {
         ) => parse(args).map(|command| match command {
             Command::Station {
                 port,
-                flex,
                 pretend,
                 listen,
                 limit,
@@ -342,7 +332,6 @@ fn parse_radio_agent(args: &[String]) -> Result<Command, String> {
                 stated.no_bus = true;
                 Command::Station {
                     port,
-                    flex,
                     pretend,
                     listen,
                     limit,
@@ -410,8 +399,6 @@ enum Command {
     },
     Station {
         port: Option<String>,
-        /// A FlexRadio's address, or `any` to find the one on the network.
-        flex: Option<String>,
         /// The pretend IC-7300 in place of a radio.
         pretend: bool,
         listen: SocketAddr,
@@ -604,7 +591,6 @@ fn parse(args: &[String]) -> Result<Command, String> {
 /// [--mqtt HOST[:PORT]] [--grid GRID] [--call CALL]`.
 fn station_command(rest: &[String]) -> Result<Command, String> {
     let mut port = None;
-    let mut flex = None;
     let mut pretend = false;
     let mut listen = SocketAddr::from(([127, 0, 0, 1], 4532));
     let mut limit = TX_LIMIT;
@@ -620,17 +606,12 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             pretend = true;
             continue;
         }
-        if flag == "--flex-pretend" {
-            flex = Some(station::PRETEND_FLEX.to_owned());
-            continue;
-        }
         let value = words
             .next()
             .ok_or_else(|| format!("{flag} needs a value"))?
             .clone();
         match flag.as_str() {
             "--civ" => port = Some(value),
-            "--flex" => flex = Some(value),
             "--listen" => {
                 listen = value.parse().map_err(|_| {
                     format!("--listen needs an address like 127.0.0.1:4532, not {value:?}")
@@ -678,20 +659,11 @@ fn station_command(rest: &[String]) -> Result<Command, String> {
             );
         }
     };
-    if [pretend, port.is_some(), flex.is_some()]
-        .iter()
-        .filter(|chosen| **chosen)
-        .count()
-        > 1
-    {
-        return Err(
-            "station takes one of --civ PORT, --flex ADDRESS, --civ-pretend or --flex-pretend"
-                .to_owned(),
-        );
+    if pretend && port.is_some() {
+        return Err("station takes --civ PORT or --civ-pretend, not both".to_owned());
     }
     Ok(Command::Station {
         port,
-        flex,
         pretend,
         listen,
         limit,
@@ -1590,7 +1562,6 @@ pub fn start(program: &'static product::Product) -> ExitCode {
         Ok(Command::Record { radio, records }) => record(&radio, Path::new(&records)),
         Ok(Command::Station {
             port,
-            flex,
             pretend,
             listen,
             limit,
@@ -1598,10 +1569,7 @@ pub fn start(program: &'static product::Product) -> ExitCode {
             kenwood,
             stated,
         }) => station::run(
-            station::Wanted {
-                port: port.as_deref(),
-                flex: flex.as_deref(),
-            },
+            port.as_deref(),
             pretend,
             listen,
             limit,
@@ -1612,18 +1580,9 @@ pub fn start(program: &'static product::Product) -> ExitCode {
         Ok(Command::Startup(what, options)) => station::startup(&what, &options),
         Ok(Command::Tray(options)) => tray::run(&options),
         Ok(Command::CheckWrites(port)) => station::check_writes(port.as_deref()),
-        Ok(Command::CheckWritesFlex(wanted)) => {
-            station::flex_address(&wanted).and_then(|address| {
-                FlexRadio::open(&address)
-                    .map_err(|error| error.to_string())
-                    .and_then(|radio| {
-                        // The report keeps the radio's own serial, from its
-                        // `info` answer, as it does a USB radio's.
-                        let serial = radio.serial().map(str::to_owned);
-                        station::check_writes_on(Box::new(radio), &address, serial.as_deref())
-                    })
-            })
-        }
+        Ok(Command::CheckWritesFlex(address)) => FlexRadio::open(&address)
+            .map_err(|error| error.to_string())
+            .and_then(|radio| station::check_writes_on(Box::new(radio), &address, None)),
         Ok(Command::AudioDevices) => audio_devices(),
         Ok(Command::RxAudio { from, to }) => rx_audio(&from, &to),
         Ok(Command::CivDemo) => civ_demo::run().map(|lines| {
@@ -1904,46 +1863,11 @@ mod tests {
     }
 
     #[test]
-    fn reads_check_writes() {
-        assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
-        assert_eq!(
-            parse(&args("check-writes --civ COM5")),
-            Ok(Command::CheckWrites(Some("COM5".to_owned())))
-        );
-        assert!(parse(&args("check-writes --pretend")).is_err());
-        assert_eq!(
-            parse(&args("check-writes --flex 192.168.1.20")),
-            Ok(Command::CheckWritesFlex("192.168.1.20".to_owned()))
-        );
-        assert!(parse(&args("check-writes --flex")).is_err());
-    }
-
-    #[test]
-    fn reads_station_with_a_flexradio() {
-        assert!(matches!(
-            parse(&args("station --flex any")),
-            Ok(Command::Station { flex: Some(flex), port: None, .. }) if flex == "any"
-        ));
-        assert!(parse(&args("station --flex 192.168.1.20 --civ COM5")).is_err());
-        assert!(parse(&args("station --flex 192.168.1.20 --civ-pretend")).is_err());
-        assert!(matches!(
-            parse(&args("station --flex-pretend")),
-            Ok(Command::Station { flex: Some(flex), .. }) if flex == "pretend"
-        ));
-        assert!(matches!(
-            parse_radio_agent(&args("station --flex 192.168.1.20")),
-            Ok(Command::Station { flex: Some(flex), engine: crate::engine_link::EngineLink::Standalone, .. })
-                if flex == "192.168.1.20"
-        ));
-    }
-
-    #[test]
     fn reads_station() {
         assert_eq!(
             parse(&args("station")),
             Ok(Command::Station {
                 port: None,
-                flex: None,
                 pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
@@ -1958,7 +1882,6 @@ mod tests {
             )),
             Ok(Command::Station {
                 port: Some("COM5".to_owned()),
-                flex: None,
                 pretend: false,
                 listen: "127.0.0.1:4533".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_secs(30),
@@ -1973,7 +1896,6 @@ mod tests {
             )),
             Ok(Command::Station {
                 port: None,
-                flex: None,
                 pretend: false,
                 listen: "127.0.0.1:4532".parse().unwrap_or_else(|_| unreachable!()),
                 limit: Duration::from_mins(1),
@@ -2018,6 +1940,17 @@ mod tests {
             Ok(Command::Station { kenwood: Some(port), .. }) if port == "CNCB0"
         ));
         assert!(parse(&args("startup")).is_err());
+        assert_eq!(parse(&args("check-writes")), Ok(Command::CheckWrites(None)));
+        assert_eq!(
+            parse(&args("check-writes --civ COM5")),
+            Ok(Command::CheckWrites(Some("COM5".to_owned())))
+        );
+        assert!(parse(&args("check-writes --pretend")).is_err());
+        assert_eq!(
+            parse(&args("check-writes --flex 192.168.1.20")),
+            Ok(Command::CheckWritesFlex("192.168.1.20".to_owned()))
+        );
+        assert!(parse(&args("check-writes --flex")).is_err());
         assert!(parse(&args("startup maybe")).is_err());
         for refused in [
             "station --tx-limit 0",

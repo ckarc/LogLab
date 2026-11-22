@@ -62,13 +62,6 @@ struct Found {
     radio: Box<dyn SerialRadio>,
     port: String,
     serial: Option<String>,
-    /// For a FlexRadio: where its API listens and the slice the Agent
-    /// follows, for its audio over the network.
-    network_audio: Option<(SocketAddr, u8)>,
-    /// The programs' port, held open while the "Use FlexRadio" checkmark
-    /// waited for the radio, so a program that opened first waits for it
-    /// rather than being refused; the server answers on it.
-    held: Option<std::net::TcpListener>,
 }
 
 /// Finds the radio on `port`, or, with none given, on whichever serial port
@@ -83,8 +76,6 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
             radio,
             port: port.to_owned(),
             serial: None,
-            network_audio: None,
-            held: None,
         });
     }
     let candidates = civ_serial::radio_ports(&definitions)?;
@@ -113,8 +104,6 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
                     radio,
                     port: candidate.port,
                     serial: candidate.serial,
-                    network_audio: None,
-                    held: None,
                 });
             }
             Err(why) => tried.push(format!("{}: {why}", candidate.port)),
@@ -128,148 +117,17 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     ))
 }
 
-/// What `--flex-pretend` asks `find_flex` for.
-pub const PRETEND_FLEX: &str = "pretend";
-
-/// How long the station listens for FlexRadio radios' discovery
-/// broadcasts: each sends one every second.
-const FLEX_LISTEN: Duration = Duration::from_secs(3);
-
-/// Finds the FlexRadio at `address` on the network, or, with `any`, the one
-/// FlexRadio that broadcasts on this network.
-fn find_flex(address: &str) -> Result<Found, String> {
-    // The pretend FLEX-6600, for trying the station without a radio.
-    let pretend;
-    let address = if address == PRETEND_FLEX {
-        pretend = crate::flex_pretend::PretendFlex::start("FLEX-6600", true)
-            .map_err(|error| format!("can't start the pretend FlexRadio: {error}"))?;
-        pretend.address()
-    } else {
-        address
-    };
-    let address = flex_address(address)?;
-    let mut radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
-    // No slice yet: SmartSDR on this computer isn't open, or has none. The
-    // station waits for one rather than serving a radio it can't tune.
-    crate::rig::Radio::read(&mut radio).map_err(|error| {
-        format!(
-            "{error}.\n-> Open SmartSDR on this computer, with a slice (flex stop goes back to \
-             USB radios)."
-        )
-    })?;
-    let serial = radio.serial().map(str::to_owned);
-    let network_audio = radio.slice_index().map(|slice| (radio.address(), slice));
-    Ok(Found {
-        radio: Box::new(radio),
-        port: format!("the network at {address}"),
-        serial,
-        network_audio,
-        held: None,
-    })
-}
-
-/// Where the FlexRadio `wanted` is: `any`, the one FlexRadio heard on the
-/// network; a serial number, the radio with it; otherwise `wanted` itself,
-/// an address.
-///
-/// # Errors
-///
-/// With `any`, none or more than one FlexRadio is heard; or the discovery
-/// port can't be opened.
-pub fn flex_address(wanted: &str) -> Result<String, String> {
-    if wanted != "any" {
-        return Ok(by_serial(wanted)?.unwrap_or_else(|| wanted.to_owned()));
-    }
-    let heard = crate::flex::discover(FLEX_LISTEN)?;
-    match heard.as_slice() {
-        [] => Err(format!(
-            "no FlexRadio said it is on this network in {} s.\n\
-             -> Is it on, and on the same network as this computer? Or give its \
-             address: --flex 192.168.1.20",
-            FLEX_LISTEN.as_secs()
-        )),
-        [one] => Ok(one.address.to_string()),
-        many => {
-            let list: Vec<String> = many
-                .iter()
-                .map(|r| format!("{} {} at {}", r.model, r.serial, r.address.ip()))
-                .collect();
-            Err(format!(
-                "more than one FlexRadio is on this network: {}.\n\
-                 -> Give the address of the one to use with --flex.",
-                list.join(", ")
-            ))
-        }
-    }
-}
-
-/// A FlexRadio's serial number, as `flex use` picks it, looked for in
-/// the radios' discovery broadcasts: the address of the one with it, or
-/// `None` when `wanted` looks like an address (it has a dot or colon) or no
-/// radio heard has it.
-fn by_serial(wanted: &str) -> Result<Option<String>, String> {
-    if wanted.contains(['.', ':']) {
-        return Ok(None);
-    }
-    let heard = crate::flex::discover(FLEX_LISTEN)?;
-    Ok(heard
-        .iter()
-        .find(|radio| radio.serial == wanted)
-        .map(|radio| radio.address.to_string()))
-}
-
-/// Which radio the operator asked the station for: the one on a serial
-/// port (`--civ`), a FlexRadio on the network (`--flex`), or, with neither,
-/// whichever USB radio is plugged in.
-#[derive(Clone, Copy, Debug, Default)]
-pub struct Wanted<'a> {
-    /// The serial port given with `--civ`.
-    pub port: Option<&'a str>,
-    /// The FlexRadio's address given with `--flex`, or `any`.
-    pub flex: Option<&'a str>,
-}
-
 /// How often the radio is looked for again while it isn't there.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
-
-/// How often, with the "Use FlexRadio" checkmark on, the Agent looks again
-/// for a radio program opening or SmartSDR's slice: soon enough that a
-/// program kept waiting on the held port (see `rigctld_server::hold`) gets
-/// its answer within Hamlib's 10 s.
-const FOOTWORK_LOOK_AGAIN: Duration = Duration::from_secs(1);
 
 /// Looks for the radio until it is found or `running` turns false, so the
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(
-    port: Option<&str>,
-    pick: &crate::flex_pick::Pick,
-    running: &AtomicBool,
-    listen: SocketAddr,
-) -> Option<Found> {
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
-    // With the checkmark on, the programs' port is held open while the
-    // FlexRadio is fetched, so a program that opens first waits for it.
-    let mut held: Option<std::net::TcpListener> = None;
     while running.load(Ordering::SeqCst) {
-        // A pick made while waiting is acted on at once.
-        pick.take_changed();
-        let tried = if pick.checked() {
-            if held.is_none() {
-                held = rigctld_server::hold(listen).ok();
-            }
-            flex_footwork(pick).map(|mut found| {
-                found.held = held.take();
-                found
-            })
-        } else {
-            held = None;
-            pick.current()
-                .as_deref()
-                .map_or_else(|| find(port, running), find_flex)
-        };
-        match tried {
+        match find(port, running) {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {
@@ -281,111 +139,12 @@ fn wait_for_radio(
                 }
             }
         }
-        // With the checkmark on, a radio program opening is seen sooner.
-        let again = if pick.checked() {
-            FOOTWORK_LOOK_AGAIN
-        } else {
-            LOOK_AGAIN
-        };
-        let until = std::time::Instant::now() + again;
-        while running.load(Ordering::SeqCst)
-            && !pick.has_changed()
-            && std::time::Instant::now() < until
-        {
+        let until = std::time::Instant::now() + LOOK_AGAIN;
+        while running.load(Ordering::SeqCst) && std::time::Instant::now() < until {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
     None
-}
-
-/// The footwork the "Use FlexRadio" checkmark asks for, one look: once a
-/// radio program is open, takes the one free FlexRadio on the network (or
-/// asks which, once, when there are several), opens SmartSDR for it if it
-/// isn't open, and finds the radio once SmartSDR has its slice.
-fn flex_footwork(pick: &crate::flex_pick::Pick) -> Result<Found, String> {
-    let programs = radio_programs_open();
-    let open_smartsdr = pick.open_smartsdr_now(!programs.is_empty());
-    if pick.current().is_none() {
-        if programs.is_empty() {
-            return Err(
-                "Use FlexRadio is on; the Agent takes the FlexRadio when a radio program \
-                 opens (WSJT-X, JS8Call, fldigi, VARA, MMSSTV, Winlink Express).\n-> Open \
-                 one, or turn Use FlexRadio off for USB radios."
-                    .to_owned(),
-            );
-        }
-        let heard = crate::flex::discover(FLEX_LISTEN)?;
-        pick.heard(&heard);
-        let free = crate::flex_pick::free(&heard, crate::flex::here_toward);
-        match free.as_slice() {
-            [] if heard.is_empty() => {
-                return Err(format!(
-                    "Use FlexRadio is on, but no FlexRadio said it is on this network in {} \
-                     s.\n-> Is it on, and on this computer's network?",
-                    FLEX_LISTEN.as_secs()
-                ));
-            }
-            [] => {
-                return Err(
-                    "Use FlexRadio is on, but every FlexRadio on the network is in use by \
-                     another computer.\n-> The Agent takes one once it is free."
-                        .to_owned(),
-                );
-            }
-            [one] => {
-                crate::print_event(&format!(
-                    "FlexRadio: Use FlexRadio is on and {} is open, so the Agent uses {}.",
-                    programs.join(", "),
-                    crate::flex_pick::described(one)
-                ));
-                pick.chose(&one.serial);
-            }
-            many => {
-                let serials: Vec<String> = many.iter().map(|radio| radio.serial.clone()).collect();
-                if pick.ask_which(&serials) {
-                    crate::print_event(&format!(
-                        "{}\n{}",
-                        crate::flex_pick::WHICH,
-                        crate::flex_pick::offered(&heard, crate::flex::here_toward)
-                    ));
-                }
-                return Err(
-                    "Use FlexRadio is on, and more than one FlexRadio is free.\n-> Pick \
-                     one (flex use SERIAL)."
-                        .to_owned(),
-                );
-            }
-        }
-    }
-    let flex = pick.current().unwrap_or_default();
-    let found = find_flex(&flex);
-    if found.is_err() && open_smartsdr {
-        match crate::smartsdr::open() {
-            Ok(Some(exe)) => crate::print_event(&format!(
-                "SmartSDR: opened it for {} ({exe}); the Agent takes the FlexRadio once \
-                 SmartSDR has its slice.",
-                programs.join(", ")
-            )),
-            Ok(None) => {}
-            Err(why) => crate::print_event(&format!("SmartSDR: {why}")),
-        }
-    }
-    found
-}
-
-/// The radio programs the Agent sets up that are open now, by the names
-/// they are shown by.
-fn radio_programs_open() -> Vec<&'static str> {
-    #[cfg(windows)]
-    {
-        let mut open: Vec<&'static str> = open_programs(&tasklist()).into_iter().collect();
-        open.sort_unstable();
-        open
-    }
-    #[cfg(not(windows))]
-    {
-        Vec::new()
-    }
 }
 
 /// Where settings records are kept: `records` beside the Agent.
@@ -686,9 +445,8 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          radio as programs start, stock to put the lab's Lab Stock on, stock \
                          save to send the radio's settings as a Lab Stock proposal (standing \
                          alone, to save them as the Lab Stock), profile save VARA (say) to save \
-                         the radio's settings as a lab profile when standing alone, flex to \
-                         list the FlexRadios on the network (flex use SERIAL to use one, flex \
-                         stop to go back to USB radios), or quit to stop the Agent.";
+                         the radio's settings as a lab profile when standing alone, or quit to \
+                         stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
 /// now and the setup as it is kept.
@@ -1109,7 +867,7 @@ struct Typing {
 
 /// Starts reading what the operator types, until quit or the input
 /// closes; either turns `running` false.
-fn start_typing(running: Arc<AtomicBool>, pick: Arc<crate::flex_pick::Pick>) -> Typing {
+fn start_typing(running: Arc<AtomicBool>) -> Typing {
     let typing = Typing {
         to_console: Arc::new(Mutex::new(None)),
     };
@@ -1119,11 +877,6 @@ fn start_typing(running: Arc<AtomicBool>, pick: Arc<crate::flex_pick::Pick>) -> 
             let Ok(line) = line else { break };
             if typed(&line) == Ok(Typed::Quit) {
                 break;
-            }
-            // Picking a FlexRadio works with or without a radio found.
-            if let Some(said) = flex_typed(&line, &pick) {
-                crate::print_event(&said);
-                continue;
             }
             let console = slot.lock().ok().and_then(|slot| slot.clone());
             match console {
@@ -1142,39 +895,6 @@ fn start_typing(running: Arc<AtomicBool>, pick: Arc<crate::flex_pick::Pick>) -> 
         running.store(false, Ordering::SeqCst);
     });
     typing
-}
-
-/// What a `flex` line asks, answered: `flex` lists the `FlexRadio` radios on the
-/// network, `flex on` is the tray's "Use FlexRadio" checkmark, `flex use
-/// SERIAL` picks one, `flex off` and `flex stop` go back to USB radios.
-/// `None` for any other line.
-fn flex_typed(line: &str, pick: &crate::flex_pick::Pick) -> Option<String> {
-    let mut words = line.split_whitespace();
-    if !words.next()?.eq_ignore_ascii_case("flex") {
-        return None;
-    }
-    let rest: Vec<&str> = words.collect();
-    Some(match rest.as_slice() {
-        [] => match crate::flex::discover(FLEX_LISTEN) {
-            Ok(heard) => {
-                pick.heard(&heard);
-                crate::flex_pick::offered(&heard, crate::flex::here_toward)
-            }
-            Err(why) => format!("FlexRadio: {why}"),
-        },
-        [word, serial] if word.eq_ignore_ascii_case("use") => {
-            pick.use_serial(serial, crate::flex::here_toward)
-        }
-        [word] if word.eq_ignore_ascii_case("on") => pick.on(),
-        [word] if word.eq_ignore_ascii_case("stop") || word.eq_ignore_ascii_case("off") => {
-            pick.stop()
-        }
-        _ => "flex takes nothing, on, off, use SERIAL, or stop: flex lists the FlexRadios \
-              on the network, flex on uses the free one once a radio program opens (opening \
-              SmartSDR for it), flex use SERIAL uses one, flex off or flex stop goes back to \
-              USB radios."
-            .to_owned(),
-    })
 }
 
 /// Where setups are kept: on the Engine when there is one, otherwise on
@@ -1903,15 +1623,7 @@ fn audio(sound: Option<&str>, on_air: Arc<AtomicBool>) -> Option<crate::audio_wi
         println!("Audio: this radio's definition doesn't name its USB sound device.");
         return None;
     };
-    carried(Station::start(sound, on_air))
-}
-
-/// Says how the audio is carried, or why it isn't, and points VARA at it.
-#[cfg(windows)]
-fn carried(
-    started: Result<crate::audio_windows::Station, String>,
-) -> Option<crate::audio_windows::Station> {
-    let station = match started {
+    let station = match Station::start(sound, on_air) {
         Ok(station) => station,
         Err(why) => {
             println!("Audio: not carried ({why})");
@@ -1935,62 +1647,14 @@ fn carried(
         (Some(cable), _) => println!(
             "Audio: programs' transmit audio, played into \"{cable}\", goes to the radio while it is keyed."
         ),
-        (None, why) if station.radio_playing.is_some() => println!(
+        (None, why) => println!(
             "Audio: transmit audio doesn't go through the Agent: {}.\n  -> Until it does, \
              a program's sound output must go straight to the radio's USB sound device.",
-            why.as_deref().unwrap_or("no transmit cable")
-        ),
-        (None, why) => println!(
-            "Audio: the radio can't get a program's transmit audio: {}.\n  -> A radio on \
-             the network has no sound device here, so programs need the second virtual \
-             cable to transmit through; programs' sound outputs are left as they are.",
             why.as_deref().unwrap_or("no transmit cable")
         ),
     }
     vara(&station);
     Some(station)
-}
-
-/// A FlexRadio's audio, carried by the Agent over the network (see
-/// `flex_audio`), into the same cables a USB radio's goes through, so
-/// programs need no change between the two.
-#[cfg(windows)]
-fn flex_audio(
-    radio: SocketAddr,
-    slice: u8,
-    on_air: Arc<AtomicBool>,
-) -> (
-    Option<crate::audio_windows::Station>,
-    Option<crate::flex_audio::FlexAudio>,
-) {
-    let receive = crate::audio::Buffer::new(crate::flex_audio::RATE);
-    let Some(station) = carried(crate::audio_windows::Station::start_network(Arc::clone(
-        &receive,
-    ))) else {
-        return (None, None);
-    };
-    match crate::flex_audio::FlexAudio::start(
-        radio,
-        slice,
-        receive,
-        station.transmit.clone(),
-        on_air,
-    ) {
-        Ok(network) => {
-            println!(
-                "Audio: the FlexRadio's slice audio comes over the network (DAX channel {}), \
-                 with no DAX program.\n  -> For transmit audio, the radio's transmit audio \
-                 source must be DAX (SmartSDR's transmit panel: DAX on; the setting \
-                 \"tx_dax\" here).",
-                crate::flex_audio::CHANNEL
-            );
-            (Some(station), Some(network))
-        }
-        Err(why) => {
-            println!("Audio: the FlexRadio's audio isn't carried ({why}).");
-            (Some(station), None)
-        }
-    }
 }
 
 /// Points VARA's sound devices at the Agent's cables, if VARA isn't running.
@@ -2028,13 +1692,14 @@ fn vara(station: &crate::audio_windows::Station) {
         )),
         // Without a transmit cable, VARA plays straight into the radio's
         // own USB sound device, so it doesn't transmit silence.
-        // A radio on the network with no transmit cable has nowhere VARA
-        // could play, so its sound output is left as it is.
-        output: station
-            .transmit_cable
-            .as_deref()
-            .or(station.radio_playing.as_deref())
-            .map(|to| vara::as_vara_names_it(to, now.output.as_deref(), &playing)),
+        output: Some(vara::as_vara_names_it(
+            station
+                .transmit_cable
+                .as_deref()
+                .unwrap_or(&station.radio_playing),
+            now.output.as_deref(),
+            &playing,
+        )),
     };
     match vara::set(&path, &wanted) {
         Ok(Outcome::AlreadySet) => println!(
@@ -2985,7 +2650,7 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
 /// join as) doesn't make a link. FieldLab's own Engine, linked to with no
 /// `--engine`, never stops the station (see `engine_link`).
 pub fn run(
-    wanted: Wanted<'_>,
+    port: Option<&str>,
     pretend: bool,
     listen: SocketAddr,
     limit: Duration,
@@ -2997,8 +2662,7 @@ pub fn run(
     let flag = Arc::clone(&running);
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
-    let pick = Arc::new(crate::flex_pick::Pick::starting_with(wanted.flex));
-    let typing = start_typing(Arc::clone(&running), Arc::clone(&pick));
+    let typing = start_typing(Arc::clone(&running));
     let mut stated = stated.clone();
     if stated.no_bus {
         stated.mqtt = None;
@@ -3041,8 +2705,6 @@ pub fn run(
                 radio: Box::new(crate::civ_pretend_radio().map_err(|error| error.to_string())?),
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
-                network_audio: None,
-                held: None,
             };
             run_found(
                 found,
@@ -3052,14 +2714,13 @@ pub fn run(
                     uplink,
                     joined: joined.as_deref(),
                     standalone: *engine == EngineLink::Standalone,
-                    pick: &pick,
                 },
                 &running,
                 &typing,
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(wanted.port, &pick, &running, listen) else {
+            let Some(found) = wait_for_radio(port, &running) else {
                 break;
             };
             run_found(
@@ -3070,68 +2731,30 @@ pub fn run(
                     uplink,
                     joined: joined.as_deref(),
                     standalone: *engine == EngineLink::Standalone,
-                    pick: &pick,
                 },
                 &running,
                 &typing,
                 kenwood,
             )?
         };
-        if !said_after(ended, &pick) {
-            break;
+        match ended {
+            Ended::Stopped => break,
+            Ended::Joined => {
+                crate::print_event(
+                    "LabLog: joined, so the Agent starts again with the link to LabLog.",
+                );
+                continue;
+            }
+            Ended::Lost => {}
         }
+        crate::print_event(&format!(
+            "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
+             -> The Agent looks for a radio again; plug in any radio it knows.",
+            LOST_AFTER.as_secs()
+        ));
     }
     println!("stopped");
     Ok(())
-}
-
-/// Whether the station lets go of the radio for a new FlexRadio pick now:
-/// only once the radio is off the air, so no transmission is cut off.
-fn switch_now(pick: &crate::flex_pick::Pick, on_air: &AtomicBool) -> bool {
-    pick.has_changed() && !on_air.load(Ordering::SeqCst)
-}
-
-/// Starts answering the programs: on the port held while the radio was
-/// fetched, if it was, otherwise at `listen`.
-fn serve_programs(
-    held: Option<std::net::TcpListener>,
-    listen: SocketAddr,
-    programs: Arc<Programs>,
-) -> Result<rigctld_server::Server, String> {
-    let source = programs as Arc<dyn Source>;
-    match held {
-        Some(held) => rigctld_server::Server::start_on(held, source),
-        None => rigctld_server::Server::start(listen, source),
-    }
-}
-
-/// Says why the station let go of the radio, and whether it goes on to
-/// look for one again (`false`: asked to stop).
-fn said_after(ended: Ended, pick: &crate::flex_pick::Pick) -> bool {
-    let said = match ended {
-        Ended::Stopped => return false,
-        Ended::Joined => {
-            "LabLog: joined, so the Agent starts again with the link to LabLog.".to_owned()
-        }
-        Ended::Switched if pick.checked() && pick.current().is_none() => {
-            "Radio: let go of it; Use FlexRadio is on, so the Agent takes the FlexRadio when a \
-             radio program opens."
-                .to_owned()
-        }
-        Ended::Switched => pick.current().map_or_else(
-            || "Radio: let go of the FlexRadio; looking for USB radios.".to_owned(),
-            |flex| format!("Radio: let go of it; looking for the FlexRadio {flex}."),
-        ),
-        Ended::Lost => pick.lost().unwrap_or_else(|| {
-            format!(
-                "Radio lost: it hasn't answered for {} s (unplugged, turned off, or swapped).\n\
-                 -> The Agent looks for a radio again; plug in any radio it knows.",
-                LOST_AFTER.as_secs()
-            )
-        }),
-    };
-    crate::print_event(&said);
-    true
 }
 
 /// Starts carrying QSOs, the radio's state and who LabLog logs as between
@@ -3165,33 +2788,6 @@ fn station_definition(definition: &Definition, standalone: bool) -> Definition {
     }
 }
 
-/// Says which radio the station found, and where.
-fn say_found(found: &Found) {
-    let identity = found.radio.identity();
-    // A FlexRadio on the network has a serial number but no USB or speed.
-    let baud = found.radio.baud();
-    println!(
-        "Found: {} {} on {}{}{}.",
-        identity.maker,
-        identity.model,
-        found.port,
-        found
-            .serial
-            .as_deref()
-            .map(|serial| if baud == 0 {
-                format!(" (serial {serial})")
-            } else {
-                format!(" (USB serial {serial})")
-            })
-            .unwrap_or_default(),
-        if baud == 0 {
-            String::new()
-        } else {
-            format!(", at {baud} baud")
-        }
-    );
-}
-
 /// Runs the station with the radio found, until stopped.
 fn run_found(
     mut found: Found,
@@ -3202,9 +2798,20 @@ fn run_found(
     typing: &Typing,
     kenwood: Option<&str>,
 ) -> Result<Ended, String> {
-    let (uplink, joined, standalone, pick) = (link.uplink, link.joined, link.standalone, link.pick);
+    let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
     let identity = found.radio.identity().clone();
-    say_found(&found);
+    println!(
+        "Found: {} {} on {}{}, at {} baud.",
+        identity.maker,
+        identity.model,
+        found.port,
+        found
+            .serial
+            .as_deref()
+            .map(|serial| format!(" (USB serial {serial})"))
+            .unwrap_or_default(),
+        found.radio.baud()
+    );
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = station_definition(found.radio.definition(), standalone);
     let checks: Checks = Arc::new(RwLock::new(definition.clone()));
@@ -3212,20 +2819,16 @@ fn run_found(
         sync(uplink, &record, &definition);
     }
     let sound = definition.usb_audio.clone();
-    let network_audio = found.network_audio;
     let (notes, heard) = mpsc::channel();
     #[cfg(windows)]
     let vara_notes = notes.clone();
     let shared = Arc::new(Shared::with_transmit(found.radio, limit).with_notes(notes));
     let on_air = shared.on_air();
     #[cfg(windows)]
-    let (station, flex_audio) = match network_audio {
-        Some((radio, slice)) => flex_audio(radio, slice, Arc::clone(&on_air)),
-        None => (audio(sound.as_deref(), Arc::clone(&on_air)), None),
-    };
+    let station = audio(sound.as_deref(), Arc::clone(&on_air));
     #[cfg(not(windows))]
     {
-        let _ = (&sound, &on_air, network_audio);
+        let _ = (&sound, &on_air);
         println!("Audio: carried on Windows only.");
     }
     let programs = Programs::for_station(&shared, found.serial.as_deref(), &checks);
@@ -3238,7 +2841,7 @@ fn run_found(
         .map(|uplink| start_profile_desk(uplink.clone(), programs.lab.clone()));
     let programs = Arc::new(programs);
     follow_fldigi_while_served(Arc::downgrade(&programs));
-    let server = serve_programs(found.held.take(), listen, programs)?;
+    let server = rigctld_server::Server::start(listen, programs as Arc<dyn Source>)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
     let kenwood = kenwood_ports(kenwood);
@@ -3271,7 +2874,6 @@ fn run_found(
     let serving = AtomicBool::new(true);
     let mut lost = Lost::default();
     let mut relink = false;
-    let mut switched = false;
     crate::show_until_stopped(shared.as_ref(), &heard, &serving, || {
         offer_drive();
         #[cfg(windows)]
@@ -3279,10 +2881,7 @@ fn run_found(
             watching.watch(station, &on_air, server.address());
         }
         relink |= joined.is_some_and(|joined| joined.swap(false, Ordering::SeqCst));
-        // A new FlexRadio pick waits for the radio to be off the air, so no
-        // transmission is cut off.
-        switched |= switch_now(pick, &on_air);
-        if switched || relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+        if relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
             serving.store(false, Ordering::SeqCst);
         }
     });
@@ -3294,21 +2893,16 @@ fn run_found(
     drop(profile_desk);
     drop(server);
     #[cfg(windows)]
-    drop(flex_audio);
-    #[cfg(windows)]
     drop(station);
     // The console lets go of the radio, so it can be found again.
     if let Ok(mut slot) = typing.to_console.lock() {
         *slot = None;
     }
-    if switched && running.load(Ordering::SeqCst) {
-        return Ok(Ended::Switched);
-    }
     Ok(Ended::after(running, relink))
 }
 
 /// How a station run ended.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum Ended {
     /// Asked to stop.
     Stopped,
@@ -3316,8 +2910,6 @@ enum Ended {
     Lost,
     /// FieldLab's Engine let this station in, so it starts again linked.
     Joined,
-    /// The operator picked a FlexRadio, or stopped using one.
-    Switched,
 }
 
 impl Ended {
@@ -3342,8 +2934,6 @@ struct Link<'a> {
     /// Standing alone (`--standalone`): Lab Stock and the lab's profiles
     /// are kept, and changed, on this computer.
     standalone: bool,
-    /// The FlexRadio the operator picked, if any: a new pick ends this run.
-    pick: &'a crate::flex_pick::Pick,
 }
 
 /// How long the radio may go unread before the Agent counts it gone and
@@ -3498,8 +3088,6 @@ pub fn check_writes_on(
         radio,
         port: port.to_owned(),
         serial: serial.map(str::to_owned),
-        network_audio: None,
-        held: None,
     };
     let definition = found.radio.definition().clone();
     let changeable = definition.settings.iter().filter(|s| s.write).count();
@@ -3677,64 +3265,6 @@ mod tests {
     use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
-
-    #[test]
-    fn a_flexradio_pick_waits_until_the_radio_is_off_the_air() {
-        let pick = crate::flex_pick::Pick::default();
-        let on_air = AtomicBool::new(false);
-        assert!(!super::switch_now(&pick, &on_air));
-        assert!(
-            super::flex_typed("flex stop", &pick).is_some_and(|said| said.contains("none in use"))
-        );
-        assert!(
-            super::flex_typed("FLEX use 1234", &pick)
-                .is_some_and(|said| said.contains("wasn't heard"))
-        );
-        assert!(
-            super::flex_typed("flex use", &pick).is_some_and(|said| said.starts_with("flex takes"))
-        );
-        assert_eq!(super::flex_typed("keep FT8", &pick), None);
-        assert_eq!(super::flex_typed("flexible", &pick), None);
-        assert!(
-            super::flex_typed("flex on", &pick)
-                .is_some_and(|said| said.contains("Use FlexRadio is on"))
-        );
-        assert!(pick.checked());
-        assert!(
-            super::flex_typed("Flex OFF", &pick).is_some_and(|said| said.contains("goes back"))
-        );
-        assert!(!pick.checked());
-        let pick = crate::flex_pick::Pick::starting_with(Some("any"));
-        assert!(
-            super::flex_typed("flex stop", &pick).is_some_and(|said| said.contains("goes back"))
-        );
-        on_air.store(true, Ordering::SeqCst);
-        assert!(
-            !super::switch_now(&pick, &on_air),
-            "never while transmitting"
-        );
-        on_air.store(false, Ordering::SeqCst);
-        assert!(super::switch_now(&pick, &on_air));
-        // Back to USB radios: the station looks again, and says why.
-        assert!(super::said_after(super::Ended::Switched, &pick));
-        assert!(super::said_after(super::Ended::Lost, &pick));
-        assert!(!super::said_after(super::Ended::Stopped, &pick));
-    }
-
-    #[test]
-    fn finds_a_flexradio_by_its_address() {
-        let Ok(pretend) = crate::flex_pretend::PretendFlex::start("FLEX-6600", true) else {
-            return;
-        };
-        let found = super::find_flex(pretend.address());
-        assert!(found.is_ok(), "{:?}", found.as_ref().err());
-        let Ok(found) = found else { return };
-        assert_eq!(found.port, format!("the network at {}", pretend.address()));
-        assert_eq!(found.serial.as_deref(), Some("PRETEND-6600"));
-        assert_eq!(found.radio.definition().model, "FLEX-6600");
-        assert_eq!(found.radio.baud(), 0);
-        assert!(super::find_flex("127.0.0.1:1").is_err());
-    }
 
     /// What the pretend radio has for the setting `id` now, in hex.
     fn setting_now(shared: &Shared, id: &str) -> Option<String> {
