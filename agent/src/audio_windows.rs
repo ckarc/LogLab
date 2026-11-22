@@ -218,8 +218,9 @@ pub struct Station {
     /// Why there is no transmit audio, if there isn't.
     pub no_transmit: Option<String>,
     /// The name of the radio's own USB sound device's playing side: where a
-    /// program's transmit audio goes when there is no transmit cable.
-    pub radio_playing: String,
+    /// program's transmit audio goes when there is no transmit cable. `None`
+    /// for a radio on the network, which has no sound device here.
+    pub radio_playing: Option<String>,
     /// Errors the sound devices report.
     pub errors: Receiver<String>,
     _streams: Vec<cpal::Stream>,
@@ -353,7 +354,7 @@ impl Station {
             transmit,
             transmit_cable,
             no_transmit,
-            radio_playing: radio_out_name,
+            radio_playing: Some(radio_out_name),
             errors: heard,
             _streams: streams,
         })
@@ -414,7 +415,7 @@ impl Station {
             transmit,
             transmit_cable,
             no_transmit,
-            radio_playing: "the FlexRadio, over the network".to_owned(),
+            radio_playing: None,
             errors: heard,
             _streams: streams,
         })
