@@ -33,6 +33,10 @@ serialport = { version = "4.10.1", default-features = false, features = ["usbpor
 serde_json = "1"
 toml = { version = "1.1.8", default-features = false, features = ["std", "parse", "serde"] }
 ureq = { version = "3.4.2", default-features = false, features = ["json"] }
+# Listening for FlexRadio discovery broadcasts on UDP 4992 beside SmartSDR,
+# which needs SO_REUSEADDR (and SO_REUSEPORT on Unix) set before the bind.
+# MIT OR Apache-2.0.
+socket2 = { version = "0.6.5", features = ["all"] }
 
 # Sound devices, for routing a radio's audio. Windows only for now: FieldLab's
 # workstations are Windows, and Linux's backend needs system ALSA libraries.
