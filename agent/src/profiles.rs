@@ -33,7 +33,11 @@ const MAX_SAVED_BYTES: u64 = 4 * 1024 * 1024;
 
 /// The profile files built into the Agent, by their path under
 /// `profiles/`; a test fails if a file there is missing here.
-const BUILT_IN: [(&str, &str); 3] = [
+const BUILT_IN: [(&str, &str); 4] = [
+    (
+        "flexradio/flex-8400.toml",
+        include_str!("../profiles/flexradio/flex-8400.toml"),
+    ),
     (
         "icom/ic-7300.toml",
         include_str!("../profiles/icom/ic-7300.toml"),
@@ -586,7 +590,9 @@ mod tests {
             on_disk, built_in,
             "add each file in profiles/ to BUILT_IN in profiles.rs"
         );
-        let definitions = rigdef::built_in().unwrap_or_default();
+        let mut definitions = rigdef::built_in().unwrap_or_default();
+        // A FlexRadio's definition is built in code, not a rigs/ file.
+        definitions.push(crate::flex_settings::definition("FLEX-8400"));
         for (path, text) in BUILT_IN {
             let file: Result<ModelFile, _> = toml::from_str(text);
             assert!(file.is_ok(), "{path}: {file:?}");
@@ -653,6 +659,25 @@ mod tests {
             assert_eq!(find(maker, model, "SSTV"), None);
             assert_eq!(find(maker, model, super::FLDIGI_CW), None);
         }
+        // A FLEX-8400: DIGU, and transmit audio from DAX, the stream the
+        // Agent carries the program's audio on.
+        for program in ["VARA", "FT8", "JS8", "fldigi"] {
+            let settings: Vec<(String, String)> = find("FlexRadio", "FLEX-8400", program)
+                .map(|p| p.settings.into_iter().map(|s| (s.id, s.bytes)).collect())
+                .unwrap_or_default();
+            assert_eq!(
+                settings,
+                [
+                    ("mode".to_owned(), "44 49 47 55".to_owned()),
+                    ("tx_dax".to_owned(), "01".to_owned())
+                ],
+                "{program}"
+            );
+            let text = crate::flex_settings::find("mode")
+                .and_then(|mode| crate::flex_settings::to_text(mode, b"DIGU").ok());
+            assert_eq!(text.as_deref(), Some("DIGU"));
+        }
+        assert_eq!(find("FlexRadio", "FLEX-8400", "SSTV"), None);
         // DATA-U on the FTDX10 (MD0 C); the IC-9700's VARA leaves FM or SSB
         // to the operator.
         let ftdx_ft8 = find("Yaesu", "FTDX10", "FT8")

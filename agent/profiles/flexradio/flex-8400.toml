@@ -1,0 +1,81 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# The stock profiles for the FlexRadio FLEX-8400, one per program, built
+# into the Agent so the radio needs no hand setup (brian, 2026-11-21: ship
+# stock profiles). Both settings here are ones check-writes found the
+# FLEX-8400 takes (FieldLab's, SmartSDR 4.3.19, 2026-11-22). Each holds
+# only what digital modes need on a FlexRadio when the Agent carries its
+# audio (flex_audio.rs, no DAX program):
+#
+# - the slice in DIGU, the FlexRadio's data USB; and
+# - the transmitter's audio taken from DAX (transmit dax=1), which is the
+#   stream the Agent sends the program's audio on. Otherwise the radio
+#   transmits from its microphone input and the program sends silence.
+#
+# The filter, offsets and levels are left as the radio has them; the
+# operator saves their own over any of these from the tray (Save as lab
+# profile).
+#
+# Each setting is a setting id from flex_settings.rs and the bytes the
+# Agent keeps for it, in hex: the mode as its text ("DIGU"), a switch as
+# one byte.
+
+maker = "FlexRadio"
+model = "FLEX-8400"
+
+[[profiles]]
+name = "VARA"
+source = "The IC-7300's VARA profile (DATA-USB, from brian at FieldLab, 2026-10-28) carried to the FlexRadio's DIGU; transmit audio from DAX, as the Agent carries it. Not yet proven on the air."
+
+# DIGU, put on first, as the mode selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "44 49 47 55"
+
+# Transmit audio from DAX, the Agent's stream.
+[[profiles.settings]]
+id = "tx_dax"
+bytes = "01"
+
+[[profiles]]
+name = "FT8"
+source = "WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; on a FlexRadio that is DIGU; transmit audio from DAX, as the Agent carries it. Not yet proven on the air."
+
+# DIGU, put on first, as the mode selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "44 49 47 55"
+
+# Transmit audio from DAX, the Agent's stream.
+[[profiles.settings]]
+id = "tx_dax"
+bytes = "01"
+
+[[profiles]]
+name = "JS8"
+source = "JS8Call is built on WSJT-X; WSJT-X 2.7 User Guide, 4.2 Radio: \"Select USB, or choose Data/Pkt if your radio offers such an option\"; on a FlexRadio that is DIGU; transmit audio from DAX, as the Agent carries it. Not yet proven on the air."
+
+# DIGU, put on first, as the mode selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "44 49 47 55"
+
+# Transmit audio from DAX, the Agent's stream.
+[[profiles.settings]]
+id = "tx_dax"
+bytes = "01"
+
+[[profiles]]
+name = "fldigi"
+source = "fldigi wiki, beginners: tune \"at a popular spot (for example 14.070MHz, USB)\"; DIGU, the FlexRadio's data USB; transmit audio from DAX, as the Agent carries it. Not yet proven on the air."
+
+# DIGU, put on first, as the mode selects.
+[[profiles.settings]]
+id = "mode"
+bytes = "44 49 47 55"
+
+# Transmit audio from DAX, the Agent's stream.
+[[profiles.settings]]
+id = "tx_dax"
+bytes = "01"
