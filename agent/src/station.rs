@@ -65,6 +65,10 @@ struct Found {
     /// For a FlexRadio: where its API listens and the slice the Agent
     /// follows, for its audio over the network.
     network_audio: Option<(SocketAddr, u8)>,
+    /// The programs' port, held open while the "Use FlexRadio" checkmark
+    /// waited for the radio, so a program that opened first waits for it
+    /// rather than being refused; the server answers on it.
+    held: Option<std::net::TcpListener>,
 }
 
 /// Finds the radio on `port`, or, with none given, on whichever serial port
@@ -80,6 +84,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
             port: port.to_owned(),
             serial: None,
             network_audio: None,
+            held: None,
         });
     }
     let candidates = civ_serial::radio_ports(&definitions)?;
@@ -109,6 +114,7 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
                     port: candidate.port,
                     serial: candidate.serial,
                     network_audio: None,
+                    held: None,
                 });
             }
             Err(why) => tried.push(format!("{}: {why}", candidate.port)),
@@ -158,6 +164,7 @@ fn find_flex(address: &str) -> Result<Found, String> {
         port: format!("the network at {address}"),
         serial,
         network_audio,
+        held: None,
     })
 }
 
@@ -225,6 +232,12 @@ pub struct Wanted<'a> {
 /// How often the radio is looked for again while it isn't there.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
+/// How often, with the "Use FlexRadio" checkmark on, the Agent looks again
+/// for a radio program opening or SmartSDR's slice: soon enough that a
+/// program kept waiting on the held port (see `rigctld_server::hold`) gets
+/// its answer within Hamlib's 10 s.
+const FOOTWORK_LOOK_AGAIN: Duration = Duration::from_secs(1);
+
 /// Looks for the radio until it is found or `running` turns false, so the
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
@@ -233,14 +246,25 @@ fn wait_for_radio(
     port: Option<&str>,
     pick: &crate::flex_pick::Pick,
     running: &AtomicBool,
+    listen: SocketAddr,
 ) -> Option<Found> {
     let mut said = String::new();
+    // With the checkmark on, the programs' port is held open while the
+    // FlexRadio is fetched, so a program that opens first waits for it.
+    let mut held: Option<std::net::TcpListener> = None;
     while running.load(Ordering::SeqCst) {
         // A pick made while waiting is acted on at once.
         pick.take_changed();
         let tried = if pick.checked() {
-            flex_footwork(pick)
+            if held.is_none() {
+                held = rigctld_server::hold(listen).ok();
+            }
+            flex_footwork(pick).map(|mut found| {
+                found.held = held.take();
+                found
+            })
         } else {
+            held = None;
             pick.current()
                 .as_deref()
                 .map_or_else(|| find(port, running), find_flex)
@@ -257,7 +281,13 @@ fn wait_for_radio(
                 }
             }
         }
-        let until = std::time::Instant::now() + LOOK_AGAIN;
+        // With the checkmark on, a radio program opening is seen sooner.
+        let again = if pick.checked() {
+            FOOTWORK_LOOK_AGAIN
+        } else {
+            LOOK_AGAIN
+        };
+        let until = std::time::Instant::now() + again;
         while running.load(Ordering::SeqCst)
             && !pick.has_changed()
             && std::time::Instant::now() < until
@@ -3012,6 +3042,7 @@ pub fn run(
                 port: "the pretend port".to_owned(),
                 serial: Some(PRETEND_SERIAL.to_owned()),
                 network_audio: None,
+                held: None,
             };
             run_found(
                 found,
@@ -3028,7 +3059,7 @@ pub fn run(
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(wanted.port, &pick, &running) else {
+            let Some(found) = wait_for_radio(wanted.port, &pick, &running, listen) else {
                 break;
             };
             run_found(
@@ -3058,6 +3089,20 @@ pub fn run(
 /// only once the radio is off the air, so no transmission is cut off.
 fn switch_now(pick: &crate::flex_pick::Pick, on_air: &AtomicBool) -> bool {
     pick.has_changed() && !on_air.load(Ordering::SeqCst)
+}
+
+/// Starts answering the programs: on the port held while the radio was
+/// fetched, if it was, otherwise at `listen`.
+fn serve_programs(
+    held: Option<std::net::TcpListener>,
+    listen: SocketAddr,
+    programs: Arc<Programs>,
+) -> Result<rigctld_server::Server, String> {
+    let source = programs as Arc<dyn Source>;
+    match held {
+        Some(held) => rigctld_server::Server::start_on(held, source),
+        None => rigctld_server::Server::start(listen, source),
+    }
 }
 
 /// Says why the station let go of the radio, and whether it goes on to
@@ -3193,7 +3238,7 @@ fn run_found(
         .map(|uplink| start_profile_desk(uplink.clone(), programs.lab.clone()));
     let programs = Arc::new(programs);
     follow_fldigi_while_served(Arc::downgrade(&programs));
-    let server = rigctld_server::Server::start(listen, programs as Arc<dyn Source>)?;
+    let server = serve_programs(found.held.take(), listen, programs)?;
     say_how_to_connect(&identity.model, server.address(), limit);
     #[cfg(windows)]
     let kenwood = kenwood_ports(kenwood);
@@ -3454,6 +3499,7 @@ pub fn check_writes_on(
         port: port.to_owned(),
         serial: serial.map(str::to_owned),
         network_audio: None,
+        held: None,
     };
     let definition = found.radio.definition().clone();
     let changeable = definition.settings.iter().filter(|s| s.write).count();
