@@ -42,48 +42,7 @@ program that asks (see "Sharing a radio" below).
   and antennas; the transmitter's power, mic, DAX, filter, processor, VOX
   and monitor) and keeps them as its as-received record, as for any other
   radio. The Agent writes none of them until `check-writes --flex ADDRESS`
-  has run on a real FlexRadio. `station --flex ADDRESS` (or `--flex any`,
-  which listens 3 s for the radio's own discovery broadcast on UDP port
-  4992 and takes the one FlexRadio it hears) runs the whole station on a
-  FlexRadio: its settings record, kept by the radio's serial number,
-  setups, and programs tuning and keying it. The station never takes a
-  FlexRadio on its own; `--flex` is the operator's choice, as a FlexRadio
-  on the network may be another station's. `--flex-pretend` tries it
-  without a radio. Not yet tried on a real FlexRadio.
-
-  Picking a FlexRadio while the Agent runs: the tray's **Use FlexRadio**
-  checkmark (`flex on` and `flex off` at the station's console). It starts
-  off at every start of the Agent, so a computer never picks a FlexRadio by
-  itself. Turned on, the station lets go of its USB radio once nothing is
-  transmitting, and when a radio program opens (WSJT-X, JS8Call, fldigi,
-  VARA, MMSSTV, Winlink Express) it does the footwork: it takes the one
-  FlexRadio on the network that no other computer uses (from the
-  broadcast's `gui_client_ips` or `inuse_ip`), or, with several free,
-  offers each in a Yes/No box once (a yes types `flex use SERIAL`); it
-  opens SmartSDR if it isn't open (the newest `Program Files\SmartSDR
-  vX.Y.Z\SmartSDR\SmartSDR.exe`, once for the programs open, not again if
-  someone closes it while they stay open); and it serves the FlexRadio once
-  SmartSDR has its slice (a FlexRadio's slices belong to a GUI client such
-  as SmartSDR; with SmartSDR's AutoConnect on, it reopens its last slice by
-  itself). The radio program's profile and sound devices are then put on
-  as for a USB radio. When the FlexRadio is lost, as when SmartSDR closes,
-  the station waits for a FlexRadio again while the checkmark stays on;
-  turning it off goes back to USB radios. `flex` lists the FlexRadios heard,
-  and `flex use SERIAL` and `flex stop` pick one or let go of it by hand,
-  as before. Tried on FieldLab's FLEX-8400 with SmartSDR v4.3.19: the Agent
-  hears the broadcasts while SmartSDR runs on the same computer (with a
-  Windows Firewall rule letting UDP in for the Agent).
-
-  A FlexRadio's audio (Windows) is carried by the Agent itself, with no
-  DAX program: it opens a second API connection, asks for the followed
-  slice's audio on DAX channel 1 (`stream create type=dax_rx`) and to be
-  its transmit audio source (`dax audio set 1 tx=1`, `stream create
-  type=dax_tx`), in the reduced form (24 kHz, 16-bit mono). Receive audio
-  plays into VB-CABLE and transmit audio comes from the transmit cable,
-  exactly as for a USB radio, so programs need no change between the two;
-  transmit audio is sent only while the Agent has the radio keyed. The
-  radio's transmit audio source must be DAX. The packet layout comes from
-  nDAX (MIT), read for the facts. Not yet tried on a real FlexRadio.
+  has run on a real FlexRadio. Not yet tried on a real FlexRadio.
 - **The Agent's own CI-V driver (Icom).** Built in, and read-only. It tries
   each speed its rig definitions list, asks each known radio "who are you?"
   (CI-V `19 00`), and reads the one that answers: frequency, mode, data mode,

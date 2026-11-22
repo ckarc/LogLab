@@ -242,11 +242,7 @@ impl Said {
                 .strip_prefix("a program connected (")?
                 .split_once("): ")
                 .map(|(_, name)| format!("{} is using the radio.", name.trim())),
-            Self::Other(text)
-                if text.starts_with("Radio lost")
-                    || text.starts_with("SmartSDR: ")
-                    || text.starts_with("FlexRadio: Use FlexRadio is on and ") =>
-            {
+            Self::Other(text) if text.starts_with("Radio lost") => {
                 text.lines().next().map(str::to_owned)
             }
             _ => None,
@@ -391,11 +387,6 @@ pub enum Choice {
     /// Standing alone: save the radio's settings as this program's lab
     /// profile (after a yes).
     ProfileSave(&'static str),
-    /// The "Use FlexRadio" checkmark: on, the Agent takes the free
-    /// FlexRadio when a radio program opens; off, back to USB radios.
-    FlexOn(bool),
-    /// Use the FlexRadio of this serial number, picked from several free.
-    FlexUse(String),
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -440,8 +431,6 @@ impl Choice {
             Self::Stock { save: false } => "stock".to_owned(),
             Self::Stock { save: true } => "stock save".to_owned(),
             Self::ProfileSave(program) => format!("profile save {program}"),
-            Self::FlexOn(on) => format!("flex {}", if *on { "on" } else { "off" }),
-            Self::FlexUse(serial) => format!("flex use {serial}"),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -735,12 +724,6 @@ mod tests {
         assert_eq!(Choice::Stock { save: false }.typed(), "stock");
         assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(Choice::ProfileSave("VARA").typed(), "profile save VARA");
-        assert_eq!(Choice::FlexOn(true).typed(), "flex on");
-        assert_eq!(
-            Choice::FlexUse("1234-5678".to_owned()).typed(),
-            "flex use 1234-5678"
-        );
-        assert_eq!(Choice::FlexOn(false).typed(), "flex off");
         assert_eq!(
             Choice::Answer {
                 number: 3,
