@@ -117,6 +117,72 @@ fn find(port: Option<&str>, running: &AtomicBool) -> Result<Found, String> {
     ))
 }
 
+/// What `--flex-pretend` asks `find_flex` for.
+pub const PRETEND_FLEX: &str = "pretend";
+
+/// How long the station listens for FlexRadio radios' discovery
+/// broadcasts: each sends one every second.
+const FLEX_LISTEN: Duration = Duration::from_secs(3);
+
+/// Finds the FlexRadio at `address` on the network, or, with `any`, the one
+/// FlexRadio that broadcasts on this network.
+fn find_flex(address: &str) -> Result<Found, String> {
+    // The pretend FLEX-6600, for trying the station without a radio.
+    let pretend;
+    let address = if address == PRETEND_FLEX {
+        pretend = crate::flex_pretend::PretendFlex::start("FLEX-6600", true)
+            .map_err(|error| format!("can't start the pretend FlexRadio: {error}"))?;
+        pretend.address()
+    } else {
+        address
+    };
+    let address = if address == "any" {
+        let heard = crate::flex::discover(FLEX_LISTEN)?;
+        match heard.as_slice() {
+            [] => {
+                return Err(format!(
+                    "no FlexRadio said it is on this network in {} s.\n\
+                     -> Is it on, and on the same network as this computer? Or give its \
+                     address: --flex 192.168.1.20",
+                    FLEX_LISTEN.as_secs()
+                ));
+            }
+            [one] => one.address.to_string(),
+            many => {
+                let list: Vec<String> = many
+                    .iter()
+                    .map(|r| format!("{} {} at {}", r.model, r.serial, r.address.ip()))
+                    .collect();
+                return Err(format!(
+                    "more than one FlexRadio is on this network: {}.\n\
+                     -> Start the station with --flex and the address of the one to use.",
+                    list.join(", ")
+                ));
+            }
+        }
+    } else {
+        address.to_owned()
+    };
+    let radio = crate::flex::FlexRadio::open(&address).map_err(|error| error.to_string())?;
+    let serial = radio.serial().map(str::to_owned);
+    Ok(Found {
+        radio: Box::new(radio),
+        port: format!("the network at {address}"),
+        serial,
+    })
+}
+
+/// Which radio the operator asked the station for: the one on a serial
+/// port (`--civ`), a FlexRadio on the network (`--flex`), or, with neither,
+/// whichever USB radio is plugged in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Wanted<'a> {
+    /// The serial port given with `--civ`.
+    pub port: Option<&'a str>,
+    /// The FlexRadio's address given with `--flex`, or `any`.
+    pub flex: Option<&'a str>,
+}
+
 /// How often the radio is looked for again while it isn't there.
 const LOOK_AGAIN: Duration = Duration::from_secs(5);
 
@@ -124,10 +190,10 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
+fn wait_for_radio(port: Option<&str>, flex: Option<&str>, running: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
     while running.load(Ordering::SeqCst) {
-        match find(port, running) {
+        match flex.map_or_else(|| find(port, running), find_flex) {
             Ok(found) => return Some(found),
             Err(why) => {
                 if why != said {
@@ -2650,7 +2716,7 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
 /// join as) doesn't make a link. FieldLab's own Engine, linked to with no
 /// `--engine`, never stops the station (see `engine_link`).
 pub fn run(
-    port: Option<&str>,
+    wanted: Wanted<'_>,
     pretend: bool,
     listen: SocketAddr,
     limit: Duration,
@@ -2720,7 +2786,7 @@ pub fn run(
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(port, &running) else {
+            let Some(found) = wait_for_radio(wanted.port, wanted.flex, &running) else {
                 break;
             };
             run_found(
@@ -2788,6 +2854,33 @@ fn station_definition(definition: &Definition, standalone: bool) -> Definition {
     }
 }
 
+/// Says which radio the station found, and where.
+fn say_found(found: &Found) {
+    let identity = found.radio.identity();
+    // A FlexRadio on the network has a serial number but no USB or speed.
+    let baud = found.radio.baud();
+    println!(
+        "Found: {} {} on {}{}{}.",
+        identity.maker,
+        identity.model,
+        found.port,
+        found
+            .serial
+            .as_deref()
+            .map(|serial| if baud == 0 {
+                format!(" (serial {serial})")
+            } else {
+                format!(" (USB serial {serial})")
+            })
+            .unwrap_or_default(),
+        if baud == 0 {
+            String::new()
+        } else {
+            format!(", at {baud} baud")
+        }
+    );
+}
+
 /// Runs the station with the radio found, until stopped.
 fn run_found(
     mut found: Found,
@@ -2800,18 +2893,7 @@ fn run_found(
 ) -> Result<Ended, String> {
     let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
     let identity = found.radio.identity().clone();
-    println!(
-        "Found: {} {} on {}{}, at {} baud.",
-        identity.maker,
-        identity.model,
-        found.port,
-        found
-            .serial
-            .as_deref()
-            .map(|serial| format!(" (USB serial {serial})"))
-            .unwrap_or_default(),
-        found.radio.baud()
-    );
+    say_found(&found);
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = station_definition(found.radio.definition(), standalone);
     let checks: Checks = Arc::new(RwLock::new(definition.clone()));
@@ -3265,6 +3347,21 @@ mod tests {
     use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
+
+    #[test]
+    fn finds_a_flexradio_by_its_address() {
+        let Ok(pretend) = crate::flex_pretend::PretendFlex::start("FLEX-6600", true) else {
+            return;
+        };
+        let found = super::find_flex(pretend.address());
+        assert!(found.is_ok(), "{:?}", found.as_ref().err());
+        let Ok(found) = found else { return };
+        assert_eq!(found.port, format!("the network at {}", pretend.address()));
+        assert_eq!(found.serial.as_deref(), Some("PRETEND-6600"));
+        assert_eq!(found.radio.definition().model, "FLEX-6600");
+        assert_eq!(found.radio.baud(), 0);
+        assert!(super::find_flex("127.0.0.1:1").is_err());
+    }
 
     /// What the pretend radio has for the setting `id` now, in hex.
     fn setting_now(shared: &Shared, id: &str) -> Option<String> {

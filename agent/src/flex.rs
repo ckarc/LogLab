@@ -535,38 +535,7 @@ impl Board {
 /// (the API's Metering Protocol page; `AetherSDR`'s reading of it).
 #[must_use]
 pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
-    let word = |at: usize| {
-        packet
-            .get(at..at + 4)
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-            .map(u32::from_be_bytes)
-    };
-    let Some(header) = word(0) else {
-        return Vec::new();
-    };
-    let size = usize::try_from(header & 0xFFFF).unwrap_or(usize::MAX) * 4;
-    let has_class = header & 0x0800_0000 != 0;
-    if !has_class || size > packet.len() {
-        return Vec::new();
-    }
-    let packet = &packet[..size];
-    let mut at = 4;
-    if matches!(header >> 28, 1 | 3) {
-        at += 4;
-    }
-    if word(at + 4).map(|w| w & 0xFFFF) != Some(u32::from(METER_CLASS)) {
-        return Vec::new();
-    }
-    at += 8;
-    if header & 0x00C0_0000 != 0 {
-        at += 4;
-    }
-    if header & 0x0030_0000 != 0 {
-        at += 8;
-    }
-    let end = size.saturating_sub(if header & 0x0400_0000 != 0 { 4 } else { 0 });
-    packet
-        .get(at..end)
+    vita_payload(packet, METER_CLASS)
         .unwrap_or_default()
         .chunks_exact(4)
         .map(|pair| {
@@ -576,6 +545,136 @@ pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
             )
         })
         .collect()
+}
+
+/// The payload of a whole VITA-49 packet whose packet class code is
+/// `class`, or `None` for any other packet.
+fn vita_payload(packet: &[u8], class: u16) -> Option<&[u8]> {
+    let word = |at: usize| {
+        packet
+            .get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_be_bytes)
+    };
+    let header = word(0)?;
+    let size = usize::try_from(header & 0xFFFF).ok()? * 4;
+    let has_class = header & 0x0800_0000 != 0;
+    if !has_class || size > packet.len() {
+        return None;
+    }
+    let mut at = 4;
+    if matches!(header >> 28, 1 | 3) {
+        at += 4;
+    }
+    if word(at + 4).map(|w| w & 0xFFFF) != Some(u32::from(class)) {
+        return None;
+    }
+    at += 8;
+    if header & 0x00C0_0000 != 0 {
+        at += 4;
+    }
+    if header & 0x0030_0000 != 0 {
+        at += 8;
+    }
+    let end = size.saturating_sub(if header & 0x0400_0000 != 0 { 4 } else { 0 });
+    packet.get(at..end)
+}
+
+/// The VITA-49 packet class code of a FlexRadio's discovery broadcast.
+const DISCOVERY_CLASS: u16 = 0xFFFF;
+/// The UDP port FlexRadio radios broadcast their discovery packets to.
+pub const DISCOVERY_PORT: u16 = 4992;
+
+/// A FlexRadio that said it is on the network.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Discovered {
+    /// Its model, such as "FLEX-6600".
+    pub model: String,
+    /// Its serial number.
+    pub serial: String,
+    /// Its name, if it has one.
+    pub name: Option<String>,
+    /// Where its API listens.
+    pub address: SocketAddr,
+}
+
+/// What a discovery broadcast says: `key=value` words (model, serial,
+/// version, name or nickname, ip, port, status), in a VITA-49 packet with
+/// class code 0xFFFF (the API's Discovery Protocol page; a name's spaces
+/// are sent as underscores). `None` unless it names a plain model and
+/// serial and a usable address.
+#[must_use]
+pub fn discovery(packet: &[u8]) -> Option<Discovered> {
+    let payload = vita_payload(packet, DISCOVERY_CLASS)?;
+    let text = std::str::from_utf8(payload).ok()?.trim_end_matches('\0');
+    let mut fields: BTreeMap<&str, &str> = BTreeMap::new();
+    for (key, value) in pairs(text) {
+        fields.entry(key).or_insert(value);
+    }
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text.len() <= 40
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+    };
+    let model = fields.get("model").copied().filter(|t| plain(t))?;
+    let serial = fields.get("serial").copied().filter(|t| plain(t))?;
+    let ip: IpAddr = fields.get("ip")?.parse().ok()?;
+    let port = fields
+        .get("port")
+        .map_or(Some(PORT), |port| port.parse().ok())?;
+    let name = fields
+        .get("nickname")
+        .or_else(|| fields.get("name"))
+        .copied()
+        .filter(|t| plain(t))
+        .map(|name| name.replace('_', " "));
+    Some(Discovered {
+        model: model.to_owned(),
+        serial: serial.to_owned(),
+        name,
+        address: SocketAddr::new(ip, port),
+    })
+}
+
+/// Listens for `wait` for FlexRadio radios' discovery broadcasts (each
+/// sends one every second) and says which were heard, once each.
+///
+/// # Errors
+///
+/// The discovery port can't be opened: most often another program on this
+/// computer (SmartSDR) holds it.
+pub fn discover(wait: Duration) -> Result<Vec<Discovered>, String> {
+    let socket = UdpSocket::bind(("0.0.0.0", DISCOVERY_PORT)).map_err(|error| {
+        format!(
+            "can't listen for FlexRadio radios on UDP port {DISCOVERY_PORT} ({error}); \
+             another program, such as SmartSDR, may hold it.\n\
+             -> Give the radio's address instead: --flex 192.168.1.20"
+        )
+    })?;
+    heard_on(&socket, wait)
+}
+
+/// The radios heard on `socket` within `wait`.
+fn heard_on(socket: &UdpSocket, wait: Duration) -> Result<Vec<Discovered>, String> {
+    socket
+        .set_read_timeout(Some(Duration::from_millis(100)))
+        .map_err(|error| error.to_string())?;
+    let deadline = Instant::now() + wait;
+    let mut heard: Vec<Discovered> = Vec::new();
+    let mut packet = vec![0_u8; 2048];
+    while Instant::now() < deadline && heard.len() < MAX_SLICES {
+        let Ok(size) = socket.recv(&mut packet) else {
+            continue;
+        };
+        if let Some(radio) = discovery(&packet[..size])
+            && !heard.iter().any(|h| h.serial == radio.serial)
+        {
+            heard.push(radio);
+        }
+    }
+    Ok(heard)
 }
 
 /// Forward power in percent of `full_watts`, from a meter's raw dBm
@@ -613,6 +712,23 @@ pub fn model_from_info(text: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
+/// The radio's serial number from its `info` answer (`chassis_serial`, as
+/// on the outside of its case), if it is plain enough to keep.
+#[must_use]
+pub fn serial_from_info(text: &str) -> Option<String> {
+    pairs(text)
+        .find(|(key, _)| *key == "chassis_serial")
+        .map(|(_, value)| value.trim_matches('"'))
+        .filter(|serial| {
+            !serial.is_empty()
+                && serial.len() <= 40
+                && serial
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+        .map(str::to_owned)
+}
+
 /// A FlexRadio, read through its API.
 pub struct FlexRadio {
     identity: RadioIdentity,
@@ -634,6 +750,8 @@ pub struct FlexRadio {
     swr: Option<(i16, Instant)>,
     /// Its settings, as the record and restore code takes them.
     definition: crate::rigdef::Definition,
+    /// Its serial number, if it said.
+    serial: Option<String>,
 }
 
 impl FlexRadio {
@@ -673,6 +791,7 @@ impl FlexRadio {
             forward: None,
             swr: None,
             definition: flex_settings::definition("FlexRadio"),
+            serial: None,
         };
         let info = radio.send(Ask::Info)?;
         let slices = radio.send(Ask::Slices)?;
@@ -698,6 +817,7 @@ impl FlexRadio {
                         if let Some(model) = model_from_info(text) {
                             radio.identity.model = model;
                         }
+                        radio.serial = serial_from_info(text);
                     } else if seq == slices && code != 0 {
                         return Err(RadioError(format!(
                             "the FlexRadio would not report its slices (error {code:08X})"
@@ -715,6 +835,12 @@ impl FlexRadio {
         }
         radio.definition = flex_settings::definition(&radio.identity.model);
         Ok(radio)
+    }
+
+    /// Its serial number, as it said in its `info` answer.
+    #[must_use]
+    pub fn serial(&self) -> Option<&str> {
+        self.serial.as_deref()
     }
 
     /// Send one question; return its number.
@@ -1100,8 +1226,9 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        Ask, Board, FlexRadio, Line, Order, classify, meter_readings, mode_from_flex, mode_to_flex,
-        model_from_info, parse_mhz, power_percent, swr_tenths,
+        Ask, Board, Discovered, FlexRadio, Line, Order, classify, discovery, heard_on,
+        meter_readings, mode_from_flex, mode_to_flex, model_from_info, parse_mhz, power_percent,
+        serial_from_info, swr_tenths,
     };
     use crate::flex_pretend::PretendFlex;
     use crate::rig::{Exposes, Keyable, Mode, Radio, Reading, Tunable, Tuning, TxMeters, Vfo};
@@ -1648,6 +1775,86 @@ mod tests {
             handle.join().unwrap_or_default().last().map(String::as_str),
             Some("xmit 1")
         );
+    }
+
+    /// A discovery broadcast as the API's Discovery Protocol page lays it
+    /// out: extension data with stream ID 0x800, class 0x534CFFFF, both
+    /// timestamps, then the text padded to a whole word with zeroes.
+    fn discovery_packet(text: &str) -> Vec<u8> {
+        let mut payload = text.as_bytes().to_vec();
+        payload.extend_from_slice(&[0; 4]);
+        payload.truncate(payload.len() / 4 * 4);
+        let words = 7 + payload.len() / 4;
+        let header = 0x3850_0000 | u32::try_from(words).unwrap_or(0);
+        let mut packet: Vec<u8> = [header, 0x800, 0x0000_1C2D, 0x534C_FFFF, 0, 0, 0]
+            .iter()
+            .flat_map(|w| w.to_be_bytes())
+            .collect();
+        packet.extend_from_slice(&payload);
+        packet
+    }
+
+    #[test]
+    fn reads_discovery_broadcasts() {
+        let heard = discovery(&discovery_packet(
+            "model=FLEX-6600 serial=1234-5678-9012 version=3.4.35 nickname=Field_Lab \
+             callsign=K9KSU ip=192.168.1.50 port=4992 status=Available",
+        ));
+        assert_eq!(
+            heard,
+            Some(Discovered {
+                model: "FLEX-6600".to_owned(),
+                serial: "1234-5678-9012".to_owned(),
+                name: Some("Field Lab".to_owned()),
+                address: "192.168.1.50:4992"
+                    .parse()
+                    .unwrap_or_else(|_| unreachable!()),
+            })
+        );
+        for bad in [
+            "model=FLEX-6600 ip=192.168.1.50",
+            "model=FLEX-6600 serial=1 ip=nowhere",
+            "model=FLEX\u{1b}[2J serial=1 ip=192.168.1.50",
+            "serial=1 ip=192.168.1.50",
+        ] {
+            assert_eq!(discovery(&discovery_packet(bad)), None, "{bad}");
+        }
+        // A meter packet is not a discovery broadcast.
+        let mut meters = discovery_packet("model=FLEX-6600 serial=1 ip=10.0.0.2");
+        meters[15] = 0x02;
+        meters[14] = 0x80;
+        assert_eq!(discovery(&meters), None);
+    }
+
+    #[test]
+    fn hears_each_radio_once() {
+        let (Ok(listener), Ok(sender)) = (
+            std::net::UdpSocket::bind("127.0.0.1:0"),
+            std::net::UdpSocket::bind("127.0.0.1:0"),
+        ) else {
+            return;
+        };
+        let Ok(to) = listener.local_addr() else {
+            return;
+        };
+        for text in [
+            "model=FLEX-6600 serial=A1 ip=192.168.1.50",
+            "model=FLEX-6600 serial=A1 ip=192.168.1.50",
+            "model=FLEX-8400 serial=B2 ip=192.168.1.51",
+        ] {
+            let _ = sender.send_to(&discovery_packet(text), to);
+        }
+        let heard = heard_on(&listener, Duration::from_millis(400)).unwrap_or_default();
+        let serials: Vec<&str> = heard.iter().map(|r| r.serial.as_str()).collect();
+        assert_eq!(serials, ["A1", "B2"]);
+    }
+
+    #[test]
+    fn reads_the_serial_number() {
+        let info = "model=\"FLEX-6700\",chassis_serial=\"K00000000\",mbtrx_serial=\"B28154-07 LF\"";
+        assert_eq!(serial_from_info(info), Some("K00000000".to_owned()));
+        assert_eq!(serial_from_info("chassis_serial=\"K0;00\""), None);
+        assert_eq!(serial_from_info("model=x"), None);
     }
 
     #[test]
