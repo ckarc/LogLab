@@ -6,6 +6,8 @@
 //! Two programs are built from this library: `loglab-agent`, the LabLog
 //! Station Agent, and `RadioAgent`, the same radio side standing alone
 //! with no server (see [`product`]). Each one's `main` calls [`start`].
+//! A third, `FlexTest`, is a small tray for trying FlexRadio work before it
+//! joins the Agent's tray (see [`flex_test`]).
 //!
 //! The Agent owns the radios: it is the only component that opens a radio's
 //! port or control connection, it presents every radio through one common rig
@@ -46,6 +48,9 @@ mod flex;
 mod flex_find;
 mod flex_pretend;
 mod flex_settings;
+pub mod flex_test;
+#[cfg(windows)]
+mod flex_test_windows;
 mod hamlib;
 #[cfg(any(windows, test))]
 mod ini;

@@ -23,6 +23,12 @@ path = "src/main.rs"
 name = "RadioAgent"
 path = "src/bin/radioagent.rs"
 
+# FlexTest: a small tray for trying FlexRadio work one piece at a time,
+# before it joins the Agent's tray (src/flex_test.rs).
+[[bin]]
+name = "FlexTest"
+path = "src/bin/flextest.rs"
+
 [dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1", features = ["derive"] }
