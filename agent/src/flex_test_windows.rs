@@ -2,9 +2,9 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `FlexTest`'s tray on Windows: an icon by the clock, a menu with Quit, and
-//! a notice each time SmartSDR opens or closes on this computer (see
-//! `flex_test`). The icon is grey while SmartSDR is closed and green while
-//! it is open. Each notice is also written, with the time in UTC, to
+//! a notice each time SmartSDR or a station app opens or closes on this
+//! computer (see `flex_test`). The icon is grey while SmartSDR is closed and
+//! green while it is open. Each notice is also written, with the time in UTC, to
 //! `FlexTest.log` beside the program.
 //!
 //! The icon, menu and notices come from `native-windows-gui` (Windows'
@@ -26,7 +26,7 @@ use std::time::{Duration, SystemTime};
 
 use native_windows_gui as nwg;
 
-use crate::flex_test::{LOOK_EVERY_SECONDS, SMARTSDR, Watch, listed};
+use crate::flex_test::{LOOK_EVERY_SECONDS, Seen, Watch, first_notice, running};
 
 /// Microsoft Learn, "Process Creation Flags": the process is a console
 /// application that is being run without a console window.
@@ -35,25 +35,24 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TITLE: &str = "FlexTest";
 /// Its log's file name, beside it.
 const LOG: &str = "FlexTest.log";
+/// Windows' tooltip holds at most 127 characters.
+const TIP_MOST: usize = 120;
 /// The icons' colours: grey while SmartSDR is closed, green while open
 /// (the Agent tray's waiting and receiving colours).
 const CLOSED_COLOUR: [u8; 3] = [0x8a, 0x8a, 0x8a];
 const OPEN_COLOUR: [u8; 3] = [0x2e, 0xa0, 0x43];
 
-/// Whether SmartSDR is running on this computer, asking `tasklist`.
-fn smartsdr_running() -> Result<bool, String> {
+/// One look's answer: the program files' names running, or why it failed.
+type Look = Result<Vec<String>, String>;
+
+/// The program files' names running on this computer, asking `tasklist`.
+fn running_now() -> Look {
     let answer = Command::new("tasklist")
-        .args([
-            "/FI",
-            &format!("IMAGENAME eq {SMARTSDR}"),
-            "/NH",
-            "/FO",
-            "CSV",
-        ])
+        .args(["/NH", "/FO", "CSV"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| format!("can't list running programs: {error}"))?;
-    Ok(listed(&String::from_utf8_lossy(&answer.stdout), SMARTSDR))
+    Ok(running(&String::from_utf8_lossy(&answer.stdout)))
 }
 
 /// Holds a file beside FlexTest that no other process may open while it
@@ -184,11 +183,11 @@ pub fn run() -> Result<(), String> {
 
     // Looks for SmartSDR on its own thread, so a slow `tasklist` never
     // holds up the tray, and wakes the tray with each answer.
-    let answers: Arc<Mutex<Vec<Result<bool, String>>>> = Arc::default();
+    let answers: Arc<Mutex<Vec<Look>>> = Arc::default();
     let (to_tray, wake) = (Arc::clone(&answers), face.wake.sender());
     std::thread::spawn(move || {
         loop {
-            let answer = smartsdr_running();
+            let answer = running_now();
             if let Ok(mut answers) = to_tray.lock() {
                 answers.push(answer);
             }
@@ -219,18 +218,34 @@ pub fn run() -> Result<(), String> {
                     .unwrap_or_default();
                 for answer in taken {
                     match answer {
-                        Ok(open) => {
+                        Ok(names) => {
                             last_error.borrow_mut().clear();
-                            if let Some(change) = watch.borrow_mut().saw(open) {
-                                let text = change.notice();
-                                face.tray.set_icon(if change.open() {
+                            let mut watch = watch.borrow_mut();
+                            // Several changes in one look make one notice:
+                            // a newer notice replaces the one showing.
+                            let text = match watch.saw(&names) {
+                                Seen::First(open) => first_notice(&open),
+                                Seen::Changes(changes) => changes
+                                    .iter()
+                                    .map(|change| change.notice())
+                                    .collect::<Vec<_>>()
+                                    .join("\n"),
+                            };
+                            if !text.is_empty() {
+                                face.tray.set_icon(if watch.smartsdr_open() {
                                     &face.open
                                 } else {
                                     &face.closed
                                 });
-                                face.tray.set_tip(&format!("{TITLE}\n{text}"));
-                                face.notify(text);
-                                log(log_file.borrow_mut().as_mut(), text);
+                                let mut tip = format!("{TITLE}\n{text}");
+                                if tip.chars().count() > TIP_MOST {
+                                    tip = tip.chars().take(TIP_MOST).collect();
+                                }
+                                face.tray.set_tip(&tip);
+                                face.notify(&text);
+                                for line in text.lines() {
+                                    log(log_file.borrow_mut().as_mut(), line);
+                                }
                             }
                         }
                         Err(why) => {
