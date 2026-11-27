@@ -29,6 +29,12 @@ path = "src/bin/radioagent.rs"
 name = "FlexTest"
 path = "src/bin/flextest.rs"
 
+# SoundCardTest: plugs in the Agent's own sound card, "LabLog Radio", and
+# checks a tone comes back through it (src/sound_card.rs). Research step 1.
+[[bin]]
+name = "SoundCardTest"
+path = "src/bin/soundcardtest.rs"
+
 [dependencies]
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1", features = ["derive"] }
@@ -43,6 +49,10 @@ ureq = { version = "3.4.2", default-features = false, features = ["json"] }
 # which needs SO_REUSEADDR (and SO_REUSEPORT on Unix) set before the bind.
 # MIT OR Apache-2.0.
 socket2 = { version = "0.6.5", features = ["all"] }
+# The Agent's own sound card: a USB Audio Class 2.0 device served over
+# USB/IP, which usbip-win2's signed driver plugs into Windows (research,
+# src/sound_card.rs). Pinned to a reviewed commit; not on crates.io. MIT.
+usbip-audio = { git = "https://github.com/network-audio/usbip-audio", rev = "58032ab0664ffec1d0c178f40a3a69359c21f597" }
 
 # Sound devices, for routing a radio's audio. Windows only for now: FieldLab's
 # workstations are Windows, and Linux's backend needs system ALSA libraries.
