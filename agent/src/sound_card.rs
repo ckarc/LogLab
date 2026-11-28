@@ -170,10 +170,12 @@ pub struct Feed {
     source: Mutex<Option<Fed>>,
 }
 
-/// What the card's input is connected to.
+/// What the card is connected to.
 #[cfg(any(windows, test))]
 struct Fed {
     buffer: Arc<Buffer>,
+    /// Where what Windows plays to the card goes, mixed to mono.
+    transmit: Arc<Buffer>,
     resampler: Resampler,
     /// When Windows last recorded from the card.
     recorded: Option<std::time::Instant>,
@@ -189,12 +191,14 @@ const AWAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[cfg(any(windows, test))]
 impl Feed {
-    /// From now on the input carries what arrives in `buffer`.
-    pub fn connect(&self, buffer: Arc<Buffer>) {
+    /// From now on the input carries what arrives in `buffer`, and what
+    /// Windows plays to the card goes into `transmit`, mixed to mono.
+    pub fn connect(&self, buffer: Arc<Buffer>, transmit: Arc<Buffer>) {
         if let Ok(mut source) = self.source.lock() {
             *source = Some(Fed {
                 resampler: Resampler::new(Arc::clone(&buffer), RATE),
                 buffer,
+                transmit,
                 recorded: None,
             });
         }
@@ -219,6 +223,18 @@ impl Feed {
     }
 }
 
+/// A frame as the card carries it, mixed to one sample from -1.0 to 1.0.
+#[cfg(any(windows, test))]
+#[must_use]
+pub fn from_card_mix(frame: &[i32]) -> f32 {
+    // A frame has at most 255 channels: its sum fits an f64 exactly, and
+    // the mean narrows to f32 by rounding only.
+    let sum: f64 = frame.iter().map(|&s| f64::from(s)).sum();
+    #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+    let mean = (sum / frame.len().max(1) as f64 / f64::from(i32::MAX)) as f32;
+    mean
+}
+
 /// A sample from -1.0 to 1.0 as the card carries it: 24 bits at the top
 /// of an `i32`.
 #[cfg(any(windows, test))]
@@ -232,7 +248,16 @@ pub fn to_card(sample: f32) -> i32 {
 
 #[cfg(any(windows, test))]
 impl Uac2Streams for Feed {
-    fn playback(&self, _frame: u64, _samples: &[i32]) {}
+    fn playback(&self, _frame: u64, samples: &[i32]) {
+        let Ok(source) = self.source.lock() else {
+            return;
+        };
+        if let Some(fed) = source.as_ref() {
+            let channels = usize::from(CHANNELS);
+            fed.transmit
+                .push(samples.chunks(channels).map(from_card_mix));
+        }
+    }
 
     fn capture(&self, _frame: u64, samples: &mut [i32]) {
         let Ok(mut source) = self.source.lock() else {
@@ -597,7 +622,11 @@ mod tests {
         // cushion, comes out at 48 kHz on both channels.
         let buffer = crate::audio::Buffer::new(24_000);
         buffer.push(std::iter::repeat_n(0.5, 24_000));
-        feed.connect(std::sync::Arc::clone(&buffer));
+        let transmit = crate::audio::Buffer::new(48_000);
+        feed.connect(
+            std::sync::Arc::clone(&buffer),
+            std::sync::Arc::clone(&transmit),
+        );
         let mut recorded = vec![0; 2 * 960];
         feed.capture(0, &mut recorded);
         let half = super::to_card(0.5);
@@ -616,7 +645,10 @@ mod tests {
     fn an_app_that_starts_recording_hears_now_not_a_backlog() {
         let feed = super::Feed::default();
         let buffer = crate::audio::Buffer::new(24_000);
-        feed.connect(std::sync::Arc::clone(&buffer));
+        feed.connect(
+            std::sync::Arc::clone(&buffer),
+            crate::audio::Buffer::new(48_000),
+        );
         // Two seconds came in while nothing recorded.
         buffer.push(std::iter::repeat_n(0.5, 48_000));
         let mut recorded = vec![0; 2 * 48];
@@ -628,6 +660,24 @@ mod tests {
             "{left:?} left"
         );
         assert_eq!(buffer.dropped(), 0);
+    }
+
+    #[test]
+    fn what_windows_plays_goes_to_transmit_mixed_to_mono() {
+        let feed = super::Feed::default();
+        let transmit = crate::audio::Buffer::new(48_000);
+        // Nothing connected: thrown away.
+        feed.playback(0, &[i32::MAX; 4]);
+        assert_eq!(transmit.level(), std::time::Duration::ZERO);
+        feed.connect(
+            crate::audio::Buffer::new(24_000),
+            std::sync::Arc::clone(&transmit),
+        );
+        let half = super::to_card(0.5);
+        feed.playback(0, &[half, half, half, -half, 0, 0]);
+        // Three frames: 0.5, 0.0, 0.0; its peak is the first.
+        assert_eq!(transmit.take_peak_dbfs().map(f64::round), Some(-6.0));
+        assert!((super::from_card_mix(&[half, -half])).abs() < 1e-6);
     }
 
     #[test]

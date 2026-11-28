@@ -1,10 +1,17 @@
 // SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! The receive audio of the slice SmartSDR has open on this computer,
-//! carried by `FlexTest` itself into "LabLog Radio" (milestone 2 of the
-//! sound card plan). There is no DAX program. It never transmits: this
-//! connection creates no transmit stream and never keys the radio.
+//! The audio of the slice SmartSDR has open on this computer, carried by
+//! `FlexTest` itself between the radio and "LabLog Radio": its receive
+//! audio into the card's line input (milestone 2 of the sound card plan),
+//! and what apps play to the card's speakers to the radio as its DAX
+//! transmit audio (milestone 3). There is no DAX program.
+//!
+//! It never keys the radio (Principle IX): the transmit audio is only
+//! what the radio uses while something else keys it with DAX as its
+//! transmit source. Our transmit stream is made with `stream create
+//! type=dax_tx`; on a bound connection the FLEX-8400 used such a stream's
+//! audio on the air at FL-1 on 2026-11-22.
 //!
 //! A FlexRadio sends a slice's audio over the network to any client that
 //! asks for it (`stream create type=dax_rx dax_channel=N`). The slice has
@@ -41,16 +48,23 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::audio::Buffer;
+use crate::audio::{Buffer, Resampler};
 use crate::flex::{self, Line};
 use crate::flex_find::{ClientNews, Discovered, Look, client_news};
 
 /// The radio's audio rate, in the reduced form asked for.
 pub const RATE: u32 = 24_000;
+/// The rate the transmit audio arrives at: the card's.
+pub const TRANSMIT_FROM_RATE: u32 = crate::sound_card::RATE;
 /// Samples in one audio packet, in the reduced form.
 pub const PACKET_SAMPLES: usize = 128;
 /// The packet class code of reduced-bandwidth DAX audio.
 const AUDIO_CLASS: u16 = 0x0123;
+/// The class ID words of an audio packet: FlexRadio's OUI, then its
+/// information class and the packet class.
+const CLASS_ID: [u32; 2] = [0x0000_1C2D, 0x534C_0123];
+/// The radio's UDP port for VITA-49 streams.
+const VITA_PORT: u16 = 4991;
 /// The DAX channel used.
 pub const CHANNEL: u8 = 1;
 /// How long connecting, and each answer, may take.
@@ -82,6 +96,36 @@ pub fn samples(packet: &[u8], stream: u32) -> Option<Vec<f32>> {
             .map(|pair| f32::from(i16::from_be_bytes([pair[0], pair[1]])) / 32768.0)
             .collect(),
     )
+}
+
+/// One transmit audio packet for the radio: `samples` (at most
+/// [`PACKET_SAMPLES`]) on `stream`, numbered `count` (only its low four
+/// bits are sent). Laid out as nDAX's: IF data with a stream ID, class ID
+/// present, timestamps "other" and "sample count", all zero.
+#[must_use]
+pub fn packet(stream: u32, count: u8, samples: &[f32]) -> Vec<u8> {
+    let samples = &samples[..samples.len().min(PACKET_SAMPLES)];
+    let words = 7 + samples.len() / 2;
+    let header =
+        0x18D0_0000 | (u32::from(count & 0x0F) << 16) | u32::try_from(words).unwrap_or(0) & 0xFFFF;
+    let mut packet: Vec<u8> = [header, stream, CLASS_ID[0], CLASS_ID[1], 0, 0, 0]
+        .iter()
+        .flat_map(|word| word.to_be_bytes())
+        .collect();
+    for sample in samples {
+        packet.extend_from_slice(&to_i16(*sample).to_be_bytes());
+    }
+    packet
+}
+
+/// A sample from -1.0 to 1.0 as a 16-bit one, clipped.
+#[allow(clippy::cast_possible_truncation)]
+fn to_i16(sample: f32) -> i16 {
+    // Clamped first, so the cast loses nothing; not a number is silence.
+    if sample.is_nan() {
+        return 0;
+    }
+    (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16
 }
 
 /// A stream number as the radio answers `stream create` with it: hex,
@@ -159,14 +203,21 @@ pub fn set_up_commands(slice: &OurSlice, port: u16) -> Vec<String> {
         commands.push(format!("slice set {} dax={CHANNEL}", slice.number));
     }
     commands.push(format!("stream create type=dax_rx dax_channel={CHANNEL}"));
+    commands.push(TX_STREAM.to_owned());
     commands
 }
 
-/// The commands that stop it and put the slice back: the stream goes, and
+/// The command that makes our transmit stream.
+const TX_STREAM: &str = "stream create type=dax_tx";
+
+/// The commands that stop it and put the slice back: the streams go, and
 /// the slice returns to the channel it was on, if it was moved.
 #[must_use]
-pub fn put_back_commands(slice: &OurSlice, stream: u32) -> Vec<String> {
-    let mut commands = vec![format!("stream remove 0x{stream:08X}")];
+pub fn put_back_commands(slice: &OurSlice, streams: Streams) -> Vec<String> {
+    let mut commands = vec![
+        format!("stream remove 0x{:08X}", streams.tx),
+        format!("stream remove 0x{:08X}", streams.rx),
+    ];
     if slice.dax_before != CHANNEL.to_string() {
         commands.push(format!(
             "slice set {} dax={}",
@@ -278,27 +329,39 @@ impl Control {
     }
 }
 
-/// What the receive audio has done so far.
+/// The radio's numbers for our two audio streams.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Streams {
+    pub rx: u32,
+    pub tx: u32,
+}
+
+/// What the audio has done so far.
 #[derive(Default)]
 pub struct Counts {
-    /// Audio packets believed.
+    /// Receive audio packets believed.
     pub packets: AtomicU64,
     /// Packets from the radio that weren't ours, or were malformed.
     pub refused: AtomicU64,
+    /// Transmit audio packets sent.
+    pub sent: AtomicU64,
 }
 
-/// The slice's receive audio coming in, until [`FlexRx::stop`].
+/// The slice's audio coming in and going out, until [`FlexRx::stop`].
 pub struct FlexRx {
     /// The slice heard.
     pub slice: OurSlice,
-    /// The radio's number for the audio stream.
-    pub stream: u32,
-    /// Where the audio goes, at [`RATE`].
+    /// The radio's numbers for the audio streams.
+    pub streams: Streams,
+    /// Where the receive audio goes, at [`RATE`].
     pub buffer: Arc<Buffer>,
-    /// What has come in.
+    /// Where the transmit audio comes from, at [`TRANSMIT_FROM_RATE`].
+    pub transmit: Arc<Buffer>,
+    /// What has come in and gone out.
     pub counts: Arc<Counts>,
     running: Arc<AtomicBool>,
     hearing: Option<JoinHandle<()>>,
+    sending: Option<JoinHandle<()>>,
     /// The connection's thread, which puts the slice back as it ends.
     talking: Option<JoinHandle<Vec<String>>>,
 }
@@ -322,6 +385,7 @@ impl FlexRx {
             .map(|client| client.client_id.clone())
             .ok_or("SmartSDR on this computer isn't among the radio's clients")?;
         control.ask(&format!("client bind client_id={client_id}"))?;
+        control.look.bound = Some(owner);
         control.ask("sub slice all")?;
         let slice = our_slice(&control.look.slices, owner)?;
 
@@ -331,16 +395,23 @@ impl FlexRx {
             .set_read_timeout(Some(READ_WAIT))
             .map_err(|error| error.to_string())?;
         let port = socket.local_addr().map_err(|e| e.to_string())?.port();
-        let mut stream = None;
+        let (mut rx, mut tx) = (None, None);
         for command in set_up_commands(&slice, port) {
             let answer = control.ask(&command)?;
-            if command.starts_with("stream create") {
-                stream = stream_id(&answer);
+            if command == TX_STREAM {
+                tx = stream_id(&answer);
+            } else if command.starts_with("stream create") {
+                rx = stream_id(&answer);
             }
         }
-        let stream = stream.ok_or("the FlexRadio gave no audio stream number")?;
+        let streams = Streams {
+            rx: rx.ok_or("the FlexRadio gave no receive stream number")?,
+            tx: tx.ok_or("the FlexRadio gave no transmit stream number")?,
+        };
+        let sender = socket.try_clone().map_err(|error| error.to_string())?;
 
         let buffer = Buffer::new(RATE);
+        let transmit = Buffer::new(TRANSMIT_FROM_RATE);
         let counts = Arc::new(Counts::default());
         let running = Arc::new(AtomicBool::new(true));
         let hearing = {
@@ -350,20 +421,33 @@ impl FlexRx {
                 Arc::clone(&running),
             );
             std::thread::spawn(move || {
-                hear(&socket, radio.ip(), stream, &buffer, &counts, &running);
+                hear(&socket, radio.ip(), streams.rx, &buffer, &counts, &running);
+            })
+        };
+        let sending = {
+            let (transmit, counts, running) = (
+                Arc::clone(&transmit),
+                Arc::clone(&counts),
+                Arc::clone(&running),
+            );
+            let to = SocketAddr::new(radio.ip(), VITA_PORT);
+            std::thread::spawn(move || {
+                send(&sender, to, streams.tx, transmit, &counts, &running);
             })
         };
         let talking = {
             let (slice, running) = (slice.clone(), Arc::clone(&running));
-            std::thread::spawn(move || keep_alive(control, &slice, stream, &running))
+            std::thread::spawn(move || keep_alive(control, &slice, streams, &running))
         };
         Ok(Self {
             slice,
-            stream,
+            streams,
             buffer,
+            transmit,
             counts,
             running,
             hearing: Some(hearing),
+            sending: Some(sending),
             talking: Some(talking),
         })
     }
@@ -376,8 +460,11 @@ impl FlexRx {
 
     fn halt(&mut self) -> Vec<String> {
         self.running.store(false, Ordering::SeqCst);
-        if let Some(hearing) = self.hearing.take() {
-            let _ = hearing.join();
+        for thread in [self.hearing.take(), self.sending.take()]
+            .into_iter()
+            .flatten()
+        {
+            let _ = thread.join();
         }
         self.talking
             .take()
@@ -426,13 +513,49 @@ fn hear(
     }
 }
 
+/// Sends what apps play to the card to the radio, one packet each
+/// [`PACKET_SAMPLES`] at [`RATE`], until `running` turns false. When apps
+/// play nothing, the packets are silence.
+fn send(
+    socket: &UdpSocket,
+    to: SocketAddr,
+    stream: u32,
+    from: Arc<Buffer>,
+    counts: &Counts,
+    running: &AtomicBool,
+) {
+    let mut resampler = Resampler::new(from, RATE);
+    let mut samples = vec![0.0_f32; PACKET_SAMPLES];
+    let every = Duration::from_micros(
+        u64::try_from(PACKET_SAMPLES).unwrap_or(0) * 1_000_000 / u64::from(RATE),
+    );
+    let mut count: u8 = 0;
+    let mut next = Instant::now();
+    while running.load(Ordering::SeqCst) {
+        resampler.fill(&mut samples);
+        if socket.send_to(&packet(stream, count, &samples), to).is_ok() {
+            counts.sent.fetch_add(1, Ordering::Relaxed);
+        }
+        count = count.wrapping_add(1);
+        // Kept to the radio's rate on average: each packet is due a
+        // packet's time after the last, however late this one ran.
+        next += every;
+        let now = Instant::now();
+        if next > now {
+            std::thread::sleep(next - now);
+        } else if now - next > every * 8 {
+            next = now;
+        }
+    }
+}
+
 /// Keeps the connection open, asking the radio now and then whether it is
 /// there, until `running` turns false or the radio goes; then puts the
 /// slice back. What it did, for the log.
 fn keep_alive(
     mut control: Control,
     slice: &OurSlice,
-    stream: u32,
+    streams: Streams,
     running: &AtomicBool,
 ) -> Vec<String> {
     let mut pinged = Instant::now();
@@ -456,7 +579,7 @@ fn keep_alive(
             }
         }
     }
-    put_back_commands(slice, stream)
+    put_back_commands(slice, streams)
         .into_iter()
         .map(|command| match control.ask(&command) {
             Ok(_) => format!("Flex: {command}"),
@@ -497,8 +620,8 @@ pub fn pick(
 #[cfg(test)]
 mod tests {
     use super::{
-        FlexRx, OurSlice, PACKET_SAMPLES, answer_to, our_slice, pick, put_back_commands, samples,
-        set_up_commands, stream_id,
+        FlexRx, OurSlice, PACKET_SAMPLES, Streams, answer_to, our_slice, pick, put_back_commands,
+        samples, set_up_commands, stream_id,
     };
     use crate::flex_find::{Discovered, Seen};
     use std::collections::BTreeMap;
@@ -545,13 +668,14 @@ mod tests {
                         );
                     }
                     "stream create type=dax_rx dax_channel=1" => answer = "0x04000008".to_owned(),
+                    "stream create type=dax_tx" => answer = "0x84000000".to_owned(),
                     _ => {}
                 }
                 if let Some(udp) = command.strip_prefix("client udpport ") {
                     port = udp.parse().unwrap_or(0);
                 }
                 let _ = writeln!(writer, "R{seq}|0|{answer}");
-                if command.starts_with("stream create") {
+                if command.starts_with("stream create type=dax_rx") {
                     let tone: Vec<i16> = (0..128)
                         .map(|n| if n % 2 == 0 { 8000 } else { -8000 })
                         .collect();
@@ -574,7 +698,13 @@ mod tests {
         let (address, radio) = pretend_radio().ok_or("no pretend radio")?;
         let rx = FlexRx::start(address, 0x38F7_B742)?;
         assert_eq!(rx.slice.letter, "A");
-        assert_eq!(rx.stream, 0x0400_0008);
+        assert_eq!(
+            rx.streams,
+            Streams {
+                rx: 0x0400_0008,
+                tx: 0x8400_0000
+            }
+        );
         let deadline = Instant::now() + Duration::from_secs(5);
         while rx.counts.packets.load(std::sync::atomic::Ordering::Relaxed) == 0 {
             assert!(Instant::now() < deadline, "no audio came in");
@@ -585,10 +715,21 @@ mod tests {
         // packet was refused.
         let level = rx.buffer.level();
         assert!(level > Duration::from_millis(5) && level < Duration::from_millis(6));
+        // Transmit packets go out all along, silence when nothing plays;
+        // what apps play is taken from `transmit`.
+        rx.transmit.push(std::iter::repeat_n(0.25, 48_000 / 5));
+        while rx.counts.sent.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            assert!(Instant::now() < deadline, "no transmit audio went out");
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let done = rx.stop();
         assert_eq!(
             done,
-            ["Flex: stream remove 0x04000008", "Flex: slice set 0 dax=0"]
+            [
+                "Flex: stream remove 0x84000000",
+                "Flex: stream remove 0x04000008",
+                "Flex: slice set 0 dax=0"
+            ]
         );
         let heard = radio.join().map_err(|_| "the pretend radio failed")?;
         assert_eq!(
@@ -604,6 +745,8 @@ mod tests {
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
                 "stream create type=dax_rx dax_channel=1",
+                "stream create type=dax_tx",
+                "stream remove 0x84000000",
                 "stream remove 0x04000008",
                 "slice set 0 dax=0",
             ]
@@ -684,6 +827,25 @@ mod tests {
     }
 
     #[test]
+    fn transmit_packets_carry_the_samples_in_the_radios_layout() {
+        let tone: Vec<f32> = (0..PACKET_SAMPLES)
+            .map(|n| (f32::from(u16::try_from(n).unwrap_or(0)) / 20.0).sin() * 0.5)
+            .collect();
+        let sent = super::packet(0x8400_0000, 17, &tone);
+        // Seven header words, then two bytes a sample; count 17 sends 1.
+        assert_eq!(sent.len(), 28 + PACKET_SAMPLES * 2);
+        assert_eq!(&sent[..4], &[0x18, 0xD1, 0x00, 71]);
+        let back = samples(&sent, 0x8400_0000).unwrap_or_default();
+        assert_eq!(back.len(), PACKET_SAMPLES);
+        assert!(back.iter().zip(&tone).all(|(a, b)| (a - b).abs() < 0.001));
+        // Loud samples are clipped, not wrapped; not a number is silence.
+        let loud =
+            samples(&super::packet(1, 0, &[2.0, -2.0, f32::NAN, 0.0]), 1).unwrap_or_default();
+        assert!(loud[0] > 0.99 && loud[1] < -0.99);
+        assert!(loud[2].abs() < f32::EPSILON);
+    }
+
+    #[test]
     fn reads_the_radios_answers() {
         assert_eq!(stream_id("0x04000008"), Some(0x0400_0008));
         assert_eq!(stream_id("4000009"), Some(0x0400_0009));
@@ -748,11 +910,20 @@ mod tests {
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
                 "stream create type=dax_rx dax_channel=1",
+                "stream create type=dax_tx",
             ]
         );
+        let streams = Streams {
+            rx: 0x0400_0008,
+            tx: 0x8400_0000,
+        };
         assert_eq!(
-            put_back_commands(&moved, 0x0400_0008),
-            ["stream remove 0x04000008", "slice set 0 dax=0"]
+            put_back_commands(&moved, streams),
+            [
+                "stream remove 0x84000000",
+                "stream remove 0x04000008",
+                "slice set 0 dax=0"
+            ]
         );
         let already = OurSlice {
             dax_before: "1".to_owned(),
@@ -764,11 +935,12 @@ mod tests {
                 "client udpport 50000",
                 "client set send_reduced_bw_dax=true",
                 "stream create type=dax_rx dax_channel=1",
+                "stream create type=dax_tx",
             ]
         );
         assert_eq!(
-            put_back_commands(&already, 0x0400_0008),
-            ["stream remove 0x04000008"]
+            put_back_commands(&already, streams),
+            ["stream remove 0x84000000", "stream remove 0x04000008"]
         );
     }
 }

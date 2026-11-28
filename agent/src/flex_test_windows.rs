@@ -347,13 +347,14 @@ impl Tray {
         for started in taken {
             match (started, &self.flex) {
                 (Ok((rx, model)), Flex::Starting) => {
-                    self.feed.connect(Arc::clone(&rx.buffer));
+                    self.feed
+                        .connect(Arc::clone(&rx.buffer), Arc::clone(&rx.transmit));
                     self.log(&format!(
-                        "Flex audio stream 0x{:08X}, slice {} (was on DAX channel {}).",
-                        rx.stream, rx.slice.number, rx.slice.dax_before
+                        "Flex audio streams: receive 0x{:08X}, transmit 0x{:08X}; slice {} (was on DAX channel {}).",
+                        rx.streams.rx, rx.streams.tx, rx.slice.number, rx.slice.dax_before
                     ));
                     let said = format!(
-                        "Hearing slice {} of the {model} in \"Line ({CARD})\". No transmit yet.",
+                        "Hearing slice {} of the {model} in \"Line ({CARD})\". What apps play to \"Speakers ({CARD})\" goes to the radio when it transmits with DAX; FlexTest never keys it.",
                         rx.slice.letter
                     );
                     self.flex = Flex::On {
@@ -392,18 +393,24 @@ impl Tray {
                 .buffer
                 .take_peak_dbfs()
                 .map_or_else(|| "silent".to_owned(), |db| format!("peak {db:.1} dBFS"));
+            let tx_peak = rx.transmit.take_peak_dbfs().map_or_else(
+                || "apps played silence".to_owned(),
+                |db| format!("apps' peak {db:.1} dBFS"),
+            );
             let listening = if self.feed.recording() {
                 "an app is recording"
             } else {
                 "no app recording"
             };
             let line = format!(
-                "Flex audio: {listening}; {} packets so far, {peak}, {} ms waiting, {} dropouts, {} dropped, {} refused",
+                "Flex audio: {listening}; {} packets in, {peak}, {} ms waiting, {} dropouts, {} dropped, {} refused; {} packets out, {tx_peak}, {} ms waiting to go",
                 rx.counts.packets.load(std::sync::atomic::Ordering::Relaxed),
                 rx.buffer.level().as_millis(),
                 rx.buffer.gaps(),
                 rx.buffer.dropped(),
                 rx.counts.refused.load(std::sync::atomic::Ordering::Relaxed),
+                rx.counts.sent.load(std::sync::atomic::Ordering::Relaxed),
+                rx.transmit.level().as_millis(),
             );
             self.log(&line);
         }
