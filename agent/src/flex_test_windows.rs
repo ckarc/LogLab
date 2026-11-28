@@ -20,6 +20,16 @@
 //! never ticks itself. Once a minute, while on, the log gets the audio's
 //! level and how the buffer is doing.
 //!
+//! Rig control: while "Use FlexRadio" is on, programs can also control the
+//! slice through Hamlib's `rigctld` protocol on 127.0.0.1:4532 (WSJT-X:
+//! Rig "Hamlib NET rigctl", PTT method CAT): frequency, mode, and keying
+//! the transmitter, with the Agent's PTT rules (`rigctld_server::Shared`:
+//! one program keyed at a time, unkeyed if it goes, at most a minute at
+//! once). The connection that does it is bound to SmartSDR on this computer
+//! and keeps to its slice only (`flex::FlexRadio::bind_to`). While on, the
+//! transmitter takes its audio from DAX (FlexTest's own stream), as
+//! SmartSDR's DAX button shows; unticking puts that back as it was.
+//!
 //! The icon, menu and notices come from `native-windows-gui` (Windows'
 //! `Shell_NotifyIconW` and popup menus), as in the Agent's own tray. Windows'
 //! `tasklist` is asked which programs run, started with `CREATE_NO_WINDOW`
@@ -29,19 +39,23 @@
 use std::cell::RefCell;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
+use std::net::SocketAddr;
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::rc::Rc;
+use std::sync::mpsc::{self, Receiver};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use native_windows_gui as nwg;
 
+use crate::flex::FlexRadio;
 use crate::flex_find::{LISTEN, discover, here_toward};
 use crate::flex_rx::{FlexRx, pick};
 use crate::flex_test::{LOOK_EVERY_SECONDS, Seen, Watch, first_notice, running};
+use crate::rigctld_server::{Server, Shared};
 use crate::sound_card::{Feed, NAME as CARD};
 use crate::sound_card_windows::Card;
 
@@ -246,21 +260,71 @@ fn look_for_programs(answers: Arc<Mutex<Vec<Look>>>, wake: nwg::NoticeSender) {
     });
 }
 
-/// The radio's audio starting, or why it couldn't, with the radio's model.
-type Started = Result<(FlexRx, String), String>;
+/// Where programs reach the slice's rig control.
+const RIG_AT: ([u8; 4], u16) = ([127, 0, 0, 1], 4532);
+/// How long a program may keep the radio keyed at once (the Agent's
+/// default).
+const TX_LIMIT: Duration = Duration::from_mins(1);
 
-/// Finds the radio and starts its audio, on a thread of its own, then
-/// wakes the tray with the outcome.
+/// Programs' rig control of the slice, while "Use FlexRadio" is on.
+struct Rig {
+    /// Dropped first: no program can reach the radio after.
+    server: Server,
+    /// What programs did, for the log.
+    notes: Receiver<String>,
+}
+
+/// Opens a second connection to the radio, bound to SmartSDR's client
+/// like the audio's and kept to its slice, and serves it to programs.
+fn serve_rig(radio: SocketAddr, rx: &FlexRx) -> Result<Rig, String> {
+    let mut flex = FlexRadio::open(&radio.to_string()).map_err(|error| error.0)?;
+    flex.bind_to(&rx.client_id, rx.slice.number)
+        .map_err(|error| error.0)?;
+    let (notes, heard) = mpsc::channel();
+    let shared = Arc::new(Shared::with_transmit(Box::new(flex), TX_LIMIT).with_notes(notes));
+    let server = Server::start(SocketAddr::from(RIG_AT), shared)?;
+    Ok(Rig {
+        server,
+        notes: heard,
+    })
+}
+
+/// The radio's audio starting, or why it couldn't, with the radio's model,
+/// and programs' rig control or why it couldn't start.
+type Started = Result<(FlexRx, Result<Rig, String>, String), String>;
+
+/// Finds the radio and starts its audio and rig control, on a thread of its
+/// own, then wakes the tray with the outcome.
 fn start_flex(into: Arc<Mutex<Vec<Started>>>, wake: nwg::NoticeSender) {
     std::thread::spawn(move || {
         let started = discover(LISTEN)
             .and_then(|heard| pick(&heard, here_toward))
-            .and_then(|(radio, owner, model)| FlexRx::start(radio, owner).map(|rx| (rx, model)));
+            .and_then(|(radio, owner, model)| {
+                FlexRx::start(radio, owner).map(|rx| {
+                    let rig = serve_rig(radio, &rx);
+                    (rx, rig, model)
+                })
+            });
         if let Ok(mut into) = into.lock() {
             into.push(started);
         }
         wake.notice();
     });
+}
+
+/// Stops programs' rig control (unkeying the radio if a program has it
+/// keyed), then the audio, putting the slice back: what was done, for the
+/// log.
+fn stop_both(rx: impl Into<Box<FlexRx>>, rig: Option<Rig>) -> String {
+    let rx = *rx.into();
+    let mut done = Vec::new();
+    if let Some(rig) = rig {
+        drop(rig.server);
+        done.extend(rig.notes.try_iter());
+        done.push("Rig control stopped.".to_owned());
+    }
+    done.extend(rx.stop());
+    done.join("\n")
 }
 
 /// How often the log hears how the radio's audio is doing.
@@ -271,7 +335,8 @@ enum Flex {
     Off,
     Starting,
     On {
-        rx: FlexRx,
+        rx: Box<FlexRx>,
+        rig: Option<Rig>,
         told: std::time::Instant,
     },
 }
@@ -329,8 +394,8 @@ impl Tray {
 
     fn stop_flex(&mut self, why: &str) {
         self.feed.disconnect();
-        if let Flex::On { rx, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
-            let done = rx.stop().join("\n");
+        if let Flex::On { rx, rig, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
+            let done = stop_both(rx, rig);
             self.log(&done);
         }
         self.flex = Flex::Off;
@@ -346,25 +411,33 @@ impl Tray {
             .unwrap_or_default();
         for started in taken {
             match (started, &self.flex) {
-                (Ok((rx, model)), Flex::Starting) => {
+                (Ok((rx, rig, model)), Flex::Starting) => {
                     self.feed
                         .connect(Arc::clone(&rx.buffer), Arc::clone(&rx.transmit));
                     self.log(&format!(
-                        "Flex audio streams: receive 0x{:08X}, transmit 0x{:08X}; slice {} (was on DAX channel {}).",
-                        rx.streams.rx, rx.streams.tx, rx.slice.number, rx.slice.dax_before
+                        "Flex audio streams: receive 0x{:08X}, transmit 0x{:08X}; slice {} (was on DAX channel {}; transmit DAX was {}).",
+                        rx.streams.rx, rx.streams.tx, rx.slice.number, rx.slice.dax_before, rx.slice.tx_dax_before
                     ));
+                    let control = match &rig {
+                        Ok(rig) => format!(
+                            " Programs control it at {} (WSJT-X: Rig \"Hamlib NET rigctl\", PTT method CAT).",
+                            rig.server.address()
+                        ),
+                        Err(why) => format!(" Rig control couldn't start: {why}"),
+                    };
                     let said = format!(
-                        "Hearing slice {} of the {model} in \"Line ({CARD})\". What apps play to \"Speakers ({CARD})\" goes to the radio when it transmits with DAX; FlexTest never keys it.",
+                        "Hearing slice {} of the {model} in \"Line ({CARD})\"; what apps play to \"Speakers ({CARD})\" goes out when it transmits.{control}",
                         rx.slice.letter
                     );
                     self.flex = Flex::On {
-                        rx,
+                        rx: Box::new(rx),
+                        rig: rig.ok(),
                         told: std::time::Instant::now(),
                     };
                     self.say(&said);
                 }
-                (Ok((rx, _)), _) => {
-                    let done = rx.stop().join("\n");
+                (Ok((rx, rig, _)), _) => {
+                    let done = stop_both(rx, rig.ok());
                     self.log(&done);
                 }
                 (Err(why), Flex::Starting) => {
@@ -380,7 +453,17 @@ impl Tray {
     /// While the radio's audio is on: stops if the radio went, and now and
     /// then logs how it is doing.
     fn check_flex(&mut self) {
-        let Flex::On { rx, told } = &mut self.flex else {
+        let Flex::On { rig, .. } = &mut self.flex else {
+            return;
+        };
+        let notes: Vec<String> = rig
+            .as_ref()
+            .map(|rig| rig.notes.try_iter().collect())
+            .unwrap_or_default();
+        for note in notes {
+            self.log(&format!("Rig control: {note}"));
+        }
+        let Flex::On { rx, told, .. } = &mut self.flex else {
             return;
         };
         if !rx.connected() {
@@ -460,8 +543,8 @@ impl Tray {
     fn quit(&mut self) {
         if !matches!(self.flex, Flex::Off) {
             self.feed.disconnect();
-            if let Flex::On { rx, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
-                let done = rx.stop().join("\n");
+            if let Flex::On { rx, rig, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
+                let done = stop_both(rx, rig);
                 self.log(&done);
             }
         }

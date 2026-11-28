@@ -56,6 +56,8 @@ const OPEN_TIMEOUT: Duration = Duration::from_secs(5);
 const READ_WAIT: Duration = Duration::from_millis(20);
 /// How often the Agent asks the radio whether it is still there.
 const PING_EVERY: Duration = Duration::from_secs(5);
+/// How often a bound connection asks for the slices' status again.
+const SLICES_EVERY: Duration = Duration::from_secs(1);
 /// How long the radio may say nothing before the Agent gives up on it.
 const SILENCE: Duration = Duration::from_secs(15);
 /// How long the radio may take to answer an order.
@@ -334,6 +336,8 @@ struct Slice {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Board {
     slices: BTreeMap<u8, Slice>,
+    /// The one slice the Agent keeps to, once told ([`FlexRadio::bind_to`]).
+    only: Option<u8>,
     ptt: Option<bool>,
     /// The transmit interlock's state, as it last said it.
     interlock: Option<String>,
@@ -481,6 +485,9 @@ impl Board {
     /// The slice that matters: the transmit slice, else the active one,
     /// else the first.
     fn chosen(&self) -> Option<(&u8, &Slice)> {
+        if let Some(only) = self.only {
+            return self.slices.get_key_value(&only);
+        }
         self.slices
             .iter()
             .find(|(_, s)| s.transmit)
@@ -637,6 +644,10 @@ pub struct FlexRadio {
     swr: Option<(i16, Instant)>,
     /// Its settings, as the record and restore code takes them.
     definition: crate::rigdef::Definition,
+    /// Bound to SmartSDR's client ([`FlexRadio::bind_to`]).
+    bound: bool,
+    /// When the slices' status was last asked for, once bound.
+    slices_asked: Instant,
 }
 
 impl FlexRadio {
@@ -676,6 +687,8 @@ impl FlexRadio {
             forward: None,
             swr: None,
             definition: flex_settings::definition("FlexRadio"),
+            bound: false,
+            slices_asked: now,
         };
         let info = radio.send(Ask::Info)?;
         let slices = radio.send(Ask::Slices)?;
@@ -720,6 +733,42 @@ impl FlexRadio {
         Ok(radio)
     }
 
+    /// Binds this connection to SmartSDR's client `client_id`, and keeps it
+    /// to that client's slice `slice` from now on: it reads, tunes and keys
+    /// only that one, not another computer's.
+    ///
+    /// A FLEX-8400 on 4.3.19 ignores transmit settings and DAX transmit
+    /// audio from a connection that isn't bound, whatever the API's wiki
+    /// says (proven at FL-1, 2026-11-22), so a connection that keys the
+    /// radio for a program binds first. Binding changes nothing on the
+    /// radio.
+    ///
+    /// # Errors
+    ///
+    /// The client ID isn't one, or the radio refused or didn't answer.
+    // Only FlexTest's tray (Windows) binds, for now.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn bind_to(&mut self, client_id: &str, slice: u8) -> Result<(), RadioError> {
+        if client_id.is_empty()
+            || client_id.len() > 64
+            || !client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(RadioError(format!("{client_id:?} is not a client ID")));
+        }
+        self.command(&format!("client bind client_id={client_id}"))?;
+        self.board.only = Some(slice);
+        self.bound = true;
+        // Bound, the slices' and transmitter's values are SmartSDR's: hear
+        // them again. At FL-1 (FLEX-8400, 4.3.19, 2026-11-28) slice status
+        // stopped coming to a connection after it bound, so a frequency
+        // read went stale until the subscription was made again.
+        self.command(&Ask::Slices.command())?;
+        self.slices_asked = Instant::now();
+        self.command(&Ask::Transmitter.command())
+    }
+
     /// Send one question; return its number.
     fn send(&mut self, ask: Ask) -> Result<u32, RadioError> {
         self.send_text(&ask.command())
@@ -728,7 +777,14 @@ impl FlexRadio {
     /// Send one order and wait for the radio to take it or refuse it,
     /// following its status lines meanwhile.
     fn order(&mut self, order: &Order) -> Result<(), RadioError> {
-        self.command(&order.command())
+        self.command(&order.command())?;
+        // Bound, the radio's status of the change is asked for again rather
+        // than waited for: what it says is the truth (Principle X).
+        if self.bound && matches!(order, Order::Tune { .. } | Order::Mode { .. }) {
+            self.command(&Ask::Slices.command())?;
+            self.slices_asked = Instant::now();
+        }
+        Ok(())
     }
 
     /// Send one command and wait for the radio to take it or refuse it,
@@ -879,6 +935,12 @@ impl Radio for FlexRadio {
         if self.pinged_at.elapsed() >= PING_EVERY {
             self.send(Ask::Ping)?;
             self.pinged_at = Instant::now();
+        }
+        // Bound, changes made in SmartSDR are heard by asking again now
+        // and then (see `bind_to`); the answer comes with a later read.
+        if self.bound && self.slices_asked.elapsed() >= SLICES_EVERY {
+            self.send(Ask::Slices)?;
+            self.slices_asked = Instant::now();
         }
         self.board.reading()
     }
@@ -1270,7 +1332,9 @@ mod tests {
                     "info" => format!("R{seq}|0|model=\"{model}\",name=\"Shack\"\n"),
                     "sub slice all" => format!(
                         "S2A3B4C5D|slice 0 in_use=1 RF_frequency=14.205000 mode=USB \
-                         filter_lo=100 filter_hi=2900 index_letter=A tx=1 active=1\nR{seq}|0|\n"
+                         filter_lo=100 filter_hi=2900 index_letter=A tx=1 active=1\n\
+                         S2A3B4C5D|slice 1 in_use=1 RF_frequency=7.074000 mode=DIGU \
+                         filter_lo=100 filter_hi=3100 index_letter=A tx=0 active=0\nR{seq}|0|\n"
                     ),
                     "sub tx all" => format!(
                         "S2A3B4C5D|interlock state=READY\nR{seq}|0|\n\
@@ -1320,6 +1384,89 @@ mod tests {
             seen,
             ["info", "sub slice all", "sub tx all", "sub radio all"]
         );
+    }
+
+    #[test]
+    fn keeps_to_the_bound_clients_slice() {
+        let Some((address, handle)) = fake_radio("FLEX-8400") else {
+            return;
+        };
+        let Ok(mut radio) = FlexRadio::open(&address) else {
+            unreachable!("the stand-in radio opens");
+        };
+        assert!(radio.bind_to("bad id;", 1).is_err());
+        assert_eq!(radio.bind_to("114C1CFC-0000", 1), Ok(()));
+        // Slice 0 transmits and is active, but it is another computer's.
+        let reading = radio.read();
+        assert_eq!(reading.as_ref().map(|r| r.frequency_hz), Ok(7_074_000));
+        assert_eq!(reading.map(|r| r.mode), Ok(Some(Mode::DataUsb)));
+        assert_eq!(radio.tune(Tuning::Frequency(7_075_000)), Ok(()));
+        drop(radio);
+        let seen = handle.join().unwrap_or_default();
+        assert_eq!(
+            seen[4..],
+            [
+                "client bind client_id=114C1CFC-0000",
+                "sub slice all",
+                "sub tx all",
+                "slice tune 1 7.075000",
+                "sub slice all"
+            ]
+        );
+    }
+
+    /// A radio that, like FL-1's FLEX-8400 once bound, tells the slice's
+    /// frequency only when asked (`sub slice all`), never when it changes.
+    fn quiet_radio() -> Option<(String, thread::JoinHandle<()>)> {
+        let listener = TcpListener::bind("127.0.0.1:0").ok()?;
+        let address = listener.local_addr().ok()?.to_string();
+        let handle = thread::spawn(move || {
+            let Ok((stream, _)) = listener.accept() else {
+                return;
+            };
+            let Ok(mut out) = stream.try_clone() else {
+                return;
+            };
+            let _ = out.write_all(b"V1.4.0.0\nH2A3B4C5D\n");
+            let mut mhz = "7.074000".to_owned();
+            for line in BufReader::new(stream).lines() {
+                let Ok(line) = line else { break };
+                let (seq, command) = line
+                    .trim_start_matches('C')
+                    .split_once('|')
+                    .unwrap_or_default();
+                if let Some(to) = command.strip_prefix("slice tune 0 ") {
+                    to.clone_into(&mut mhz);
+                }
+                let reply = if command == "sub slice all" {
+                    format!(
+                        "S2A3B4C5D|slice 0 in_use=1 RF_frequency={mhz} mode=DIGU index_letter=A tx=1\nR{seq}|0|\n"
+                    )
+                } else {
+                    format!("R{seq}|0|\n")
+                };
+                let _ = out.write_all(reply.as_bytes());
+            }
+        });
+        Some((address, handle))
+    }
+
+    #[test]
+    fn a_bound_slice_is_read_fresh_after_tuning() {
+        let Some((address, _radio)) = quiet_radio() else {
+            return;
+        };
+        let Ok(mut radio) = FlexRadio::open(&address) else {
+            unreachable!("the stand-in radio opens");
+        };
+        assert_eq!(radio.bind_to("114C1CFC-0000", 0), Ok(()));
+        assert_eq!(radio.read().map(|r| r.frequency_hz), Ok(7_074_000));
+        // Tuning to 20 m, then back to 40 m: each reads the radio again,
+        // so a program asking for 40 m is never told it's already there.
+        assert_eq!(radio.tune(Tuning::Frequency(14_074_000)), Ok(()));
+        assert_eq!(radio.read().map(|r| r.frequency_hz), Ok(14_074_000));
+        assert_eq!(radio.tune(Tuning::Frequency(7_074_000)), Ok(()));
+        assert_eq!(radio.read().map(|r| r.frequency_hz), Ok(7_074_000));
     }
 
     #[test]

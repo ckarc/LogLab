@@ -204,6 +204,12 @@ const RX_SLEW_DB_PER_S: f64 = 2.0;
 const RX_WINDOW_S: f64 = 0.5;
 /// ...and is the quietest stretch of this long: a whole FT8 slot and more.
 const RX_LOOK_BACK_S: f64 = 15.0;
+/// Stretches dropped when a transmission starts (a second's worth).
+const RX_DROP_BEFORE: usize = 2;
+/// How long after a transmission measuring waits.
+const RX_SETTLE_S: f64 = 2.0;
+/// Quieter than this, a stretch is silence (no receive audio), not noise.
+const RX_SILENCE_DBFS: f64 = -110.0;
 
 /// The receive level: see the module notes.
 #[derive(Debug, Clone, Default)]
@@ -215,6 +221,10 @@ pub struct RxLevel {
     seconds: f64,
     /// The loudness of each finished stretch, before our gain, newest last.
     stretches: std::collections::VecDeque<f64>,
+    /// Whether the last audio came while on the air.
+    was_on_air: bool,
+    /// How long, in seconds, measuring waits yet after a transmission.
+    settle_s: f64,
 }
 
 impl RxLevel {
@@ -251,10 +261,26 @@ impl RxLevel {
     /// measured.
     pub fn apply(&mut self, samples: &mut [f32], seconds: f64, on_air: bool) {
         if on_air {
+            // The receiver goes quiet around a transmission, a little before
+            // forward power shows and a little after it falls: what was
+            // measured just before is dropped, and nothing is measured until
+            // a while after (FL-1, 2026-11-28: FT8 transmissions pulled the
+            // gain up 35 dB).
+            if !self.was_on_air {
+                for _ in 0..RX_DROP_BEFORE {
+                    self.stretches.pop_back();
+                }
+            }
+            self.was_on_air = true;
+            self.settle_s = RX_SETTLE_S;
             self.power = 0.0;
             self.count = 0;
             self.seconds = 0.0;
+        } else if self.settle_s > 0.0 {
+            self.was_on_air = false;
+            self.settle_s -= seconds;
         } else if !samples.is_empty() {
+            self.was_on_air = false;
             self.power += samples
                 .iter()
                 .map(|&s| f64::from(s) * f64::from(s))
@@ -265,7 +291,12 @@ impl RxLevel {
                 // Some thousands of samples: exact as f64.
                 #[allow(clippy::cast_precision_loss)]
                 let mean = self.power / self.count as f64;
-                self.stretches.push_back(10.0 * mean.max(1e-12).log10());
+                let db = 10.0 * mean.max(1e-12).log10();
+                // A stretch of (near) silence is no receive audio at all,
+                // not band noise.
+                if db > RX_SILENCE_DBFS {
+                    self.stretches.push_back(db);
+                }
                 while self.stretches.len() > Self::stretches_kept() {
                     self.stretches.pop_front();
                 }
@@ -493,6 +524,47 @@ mod tests {
             level.apply(&mut loud, 0.005, true);
         }
         assert!((level.gain_db() - held).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn transmissions_and_the_quiet_around_them_dont_move_the_receive_gain() {
+        let mut level = RxLevel::default();
+        let mut packet = vec![0.0_f32; 120];
+        let mut second = 0.0;
+        // Two minutes of band noise already at the target: gain about 0 dB.
+        for _ in 0..24_000 {
+            let amplitude = band(second, RX_NOISE_DBFS);
+            for (i, s) in packet.iter_mut().enumerate() {
+                *s = if i % 2 == 0 { amplitude } else { -amplitude };
+            }
+            level.apply(&mut packet, 0.005, false);
+            second += 0.005;
+        }
+        let before = level.gain_db();
+        assert!(before.abs() < 0.5, "{before}");
+        // Then FT8 transmissions, 13 s each, with the receiver silent for
+        // half a second before power shows and a second after it falls.
+        for _ in 0..8 {
+            let mut quiet = vec![0.0_f32; 120];
+            for _ in 0..100 {
+                level.apply(&mut quiet, 0.005, false);
+            }
+            for _ in 0..2600 {
+                level.apply(&mut quiet, 0.005, true);
+            }
+            for _ in 0..200 {
+                level.apply(&mut quiet, 0.005, false);
+            }
+            for _ in 0..100 {
+                let amplitude = band(12.7, RX_NOISE_DBFS);
+                for (i, s) in packet.iter_mut().enumerate() {
+                    *s = if i % 2 == 0 { amplitude } else { -amplitude };
+                }
+                level.apply(&mut packet, 0.005, false);
+            }
+        }
+        let after = level.gain_db();
+        assert!((after - before).abs() < 1.0, "{before} -> {after}");
     }
 
     #[test]
