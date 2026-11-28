@@ -1,0 +1,114 @@
+# SPDX-FileCopyrightText: 2026 LabLog contributors
+# SPDX-License-Identifier: AGPL-3.0-only
+
+# Research, not a merge gate: proves the Agent's own sound card, "LabLog
+# Radio" (agent/src/sound_card.rs), on a clean Windows computer, so no
+# FieldLab PC is touched. It installs usbip-win2 (the signed USB/IP driver
+# the card plugs in through), reports how that driver is signed, plugs the
+# card in, plays a 1 kHz tone through it and checks the tone comes back.
+
+name: Sound card
+
+on:
+  pull_request:
+    paths:
+      - "agent/**"
+      - ".github/workflows/sound-card.yml"
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long to play the tone, in seconds (3 to 21600)
+        default: "20"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sound-card-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  # usbip-win2's release, and its installer's SHA-256 as checked when it was
+  # pinned (2026-11-27).
+  USBIP_VERSION: 0.9.8.1
+  USBIP_SHA256: 38cad6d4432b52d5bb9409d9ad03b72fdffc4ada4cd3a48fbeca1a2752a8518a
+
+jobs:
+  sound-card:
+    name: Sound card (Windows)
+    runs-on: windows-2025
+    timeout-minutes: 380
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install pinned toolchain (rust-toolchain.toml)
+        working-directory: agent
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: agent
+      - name: Build SoundCardTest
+        working-directory: agent
+        env:
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
+        run: cargo build --locked --release --bin SoundCardTest
+      - name: Install usbip-win2
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $installer = "USBip-$env:USBIP_VERSION-x64.exe"
+          Invoke-WebRequest -Uri "https://github.com/vadimgrn/usbip-win2/releases/download/v.$env:USBIP_VERSION/$installer" -OutFile $installer
+          $hash = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($hash -ne $env:USBIP_SHA256) { throw "usbip-win2 installer is not the pinned one: $hash" }
+          $setup = Start-Process -FilePath ".\$installer" -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/SP-','/COMPONENTS=main,client' -Wait -PassThru
+          if ($setup.ExitCode -notin @(0, 3010)) { throw "usbip-win2 setup returned $($setup.ExitCode)" }
+      - name: How usbip-win2's driver is signed
+        run: |
+          Write-Host '== Secure Boot'
+          try { Confirm-SecureBootUEFI } catch { Write-Host "can't tell: $($_.Exception.Message)" }
+          Write-Host '== Test signing (bcdedit)'
+          bcdedit /enum '{current}' | Select-String -Pattern 'testsigning|nointegritychecks' | Out-String | Write-Host
+          Write-Host '== Driver files'
+          Get-ChildItem "$env:SystemRoot\System32\drivers" -Filter 'usbip2*.sys' | ForEach-Object {
+            $signature = Get-AuthenticodeSignature $_.FullName
+            Write-Host "$($_.Name): $($signature.Status), signer: $($signature.SignerCertificate.Subject)"
+            Write-Host "  issued by: $($signature.SignerCertificate.Issuer)"
+          }
+          Write-Host '== Installed driver packages'
+          pnputil /enum-drivers | Out-String -Stream | Select-String -Context 0,7 -Pattern 'usbip' | Out-String | Write-Host
+          Write-Host '== Loaded drivers'
+          Get-CimInstance Win32_SystemDriver | Where-Object { $_.Name -match 'usbip' } | Format-Table -AutoSize Name, State, PathName | Out-String -Width 300 | Write-Host
+      - name: Let desktop programs record
+        # A clean Windows asks the user before a program may use a
+        # microphone; there is no user here to ask.
+        run: |
+          foreach ($hive in 'HKLM:', 'HKCU:') {
+            foreach ($store in 'microphone', 'microphone\NonPackaged') {
+              $key = "$hive\Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager\ConsentStore\$store"
+              New-Item -Path $key -Force | Out-Null
+              Set-ItemProperty -Path $key -Name Value -Value Allow
+            }
+          }
+      - name: Plug in LabLog Radio and play a tone through it
+        env:
+          SECONDS_TO_RUN: ${{ inputs.seconds || '20' }}
+        run: |
+          & .\agent\target\release\SoundCardTest.exe --seconds $env:SECONDS_TO_RUN
+          if ($LASTEXITCODE -ne 0) { throw "SoundCardTest failed ($LASTEXITCODE)" }
+      - name: Device details
+        if: always()
+        run: |
+          Get-PnpDevice | Where-Object { $_.InstanceId -match 'VID_1209&PID_0001' -or $_.FriendlyName -match 'LabLog' } |
+            Format-Table -AutoSize Status, Class, FriendlyName, InstanceId | Out-String -Width 300 | Write-Host
+      - name: Keep SoundCardTest for download
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: SoundCardTest-windows
+          path: agent/target/release/SoundCardTest.exe
+          if-no-files-found: warn
+          retention-days: 30

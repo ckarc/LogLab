@@ -2,10 +2,23 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 
 //! `FlexTest`'s tray on Windows: an icon by the clock, a menu with Quit, and
-//! a notice each time SmartSDR opens or closes on this computer (see
-//! `flex_test`). The icon is grey while SmartSDR is closed and green while
-//! it is open. Each notice is also written, with the time in UTC, to
+//! a notice each time SmartSDR or a station app opens or closes on this
+//! computer (see `flex_test`). The icon is grey while SmartSDR is closed and
+//! green while it is open. Each notice is also written, with the time in UTC, to
 //! `FlexTest.log` beside the program.
+//!
+//! Milestone 1 of the sound card plan: while it runs, it keeps the Agent's
+//! own sound card, "LabLog Radio", plugged in (`sound_card_windows::Card`),
+//! with no radio behind it yet: what apps play to it goes nowhere, and its
+//! input is silence. Its menu ticks "LabLog Radio plugged in" while it is, and
+//! can try again if it isn't. Quit unplugs it.
+//!
+//! Milestone 2: ticking "Use FlexRadio" finds the FlexRadio that SmartSDR
+//! on this computer uses and puts its slice's receive audio into the
+//! card's input (`flex_rx`). Unticking it, Quit, or losing the radio stops
+//! the audio and puts the slice back. It is unticked at every start and
+//! never ticks itself. Once a minute, while on, the log gets the audio's
+//! level and how the buffer is doing.
 //!
 //! The icon, menu and notices come from `native-windows-gui` (Windows'
 //! `Shell_NotifyIconW` and popup menus), as in the Agent's own tray. Windows'
@@ -26,7 +39,11 @@ use std::time::{Duration, SystemTime};
 
 use native_windows_gui as nwg;
 
-use crate::flex_test::{LOOK_EVERY_SECONDS, SMARTSDR, Watch, listed};
+use crate::flex_find::{LISTEN, discover, here_toward};
+use crate::flex_rx::{FlexRx, pick};
+use crate::flex_test::{LOOK_EVERY_SECONDS, Seen, Watch, first_notice, running};
+use crate::sound_card::{Feed, NAME as CARD};
+use crate::sound_card_windows::Card;
 
 /// Microsoft Learn, "Process Creation Flags": the process is a console
 /// application that is being run without a console window.
@@ -35,25 +52,24 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 const TITLE: &str = "FlexTest";
 /// Its log's file name, beside it.
 const LOG: &str = "FlexTest.log";
+/// Windows' tooltip holds at most 127 characters.
+const TIP_MOST: usize = 120;
 /// The icons' colours: grey while SmartSDR is closed, green while open
 /// (the Agent tray's waiting and receiving colours).
 const CLOSED_COLOUR: [u8; 3] = [0x8a, 0x8a, 0x8a];
 const OPEN_COLOUR: [u8; 3] = [0x2e, 0xa0, 0x43];
 
-/// Whether SmartSDR is running on this computer, asking `tasklist`.
-fn smartsdr_running() -> Result<bool, String> {
+/// One look's answer: the program files' names running, or why it failed.
+type Look = Result<Vec<String>, String>;
+
+/// The program files' names running on this computer, asking `tasklist`.
+fn running_now() -> Look {
     let answer = Command::new("tasklist")
-        .args([
-            "/FI",
-            &format!("IMAGENAME eq {SMARTSDR}"),
-            "/NH",
-            "/FO",
-            "CSV",
-        ])
+        .args(["/NH", "/FO", "CSV"])
         .creation_flags(CREATE_NO_WINDOW)
         .output()
         .map_err(|error| format!("can't list running programs: {error}"))?;
-    Ok(listed(&String::from_utf8_lossy(&answer.stdout), SMARTSDR))
+    Ok(running(&String::from_utf8_lossy(&answer.stdout)))
 }
 
 /// Holds a file beside FlexTest that no other process may open while it
@@ -99,6 +115,9 @@ struct Face {
     closed: nwg::Icon,
     open: nwg::Icon,
     menu: nwg::Menu,
+    card: nwg::MenuItem,
+    replug: nwg::MenuItem,
+    flex: nwg::MenuItem,
     quit: nwg::MenuItem,
 }
 
@@ -130,11 +149,47 @@ impl Face {
         )?;
         built(
             nwg::MenuItem::builder()
+                .text(&format!("{CARD} plugged in"))
+                .disabled(true)
+                .parent(&face.menu)
+                .build(&mut face.card),
+        )?;
+        built(
+            nwg::MenuItem::builder()
+                .text(&format!("Plug in {CARD} again"))
+                .disabled(true)
+                .parent(&face.menu)
+                .build(&mut face.replug),
+        )?;
+        built(
+            nwg::MenuItem::builder()
+                .text("Use FlexRadio")
+                .parent(&face.menu)
+                .build(&mut face.flex),
+        )?;
+        built(
+            nwg::MenuItem::builder()
                 .text("Quit")
                 .parent(&face.menu)
                 .build(&mut face.quit),
         )?;
         Ok(face)
+    }
+
+    /// Shows `text` as a notice and as the tip, with the icon for whether
+    /// SmartSDR is open.
+    fn show(&self, text: &str, smartsdr_open: bool) {
+        self.tray.set_icon(if smartsdr_open {
+            &self.open
+        } else {
+            &self.closed
+        });
+        let mut tip = format!("{TITLE}\n{text}");
+        if tip.chars().count() > TIP_MOST {
+            tip = tip.chars().take(TIP_MOST).collect();
+        }
+        self.tray.set_tip(&tip);
+        self.notify(text);
     }
 
     fn notify(&self, text: &str) {
@@ -144,6 +199,276 @@ impl Face {
             Some(nwg::TrayNotificationFlags::INFO_ICON),
             None,
         );
+    }
+}
+
+/// Plugs in the card carrying `feed`, says how that went in the menu, and
+/// returns it and what to tell the user.
+fn plug_in(face: &Face, feed: &Arc<Feed>) -> (Option<Card>, String) {
+    match Card::plug_in(Arc::clone(feed)) {
+        Ok(card) => {
+            face.card.set_checked(true);
+            face.replug.set_enabled(false);
+            let said = format!(
+                "{CARD} is plugged in (usbip port {}): apps can pick \"Speakers ({CARD})\" and \"Line ({CARD})\".",
+                card.port().unwrap_or_default()
+            );
+            (Some(card), said)
+        }
+        Err(why) => {
+            face.card.set_checked(false);
+            face.replug.set_enabled(true);
+            (None, format!("Couldn't plug in {CARD}: {why}"))
+        }
+    }
+}
+
+/// Unplugs the card; what to log.
+fn unplug(mut card: Card) -> String {
+    match card.unplug() {
+        Ok(()) => format!("{CARD} unplugged."),
+        Err(why) => format!("Couldn't unplug {CARD}: {why}"),
+    }
+}
+
+/// Looks at what runs every few seconds, on a thread of its own, adding
+/// each answer to `answers` and waking the tray.
+fn look_for_programs(answers: Arc<Mutex<Vec<Look>>>, wake: nwg::NoticeSender) {
+    std::thread::spawn(move || {
+        loop {
+            let answer = running_now();
+            if let Ok(mut answers) = answers.lock() {
+                answers.push(answer);
+            }
+            wake.notice();
+            std::thread::sleep(Duration::from_secs(LOOK_EVERY_SECONDS));
+        }
+    });
+}
+
+/// The radio's audio starting, or why it couldn't, with the radio's model.
+type Started = Result<(FlexRx, String), String>;
+
+/// Finds the radio and starts its audio, on a thread of its own, then
+/// wakes the tray with the outcome.
+fn start_flex(into: Arc<Mutex<Vec<Started>>>, wake: nwg::NoticeSender) {
+    std::thread::spawn(move || {
+        let started = discover(LISTEN)
+            .and_then(|heard| pick(&heard, here_toward))
+            .and_then(|(radio, owner, model)| FlexRx::start(radio, owner).map(|rx| (rx, model)));
+        if let Ok(mut into) = into.lock() {
+            into.push(started);
+        }
+        wake.notice();
+    });
+}
+
+/// How often the log hears how the radio's audio is doing.
+const STATUS_EVERY: Duration = Duration::from_mins(1);
+
+/// Where "Use FlexRadio" stands.
+enum Flex {
+    Off,
+    Starting,
+    On {
+        rx: FlexRx,
+        told: std::time::Instant,
+    },
+}
+
+/// Everything the tray keeps between events.
+struct Tray {
+    face: Rc<Face>,
+    log_file: Option<File>,
+    feed: Arc<Feed>,
+    card: Option<Card>,
+    /// Said with the first look's notice, which would otherwise replace it.
+    card_said: Option<String>,
+    watch: Watch,
+    last_error: String,
+    answers: Arc<Mutex<Vec<Look>>>,
+    flex: Flex,
+    started: Arc<Mutex<Vec<Started>>>,
+}
+
+impl Tray {
+    fn log(&mut self, text: &str) {
+        for line in text.lines() {
+            log(self.log_file.as_mut(), line);
+        }
+    }
+
+    fn say(&mut self, text: &str) {
+        self.face.notify(text);
+        self.log(text);
+    }
+
+    fn replug(&mut self) {
+        let (card, said) = plug_in(&self.face, &self.feed);
+        self.card = card;
+        self.say(&said);
+    }
+
+    /// "Use FlexRadio" clicked: ticks it and starts, or stops and unticks.
+    fn flex_clicked(&mut self) {
+        match self.flex {
+            Flex::Off => {
+                self.flex = Flex::Starting;
+                self.face.flex.set_checked(true);
+                self.say("Looking for the FlexRadio SmartSDR uses on this computer...");
+                start_flex(Arc::clone(&self.started), self.face.wake.sender());
+            }
+            // Its outcome is stopped as soon as it arrives.
+            Flex::Starting => {
+                self.flex = Flex::Off;
+                self.face.flex.set_checked(false);
+            }
+            Flex::On { .. } => self.stop_flex("Stopped using the FlexRadio."),
+        }
+    }
+
+    fn stop_flex(&mut self, why: &str) {
+        self.feed.disconnect();
+        if let Flex::On { rx, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
+            let done = rx.stop().join("\n");
+            self.log(&done);
+        }
+        self.flex = Flex::Off;
+        self.face.flex.set_checked(false);
+        self.say(why);
+    }
+
+    fn take_started(&mut self) {
+        let taken: Vec<_> = self
+            .started
+            .lock()
+            .map(|mut started| started.drain(..).collect())
+            .unwrap_or_default();
+        for started in taken {
+            match (started, &self.flex) {
+                (Ok((rx, model)), Flex::Starting) => {
+                    self.feed
+                        .connect(Arc::clone(&rx.buffer), Arc::clone(&rx.transmit));
+                    self.log(&format!(
+                        "Flex audio streams: receive 0x{:08X}, transmit 0x{:08X}; slice {} (was on DAX channel {}).",
+                        rx.streams.rx, rx.streams.tx, rx.slice.number, rx.slice.dax_before
+                    ));
+                    let said = format!(
+                        "Hearing slice {} of the {model} in \"Line ({CARD})\". What apps play to \"Speakers ({CARD})\" goes to the radio when it transmits with DAX; FlexTest never keys it.",
+                        rx.slice.letter
+                    );
+                    self.flex = Flex::On {
+                        rx,
+                        told: std::time::Instant::now(),
+                    };
+                    self.say(&said);
+                }
+                (Ok((rx, _)), _) => {
+                    let done = rx.stop().join("\n");
+                    self.log(&done);
+                }
+                (Err(why), Flex::Starting) => {
+                    self.flex = Flex::Off;
+                    self.face.flex.set_checked(false);
+                    self.say(&format!("Couldn't use the FlexRadio: {why}"));
+                }
+                (Err(_), _) => {}
+            }
+        }
+    }
+
+    /// While the radio's audio is on: stops if the radio went, and now and
+    /// then logs how it is doing.
+    fn check_flex(&mut self) {
+        let Flex::On { rx, told } = &mut self.flex else {
+            return;
+        };
+        if !rx.connected() {
+            self.stop_flex("Lost the FlexRadio: its audio stopped.");
+            return;
+        }
+        if told.elapsed() >= STATUS_EVERY {
+            *told = std::time::Instant::now();
+            let peak = rx
+                .buffer
+                .take_peak_dbfs()
+                .map_or_else(|| "silent".to_owned(), |db| format!("peak {db:.1} dBFS"));
+            let tx_peak = rx.transmit.take_peak_dbfs().map_or_else(
+                || "apps played silence".to_owned(),
+                |db| format!("apps' peak {db:.1} dBFS"),
+            );
+            let listening = if self.feed.recording() {
+                "an app is recording"
+            } else {
+                "no app recording"
+            };
+            let line = format!(
+                "Flex audio: {listening}; {} packets in, {peak}, {} ms waiting, {} dropouts, {} dropped, {} refused; {} packets out, {tx_peak}, {} ms waiting to go",
+                rx.counts.packets.load(std::sync::atomic::Ordering::Relaxed),
+                rx.buffer.level().as_millis(),
+                rx.buffer.gaps(),
+                rx.buffer.dropped(),
+                rx.counts.refused.load(std::sync::atomic::Ordering::Relaxed),
+                rx.counts.sent.load(std::sync::atomic::Ordering::Relaxed),
+                rx.transmit.level().as_millis(),
+            );
+            let levels = format!("Flex levels: {}", rx.levels.describe());
+            self.log(&line);
+            self.log(&levels);
+        }
+    }
+
+    fn take_answers(&mut self) {
+        let taken: Vec<_> = self
+            .answers
+            .lock()
+            .map(|mut answers| answers.drain(..).collect())
+            .unwrap_or_default();
+        for answer in taken {
+            match answer {
+                Ok(names) => {
+                    self.last_error.clear();
+                    // Several changes in one look make one notice: a newer
+                    // notice replaces the one showing.
+                    let text = match self.watch.saw(&names) {
+                        Seen::First(open) => match self.card_said.take() {
+                            Some(said) => format!("{said}\n{}", first_notice(&open)),
+                            None => first_notice(&open),
+                        },
+                        Seen::Changes(changes) => changes
+                            .iter()
+                            .map(|change| change.notice())
+                            .collect::<Vec<_>>()
+                            .join("\n"),
+                    };
+                    if !text.is_empty() {
+                        self.face.show(&text, self.watch.smartsdr_open());
+                        self.log(&text);
+                    }
+                }
+                // Said once, not every two seconds.
+                Err(why) if self.last_error != why => {
+                    self.say(&why);
+                    self.last_error = why;
+                }
+                Err(_) => {}
+            }
+        }
+        self.check_flex();
+    }
+
+    fn quit(&mut self) {
+        if !matches!(self.flex, Flex::Off) {
+            self.feed.disconnect();
+            if let Flex::On { rx, .. } = std::mem::replace(&mut self.flex, Flex::Off) {
+                let done = rx.stop().join("\n");
+                self.log(&done);
+            }
+        }
+        if let Some(said) = self.card.take().map(unplug) {
+            self.log(&said);
+        }
+        self.log("FlexTest quit.");
     }
 }
 
@@ -174,75 +499,60 @@ pub fn run() -> Result<(), String> {
             return Err(why);
         }
     };
-    let mut log_file = OpenOptions::new()
+    let log_file = OpenOptions::new()
         .create(true)
         .append(true)
         .open(folder.join(LOG))
         .ok();
-    log(log_file.as_mut(), "FlexTest started.");
     let face = Rc::new(Face::build()?);
+    let feed = Arc::new(Feed::default());
+    let mut tray = Tray {
+        face: Rc::clone(&face),
+        log_file,
+        feed,
+        card: None,
+        card_said: None,
+        watch: Watch::default(),
+        last_error: String::new(),
+        answers: Arc::default(),
+        flex: Flex::Off,
+        started: Arc::default(),
+    };
+    tray.log("FlexTest started.");
+    // Logged with the first look's notice.
+    let (card, card_said) = plug_in(&face, &tray.feed);
+    tray.card = card;
+    tray.card_said = Some(card_said);
 
     // Looks for SmartSDR on its own thread, so a slow `tasklist` never
     // holds up the tray, and wakes the tray with each answer.
-    let answers: Arc<Mutex<Vec<Result<bool, String>>>> = Arc::default();
-    let (to_tray, wake) = (Arc::clone(&answers), face.wake.sender());
-    std::thread::spawn(move || {
-        loop {
-            let answer = smartsdr_running();
-            if let Ok(mut answers) = to_tray.lock() {
-                answers.push(answer);
-            }
-            wake.notice();
-            std::thread::sleep(Duration::from_secs(LOOK_EVERY_SECONDS));
-        }
-    });
+    look_for_programs(Arc::clone(&tray.answers), face.wake.sender());
 
-    let watch = RefCell::new(Watch::default());
-    let last_error = RefCell::new(String::new());
-    let log_file = RefCell::new(log_file);
+    let tray = RefCell::new(tray);
     let handler_face = Rc::clone(&face);
     let handler = nwg::full_bind_event_handler(&face.window.handle, move |event, _data, handle| {
         let face = &handler_face;
+        // Borrowed only while one event is handled: the menu's popup runs
+        // its own message loop, in which other events arrive. One that
+        // finds it already borrowed waits for the next notice.
+        let Ok(mut tray) = tray.try_borrow_mut() else {
+            return;
+        };
         match event {
             nwg::Event::OnContextMenu if handle == face.tray.handle => {
+                drop(tray);
                 let (x, y) = nwg::GlobalCursor::position();
                 face.menu.popup(x, y);
             }
+            nwg::Event::OnMenuItemSelected if handle == face.replug.handle => tray.replug(),
+            nwg::Event::OnMenuItemSelected if handle == face.flex.handle => tray.flex_clicked(),
             nwg::Event::OnMenuItemSelected if handle == face.quit.handle => {
-                log(log_file.borrow_mut().as_mut(), "FlexTest quit.");
+                tray.quit();
                 nwg::stop_thread_dispatch();
             }
             nwg::Event::OnNotice => {
-                let taken: Vec<_> = answers
-                    .lock()
-                    .map(|mut answers| answers.drain(..).collect())
-                    .unwrap_or_default();
-                for answer in taken {
-                    match answer {
-                        Ok(open) => {
-                            last_error.borrow_mut().clear();
-                            if let Some(change) = watch.borrow_mut().saw(open) {
-                                let text = change.notice();
-                                face.tray.set_icon(if change.open() {
-                                    &face.open
-                                } else {
-                                    &face.closed
-                                });
-                                face.tray.set_tip(&format!("{TITLE}\n{text}"));
-                                face.notify(text);
-                                log(log_file.borrow_mut().as_mut(), text);
-                            }
-                        }
-                        Err(why) => {
-                            // Said once, not every two seconds.
-                            if *last_error.borrow() != why {
-                                face.notify(&why);
-                                log(log_file.borrow_mut().as_mut(), &why);
-                                last_error.borrow_mut().clone_from(&why);
-                            }
-                        }
-                    }
-                }
+                tray.take_started();
+                tray.take_answers();
             }
             _ => {}
         }

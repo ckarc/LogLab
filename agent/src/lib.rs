@@ -7,7 +7,8 @@
 //! Station Agent, and `RadioAgent`, the same radio side standing alone
 //! with no server (see [`product`]). Each one's `main` calls [`start`].
 //! A third, `FlexTest`, is a small tray for trying FlexRadio work before it
-//! joins the Agent's tray (see [`flex_test`]).
+//! joins the Agent's tray (see [`flex_test`]). A fourth, `SoundCardTest`,
+//! tries the Agent's own sound card, "LabLog Radio" (see [`sound_card`]).
 //!
 //! The Agent owns the radios: it is the only component that opens a radio's
 //! port or control connection, it presents every radio through one common rig
@@ -47,6 +48,11 @@ mod fldigi_rpc;
 mod flex;
 mod flex_find;
 mod flex_pretend;
+// Used by FlexTest on Windows, and tested on every platform.
+#[cfg(any(windows, test))]
+mod flex_levels;
+#[cfg(any(windows, test))]
+mod flex_rx;
 mod flex_settings;
 pub mod flex_test;
 #[cfg(windows)]
@@ -81,6 +87,9 @@ mod serial_radio;
 mod settings_file;
 mod settings_record;
 mod setups;
+pub mod sound_card;
+#[cfg(windows)]
+mod sound_card_windows;
 mod station;
 mod tray;
 #[cfg(windows)]
