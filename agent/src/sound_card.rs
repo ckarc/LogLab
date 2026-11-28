@@ -24,6 +24,7 @@ use std::process::ExitCode;
 use std::sync::Mutex;
 
 use usbip_audio::uac2::{Uac2Config, Uac2Streams};
+use usbip_audio::{IsoEndpoint, IsoTiming, Notifier, Setup, Speed, UsbDevice};
 
 /// The card's name, as Windows shows it.
 pub const NAME: &str = "LabLog Radio";
@@ -138,6 +139,133 @@ impl Uac2Streams for Loopback {
         }
         held.counts.recorded += (samples.len() / channels) as u64;
         held.counts.short += (short / channels) as u64;
+    }
+}
+
+/// Milestone 1's streams, with no radio yet: what Windows plays to the
+/// card goes nowhere, and its input is silence.
+#[derive(Default)]
+pub struct Silence;
+
+impl Uac2Streams for Silence {
+    fn playback(&self, _frame: u64, _samples: &[i32]) {}
+
+    fn capture(&self, _frame: u64, samples: &mut [i32]) {
+        samples.fill(0);
+    }
+}
+
+/// USB Audio terminal types (USB Device Class Definition for Terminal
+/// Types 2.0): a microphone, and an external line connector.
+const MICROPHONE: u16 = 0x0201;
+const LINE_CONNECTOR: u16 = 0x0603;
+/// Descriptor types, and the class-specific audio control input terminal.
+const INTERFACE: u8 = 4;
+const CLASS_INTERFACE: u8 = 0x24;
+const INPUT_TERMINAL: u8 = 0x02;
+const AUDIO: u8 = 1;
+const AUDIO_CONTROL: u8 = 1;
+
+/// The input terminals' types in a configuration descriptor's audio
+/// control interface, at the byte where each is written.
+fn input_terminals(configuration: &[u8]) -> Vec<(usize, u16)> {
+    let mut found = vec![];
+    let mut at = 0;
+    let mut audio_control = false;
+    while let Some(&length) = configuration.get(at) {
+        let length = usize::from(length);
+        let Some(descriptor) = configuration.get(at..at + length) else {
+            break;
+        };
+        if length < 2 {
+            break;
+        }
+        match descriptor[1] {
+            INTERFACE if length >= 7 => {
+                audio_control = descriptor[5] == AUDIO && descriptor[6] == AUDIO_CONTROL;
+            }
+            // In an AudioStreaming interface the same subtype is a format.
+            CLASS_INTERFACE if audio_control && length >= 6 && descriptor[2] == INPUT_TERMINAL => {
+                found.push((at + 4, u16::from_le_bytes([descriptor[4], descriptor[5]])));
+            }
+            _ => {}
+        }
+        at += length;
+    }
+    found
+}
+
+/// `configuration` with its microphone made a line input.
+#[must_use]
+pub fn as_line_in(configuration: &[u8]) -> Vec<u8> {
+    let mut out = configuration.to_vec();
+    for (at, kind) in input_terminals(configuration) {
+        if kind == MICROPHONE {
+            out[at..at + 2].copy_from_slice(&LINE_CONNECTOR.to_le_bytes());
+        }
+    }
+    out
+}
+
+/// A USB sound card whose input says it is a line input, not a
+/// microphone. Windows 11 puts its Voice Clarity noise suppression on a
+/// USB microphone, and on FL-1 (2026-11-28) that erased a steady test
+/// tone; it leaves a line input alone, and calls it "Line (...)".
+/// `usbip-audio` always calls its input a microphone, so this rewrites
+/// that one field of what the card tells Windows.
+pub struct LineIn<D>(pub D);
+
+/// A standard request for the configuration descriptor.
+fn asks_for_configuration(setup: Setup) -> bool {
+    setup.request_type == 0x80 && setup.request == 6 && setup.value >> 8 == 2
+}
+
+impl<D: UsbDevice> UsbDevice for LineIn<D> {
+    fn speed(&self) -> Speed {
+        self.0.speed()
+    }
+
+    fn device_descriptor(&self) -> Vec<u8> {
+        self.0.device_descriptor()
+    }
+
+    fn configuration_descriptor(&self) -> Vec<u8> {
+        as_line_in(&self.0.configuration_descriptor())
+    }
+
+    fn control(&self, setup: Setup, data: &[u8]) -> Result<Vec<u8>, i32> {
+        if asks_for_configuration(setup) {
+            let mut descriptor = self.configuration_descriptor();
+            descriptor.truncate(usize::from(setup.length));
+            return Ok(descriptor);
+        }
+        self.0.control(setup, data)
+    }
+
+    fn iso_endpoint(&self, address: u8) -> Option<IsoEndpoint> {
+        self.0.iso_endpoint(address)
+    }
+
+    fn iso_out(&self, address: u8, timing: IsoTiming, packets: &[&[u8]]) {
+        self.0.iso_out(address, timing, packets);
+    }
+
+    fn iso_in(
+        &self,
+        address: u8,
+        timing: IsoTiming,
+        capacity: &[usize],
+        data: &mut Vec<u8>,
+    ) -> Vec<usize> {
+        self.0.iso_in(address, timing, capacity, data)
+    }
+
+    fn interrupt_endpoint(&self, address: u8) -> Option<Notifier> {
+        self.0.interrupt_endpoint(address)
+    }
+
+    fn interrupt_in(&self, address: u8, capacity: usize) -> Option<Vec<u8>> {
+        self.0.interrupt_in(address, capacity)
     }
 }
 
@@ -313,8 +441,55 @@ pub fn start(args: &[String]) -> ExitCode {
 
 #[cfg(test)]
 mod tests {
-    use super::{Counts, Loopback, RATE, TONE_HZ, analyse, config, judge, tone};
+    use super::{
+        Counts, LINE_CONNECTOR, LineIn, Loopback, MICROPHONE, RATE, Silence, TONE_HZ, analyse,
+        config, input_terminals, judge, tone,
+    };
     use usbip_audio::uac2::{Uac2Device, Uac2Streams};
+    use usbip_audio::{Setup, UsbDevice};
+
+    #[test]
+    fn the_card_says_its_input_is_a_line_not_a_microphone() -> Result<(), String> {
+        let plain = Uac2Device::new(config(), Silence)?;
+        let as_made = plain.configuration_descriptor();
+        let kinds: Vec<u16> = input_terminals(&as_made).iter().map(|t| t.1).collect();
+        // usbip-audio's own: USB streaming (playback) and a microphone.
+        assert_eq!(kinds, [0x0101, MICROPHONE]);
+
+        let card = LineIn(plain);
+        let told = card.configuration_descriptor();
+        let kinds: Vec<u16> = input_terminals(&told).iter().map(|t| t.1).collect();
+        assert_eq!(kinds, [0x0101, LINE_CONNECTOR]);
+        // Only those two bytes differ.
+        assert_eq!(told.len(), as_made.len());
+        let changed = told.iter().zip(&as_made).filter(|(a, b)| a != b).count();
+        assert!((1..=2).contains(&changed), "{changed} bytes changed");
+
+        // And it's what Windows gets when it asks, cut to what it asked for.
+        let ask = |length: u16| Setup {
+            request_type: 0x80,
+            request: 6,
+            value: 0x0200,
+            index: 0,
+            length,
+        };
+        assert_eq!(card.control(ask(1024), &[]), Ok(told.clone()));
+        assert_eq!(card.control(ask(9), &[]), Ok(told[..9].to_vec()));
+        // Other requests pass through: the device descriptor is unchanged.
+        let device = Setup {
+            value: 0x0100,
+            ..ask(18)
+        };
+        assert_eq!(card.control(device, &[]), card.0.control(device, &[]));
+        Ok(())
+    }
+
+    #[test]
+    fn silence_is_silent() {
+        let mut recorded = [5; 8];
+        Silence.capture(0, &mut recorded);
+        assert_eq!(recorded, [0; 8]);
+    }
 
     #[test]
     fn the_card_is_a_valid_usb_audio_device() {

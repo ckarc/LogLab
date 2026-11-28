@@ -1,21 +1,27 @@
 // SPDX-FileCopyrightText: 2026 LabLog contributors
 // SPDX-License-Identifier: AGPL-3.0-only
 
-//! `SoundCardTest` on Windows (see `sound_card`): serves "LabLog Radio" over
-//! USB/IP, has usbip-win2's `usbip.exe` plug it in, waits for Windows to
-//! show its output and input, plays the test tone to the output through
-//! Windows' own audio system (WASAPI, through `cpal`) while recording the
-//! input, and checks the tone came back whole. Then it unplugs the card.
+//! "LabLog Radio" on Windows (see `sound_card`): [`Card`] serves it over
+//! USB/IP and has usbip-win2's `usbip.exe` plug it in, and unplugs it when
+//! dropped. `FlexTest` keeps one plugged in while it runs.
+//!
+//! `SoundCardTest` plugs one in, waits for Windows to show its output and
+//! input, plays the test tone to the output through Windows' own audio
+//! system (WASAPI, through `cpal`) while recording the input, and checks
+//! the tone came back whole and the input is a line input.
 
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{FromSample, SampleFormat, SizedSample};
-use usbip_audio::uac2::Uac2Device;
+use usbip_audio::uac2::{Uac2Device, Uac2Streams};
 use usbip_audio::{MonotonicClock, Server, usbip_exe};
 
-use crate::sound_card::{Listener, Loopback, NAME, RATE, config, judge, tone};
+use crate::sound_card::{LineIn, Listener, Loopback, NAME, RATE, config, judge, tone};
 
 /// How long Windows may take to show the card's output and input.
 const APPEAR_WITHIN: Duration = Duration::from_mins(1);
@@ -23,19 +29,103 @@ const APPEAR_WITHIN: Duration = Duration::from_mins(1);
 const SETTLE_FRAMES: u64 = RATE as u64;
 /// How often a long run says how it's going.
 const STATUS_EVERY: Duration = Duration::from_mins(1);
+/// Microsoft Learn, "Process Creation Flags": no console window flashes up
+/// when a tray program runs `usbip.exe`.
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+/// The card's place on its USB/IP server.
+const BUS_ID: &str = "1-1";
+/// How Windows names the card's input once it is a line input.
+const LINE: &str = "Line";
 
-/// Unplugs the card when dropped, whatever happened.
-struct Plugged {
-    usbip: std::path::PathBuf,
-    port: u32,
+/// Runs `usbip.exe` with `args`, with no console window; its output.
+fn usbip(exe: &Path, args: &[&str]) -> Result<String, String> {
+    let output = Command::new(exe)
+        .args(args)
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .map_err(|error| format!("can't run {}: {error}", exe.display()))?;
+    let said = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    if output.status.success() {
+        Ok(said)
+    } else {
+        Err(format!("usbip.exe {}: {}", args.join(" "), said.trim()))
+    }
 }
 
-impl Drop for Plugged {
-    fn drop(&mut self) {
-        match usbip_exe::detach(&self.usbip, self.port) {
-            Ok(()) => println!("unplugged {NAME} (usbip port {})", self.port),
-            Err(why) => println!("couldn't unplug {NAME}: {why}"),
+/// "LabLog Radio", plugged in to this computer. Dropping it unplugs it.
+pub struct Card {
+    usbip: PathBuf,
+    port: Option<u32>,
+    // Dropped after `drop` has unplugged the card.
+    _server: Server,
+}
+
+impl Card {
+    /// Plugs in the card, carrying `streams`.
+    ///
+    /// # Errors
+    ///
+    /// usbip-win2 isn't installed, or wouldn't plug the card in.
+    pub fn plug_in<S: Uac2Streams + 'static>(streams: S) -> Result<Self, String> {
+        let card = LineIn(Uac2Device::new(config(), streams)?);
+        let usbip_exe =
+            usbip_exe::find().ok_or("usbip-win2 isn't installed: its usbip.exe wasn't found")?;
+        let server = Server::start(0, Arc::new(MonotonicClock::new()))
+            .map_err(|error| format!("can't serve {NAME} over USB/IP: {error}"))?;
+        server.add(BUS_ID, Arc::new(card));
+        // As usbip-audio's own `usbip_exe::attach`, without a console window.
+        let said = usbip(
+            &usbip_exe,
+            &[
+                "--tcp-port",
+                &server.port().to_string(),
+                "attach",
+                "--remote",
+                "127.0.0.1",
+                "--bus-id",
+                BUS_ID,
+                "--once",
+                "--terse",
+            ],
+        )?;
+        let port = said
+            .trim()
+            .parse()
+            .map_err(|_| format!("usbip.exe attach gave no port: {:?}", said.trim()))?;
+        Ok(Self {
+            usbip: usbip_exe,
+            port: Some(port),
+            _server: server,
+        })
+    }
+
+    /// The usbip-win2 port it is plugged in to.
+    #[must_use]
+    pub fn port(&self) -> Option<u32> {
+        self.port
+    }
+
+    /// Unplugs it now, saying whether that worked.
+    ///
+    /// # Errors
+    ///
+    /// `usbip.exe` wouldn't unplug it.
+    pub fn unplug(&mut self) -> Result<(), String> {
+        match self.port.take() {
+            Some(port) => usbip(&self.usbip, &["detach", "--port", &port.to_string()]).map(|_| ()),
+            None => Ok(()),
         }
+    }
+}
+
+impl Drop for Card {
+    fn drop(&mut self) {
+        // Nowhere to say it failed; usbip-win2 also unplugs all at shutdown.
+        let _ = self.unplug();
     }
 }
 
@@ -180,19 +270,20 @@ fn record(device: &cpal::Device, heard: Arc<Mutex<Listener>>) -> Result<cpal::St
 /// come back whole.
 pub fn run(seconds: u64) -> Result<(), String> {
     let loopback = Arc::new(Loopback::default());
-    let card = Uac2Device::new(config(), Arc::clone(&loopback))?;
-    let server = Server::start(0, Arc::new(MonotonicClock::new()))
-        .map_err(|error| format!("can't serve {NAME} over USB/IP: {error}"))?;
-    server.add("1-1", Arc::new(card));
-    println!("serving {NAME} over USB/IP on 127.0.0.1:{}", server.port());
-    let usbip =
-        usbip_exe::find().ok_or("usbip-win2 isn't installed: its usbip.exe wasn't found")?;
-    let port = usbip_exe::attach(&usbip, server.port(), "1-1")?;
-    let _plugged = Plugged { usbip, port };
-    println!("plugged {NAME} in (usbip port {port})");
+    let mut card = Card::plug_in(Arc::clone(&loopback))?;
+    println!(
+        "plugged {NAME} in (usbip port {})",
+        card.port().unwrap_or_default()
+    );
 
     let host = cpal::default_host();
     let (output, input) = wait_for_card(&host)?;
+    if !name_of(&input).starts_with(LINE) {
+        return Err(format!(
+            "Windows shows the input as {:?}, not a line input: Voice Clarity may filter it",
+            name_of(&input)
+        ));
+    }
     let heard = Arc::new(Mutex::new(Listener::default()));
     let recording = record(&input, Arc::clone(&heard))?;
     let playing = play(&output)?;
@@ -225,6 +316,10 @@ pub fn run(seconds: u64) -> Result<(), String> {
     // Recording stops first, so no silence after the tone is heard.
     drop(recording);
     drop(playing);
+    match card.unplug() {
+        Ok(()) => println!("unplugged {NAME}"),
+        Err(why) => println!("couldn't unplug {NAME}: {why}"),
+    }
 
     let counts = loopback.counts();
     println!(
