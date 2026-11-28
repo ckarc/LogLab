@@ -81,6 +81,9 @@ mod serial_radio;
 mod settings_file;
 mod settings_record;
 mod setups;
+pub mod sound_card;
+#[cfg(windows)]
+mod sound_card_windows;
 mod station;
 mod tray;
 #[cfg(windows)]

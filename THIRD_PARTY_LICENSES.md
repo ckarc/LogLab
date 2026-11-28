@@ -25,6 +25,7 @@ The Station Agent's crates, compiled into its single executable:
 | winnow           | toml dependency (parsing)                 | MIT                              |
 | serialport       | A radio's COM port, for the CI-V driver   | MPL-2.0                          |
 | socket2          | Hearing FlexRadio radios beside SmartSDR (shared UDP port) | MIT OR Apache-2.0 |
+| usbip-audio      | The LabLog Radio sound card (virtual USB audio device), vendored in `agent/vendor/usbip-audio` with LabLog's changes listed in its README | MIT |
 | unescaper        | serialport dependency                     | MIT OR GPL-3.0-only (used under MIT) |
 | scopeguard       | serialport dependency (Linux and macOS)   | MIT OR Apache-2.0                |
 | core-foundation, core-foundation-sys, io-kit-sys, mach2 | serialport dependencies (macOS) | MIT OR Apache-2.0; mach2 BSD-2-Clause OR MIT OR Apache-2.0 |
@@ -43,6 +44,12 @@ The Station Agent's crates, compiled into its single executable:
 | cfg_aliases      | Build time only (nix dependency)          | MIT                              |
 | unicode-ident    | Build time only (syn dependency)          | (MIT OR Apache-2.0) AND Unicode-3.0 |
 | autocfg          | Build time only (num-traits dependency)   | MIT OR Apache-2.0                |
+
+FlexTest's LabLog Radio sound card is attached by usbip-win2
+(https://github.com/vadimgrn/usbip-win2, BSD-2-Clause). It is installed
+separately with its own installer; its Microsoft-signed drivers and its
+`usbip.exe`, which the Agent runs, are not in LabLog, and LabLog does not ship
+them.
 
 The Agent can also run Hamlib's `rigctld` (https://hamlib.github.io; the
 library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a

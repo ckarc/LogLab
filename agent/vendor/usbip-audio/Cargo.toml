@@ -1,0 +1,17 @@
+# Vendored from https://github.com/network-audio/usbip-audio at
+# 58032ab0664ffec1d0c178f40a3a69359c21f597 (MIT, see LICENSE), with LabLog's
+# changes listed in README.md.
+[package]
+name = "usbip-audio"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+description = "Virtual USB audio devices served over USB/IP, so an unmodified usbip-win2 driver presents them as Windows sound devices"
+repository = "https://github.com/network-audio/usbip-audio"
+publish = false
+
+[dependencies]
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Media"] }

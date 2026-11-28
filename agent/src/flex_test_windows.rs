@@ -7,6 +7,9 @@
 //! it is open. Each notice is also written, with the time in UTC, to
 //! `FlexTest.log` beside the program.
 //!
+//! While it runs it also keeps the LabLog Radio sound card attached to
+//! Windows (see `sound_card`), and detaches it at Quit.
+//!
 //! The icon, menu and notices come from `native-windows-gui` (Windows'
 //! `Shell_NotifyIconW` and popup menus), as in the Agent's own tray. Windows'
 //! `tasklist` is asked which programs run, started with `CREATE_NO_WINDOW`
@@ -27,6 +30,8 @@ use std::time::{Duration, SystemTime};
 use native_windows_gui as nwg;
 
 use crate::flex_test::{LOOK_EVERY_SECONDS, SMARTSDR, Watch, listed};
+use crate::sound_card::NAME;
+use crate::sound_card_windows::SoundCard;
 
 /// Microsoft Learn, "Process Creation Flags": the process is a console
 /// application that is being run without a console window.
@@ -155,6 +160,31 @@ fn log(file: Option<&mut File>, text: &str) {
     }
 }
 
+/// Attaches the LabLog Radio sound card, and says so; or says why not.
+fn attach_card() -> Result<(SoundCard, String), String> {
+    match SoundCard::start() {
+        Ok(card) => {
+            let text = format!(
+                "The {NAME} sound card is attached (usbip port {}).",
+                card.port()
+            );
+            Ok((card, text))
+        }
+        Err(why) => Err(format!("The {NAME} sound card couldn't be attached: {why}")),
+    }
+}
+
+/// Detaches the LabLog Radio sound card, and says how it went.
+fn detach_card(card: SoundCard) -> String {
+    let (played, recorded) = card.frames();
+    match card.stop() {
+        Ok(()) => format!(
+            "The {NAME} sound card is detached ({played} frames played into it, {recorded} recorded from it)."
+        ),
+        Err(why) => format!("The {NAME} sound card couldn't be detached: {why}"),
+    }
+}
+
 /// Runs the tray until Quit.
 ///
 /// # Errors
@@ -181,6 +211,16 @@ pub fn run() -> Result<(), String> {
         .ok();
     log(log_file.as_mut(), "FlexTest started.");
     let face = Rc::new(Face::build()?);
+
+    // The LabLog Radio sound card, attached for as long as FlexTest runs.
+    let card = attach_card();
+    let said = card
+        .as_ref()
+        .map_or_else(Clone::clone, |(_, text)| text.clone());
+    log(log_file.as_mut(), &said);
+    face.notify(&said);
+    let card = card.ok().map(|(card, _)| card);
+    let card = RefCell::new(card);
 
     // Looks for SmartSDR on its own thread, so a slow `tasklist` never
     // holds up the tray, and wakes the tray with each answer.
@@ -209,6 +249,9 @@ pub fn run() -> Result<(), String> {
                 face.menu.popup(x, y);
             }
             nwg::Event::OnMenuItemSelected if handle == face.quit.handle => {
+                if let Some(card) = card.borrow_mut().take() {
+                    log(log_file.borrow_mut().as_mut(), &detach_card(card));
+                }
                 log(log_file.borrow_mut().as_mut(), "FlexTest quit.");
                 nwg::stop_thread_dispatch();
             }

@@ -30,6 +30,10 @@ name = "FlexTest"
 path = "src/bin/flextest.rs"
 
 [dependencies]
+# The LabLog Radio sound card: a virtual USB sound card served over USB/IP
+# for usbip-win2 to attach (src/sound_card.rs). Vendored with LabLog's
+# changes; see vendor/usbip-audio/README.md. MIT.
+usbip-audio = { path = "vendor/usbip-audio" }
 ctrlc = { version = "3.5.2", features = ["termination"] }
 serde = { version = "1", features = ["derive"] }
 # A radio's COM port, for the CI-V driver. No default features: they only

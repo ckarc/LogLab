@@ -538,6 +538,7 @@ dependencies = [
  "socket2",
  "toml",
  "ureq",
+ "usbip-audio",
  "windows",
 ]
 
@@ -1197,6 +1198,13 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+]
+
+[[package]]
+name = "usbip-audio"
+version = "0.1.0"
+dependencies = [
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
