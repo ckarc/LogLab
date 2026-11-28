@@ -50,6 +50,8 @@ mod flex_find;
 mod flex_pretend;
 // Used by FlexTest on Windows, and tested on every platform.
 #[cfg(any(windows, test))]
+mod flex_levels;
+#[cfg(any(windows, test))]
 mod flex_rx;
 mod flex_settings;
 pub mod flex_test;

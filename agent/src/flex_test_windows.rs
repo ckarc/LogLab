@@ -412,7 +412,9 @@ impl Tray {
                 rx.counts.sent.load(std::sync::atomic::Ordering::Relaxed),
                 rx.transmit.level().as_millis(),
             );
+            let levels = format!("Flex levels: {}", rx.levels.describe());
             self.log(&line);
+            self.log(&levels);
         }
     }
 

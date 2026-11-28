@@ -43,14 +43,15 @@
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{IpAddr, SocketAddr, TcpStream, UdpSocket};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::audio::{Buffer, Resampler};
 use crate::flex::{self, Line};
 use crate::flex_find::{ClientNews, Discovered, Look, client_news};
+use crate::flex_levels::{self, MeterIds, Step};
 
 /// The radio's audio rate, in the reduced form asked for.
 pub const RATE: u32 = 24_000;
@@ -75,8 +76,8 @@ const READ_WAIT: Duration = Duration::from_millis(100);
 const PING_EVERY: Duration = Duration::from_secs(5);
 /// The longest line read from the radio.
 const MAX_LINE: usize = 8192;
-/// The largest UDP packet taken in.
-const MAX_PACKET: usize = 2048;
+/// The largest UDP packet taken in: meter packets carry every meter.
+const MAX_PACKET: usize = 65_536;
 
 /// The samples of one audio packet for `stream`, from -1.0 to 1.0, or
 /// `None` for any other packet.
@@ -197,6 +198,7 @@ pub fn our_slice(
 pub fn set_up_commands(slice: &OurSlice, port: u16) -> Vec<String> {
     let mut commands = vec![
         format!("client udpport {port}"),
+        "sub meter all".to_owned(),
         "client set send_reduced_bw_dax=true".to_owned(),
     ];
     if slice.dax_before != CHANNEL.to_string() {
@@ -248,6 +250,8 @@ struct Control {
     seq: u32,
     pending: String,
     look: Look,
+    /// Which meters are forward power and ALC.
+    meters: MeterIds,
 }
 
 impl Control {
@@ -264,6 +268,7 @@ impl Control {
             seq: 0,
             pending: String::new(),
             look: Look::default(),
+            meters: MeterIds::default(),
         };
         let deadline = Instant::now() + ANSWER_WAIT;
         while Instant::now() < deadline {
@@ -293,7 +298,11 @@ impl Control {
                 });
             }
             if let Line::Status(status) = flex::classify(&line) {
-                self.look.take(status);
+                if let Some(meters) = status.strip_prefix("meter ") {
+                    self.meters.take(meters);
+                } else {
+                    self.look.take(status);
+                }
             }
         }
         Err(format!("the FlexRadio didn't answer {command:?}"))
@@ -347,6 +356,102 @@ pub struct Counts {
     pub sent: AtomicU64,
 }
 
+/// The levels `FlexTest` sets itself ([`flex_levels`]), shared by the
+/// threads and shown in the log.
+pub struct Levels {
+    pub tx: Mutex<flex_levels::TxDrive>,
+    pub rx: Mutex<flex_levels::RxLevel>,
+    /// Forward power last measured, as `f64` bits.
+    forward_watts: AtomicU64,
+    /// What the transmit drive did, for the log.
+    pub steps: Mutex<Vec<Step>>,
+    /// Which meters were found.
+    pub meters: MeterIds,
+    started: Instant,
+}
+
+impl Levels {
+    fn new(meters: MeterIds) -> Self {
+        Self {
+            tx: Mutex::default(),
+            rx: Mutex::default(),
+            forward_watts: AtomicU64::new(0),
+            steps: Mutex::default(),
+            meters,
+            started: Instant::now(),
+        }
+    }
+
+    /// Forward power last measured, in watts.
+    #[must_use]
+    pub fn forward_watts(&self) -> f64 {
+        f64::from_bits(self.forward_watts.load(Ordering::Relaxed))
+    }
+
+    fn on_air(&self) -> bool {
+        self.forward_watts() >= flex_levels::ON_AIR_WATTS
+    }
+
+    /// One line for the log: the drive, the receive gain, power, and the
+    /// drive's steps since the last line.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let drive = self.tx.lock().map_or_else(
+            |_| "drive unknown".to_owned(),
+            |tx| {
+                format!(
+                    "drive {:.0} dBFS{}",
+                    tx.drive_db(),
+                    if tx.settled() { " (settled)" } else { "" }
+                )
+            },
+        );
+        let rx = self.rx.lock().map_or_else(
+            |_| "receive gain unknown".to_owned(),
+            |rx| format!("receive gain {:+.1} dB", rx.gain_db()),
+        );
+        let steps: Vec<String> = self
+            .steps
+            .lock()
+            .map(|mut steps| steps.drain(..).map(|step| format!("{step:?}")).collect())
+            .unwrap_or_default();
+        let meters = match (self.meters.forward, self.meters.alc) {
+            (Some(_), Some(_)) => "",
+            (Some(_), None) => ", no ALC meter found",
+            _ => ", no power meter found",
+        };
+        format!(
+            "{drive}, {rx}, forward {:.1} W, steps [{}]{meters}",
+            self.forward_watts(),
+            steps.join(", ")
+        )
+    }
+
+    /// Takes in one meter packet's readings.
+    fn meter_readings(&self, readings: &[(u16, i16)]) {
+        let find = |id: Option<u16>| {
+            id.and_then(|id| readings.iter().find(|(n, _)| *n == id).map(|(_, v)| *v))
+        };
+        let Some(forward) = find(self.meters.forward).map(flex_levels::watts) else {
+            return;
+        };
+        self.forward_watts
+            .store(forward.to_bits(), Ordering::Relaxed);
+        let alc = find(self.meters.alc).map(flex_levels::db);
+        let step = self
+            .tx
+            .lock()
+            .ok()
+            .and_then(|mut tx| tx.meters(forward, alc, self.started.elapsed()));
+        if let Some(step) = step
+            && let Ok(mut steps) = self.steps.lock()
+            && steps.len() < 1000
+        {
+            steps.push(step);
+        }
+    }
+}
+
 /// The slice's audio coming in and going out, until [`FlexRx::stop`].
 pub struct FlexRx {
     /// The slice heard.
@@ -359,6 +464,8 @@ pub struct FlexRx {
     pub transmit: Arc<Buffer>,
     /// What has come in and gone out.
     pub counts: Arc<Counts>,
+    /// The levels it sets.
+    pub levels: Arc<Levels>,
     running: Arc<AtomicBool>,
     hearing: Option<JoinHandle<()>>,
     sending: Option<JoinHandle<()>>,
@@ -412,27 +519,37 @@ impl FlexRx {
 
         let buffer = Buffer::new(RATE);
         let transmit = Buffer::new(TRANSMIT_FROM_RATE);
+        let levels = Arc::new(Levels::new(control.meters));
         let counts = Arc::new(Counts::default());
         let running = Arc::new(AtomicBool::new(true));
         let hearing = {
-            let (buffer, counts, running) = (
+            let (buffer, counts, levels, running) = (
                 Arc::clone(&buffer),
                 Arc::clone(&counts),
+                Arc::clone(&levels),
                 Arc::clone(&running),
             );
             std::thread::spawn(move || {
-                hear(&socket, radio.ip(), streams.rx, &buffer, &counts, &running);
+                let into = Into {
+                    buffer: &buffer,
+                    counts: &counts,
+                    levels: &levels,
+                };
+                hear(&socket, radio.ip(), streams.rx, &into, &running);
             })
         };
         let sending = {
-            let (transmit, counts, running) = (
+            let (transmit, counts, levels, running) = (
                 Arc::clone(&transmit),
                 Arc::clone(&counts),
+                Arc::clone(&levels),
                 Arc::clone(&running),
             );
             let to = SocketAddr::new(radio.ip(), VITA_PORT);
             std::thread::spawn(move || {
-                send(&sender, to, streams.tx, transmit, &counts, &running);
+                send(
+                    &sender, to, streams.tx, transmit, &counts, &levels, &running,
+                );
             })
         };
         let talking = {
@@ -445,6 +562,7 @@ impl FlexRx {
             buffer,
             transmit,
             counts,
+            levels,
             running,
             hearing: Some(hearing),
             sending: Some(sending),
@@ -487,15 +605,19 @@ impl Drop for FlexRx {
     }
 }
 
-/// Takes in the radio's audio until `running` turns false.
-fn hear(
-    socket: &UdpSocket,
-    radio: IpAddr,
-    stream: u32,
-    into: &Buffer,
-    counts: &Counts,
-    running: &AtomicBool,
-) {
+/// Where the radio's audio and meters go.
+struct Into<'a> {
+    buffer: &'a Buffer,
+    counts: &'a Counts,
+    levels: &'a Levels,
+}
+
+/// One packet's length in seconds.
+#[allow(clippy::cast_precision_loss)]
+const PACKET_SECONDS: f64 = PACKET_SAMPLES as f64 / RATE as f64;
+
+/// Takes in the radio's audio and meters until `running` turns false.
+fn hear(socket: &UdpSocket, radio: IpAddr, stream: u32, into: &Into<'_>, running: &AtomicBool) {
     let mut packet = vec![0_u8; MAX_PACKET];
     while running.load(Ordering::SeqCst) {
         let Ok((size, from)) = socket.recv_from(&mut packet) else {
@@ -504,11 +626,21 @@ fn hear(
         if from.ip() != radio {
             continue;
         }
-        if let Some(samples) = samples(&packet[..size], stream) {
-            counts.packets.fetch_add(1, Ordering::Relaxed);
-            into.push(samples.into_iter());
+        let packet = &packet[..size];
+        if let Some(mut samples) = samples(packet, stream) {
+            into.counts.packets.fetch_add(1, Ordering::Relaxed);
+            let on_air = into.levels.on_air();
+            if let Ok(mut rx) = into.levels.rx.lock() {
+                rx.apply(&mut samples, PACKET_SECONDS, on_air);
+            }
+            into.buffer.push(samples.into_iter());
         } else {
-            counts.refused.fetch_add(1, Ordering::Relaxed);
+            let readings = flex::meter_readings(packet);
+            if readings.is_empty() {
+                into.counts.refused.fetch_add(1, Ordering::Relaxed);
+            } else {
+                into.levels.meter_readings(&readings);
+            }
         }
     }
 }
@@ -522,6 +654,7 @@ fn send(
     stream: u32,
     from: Arc<Buffer>,
     counts: &Counts,
+    levels: &Levels,
     running: &AtomicBool,
 ) {
     let mut resampler = Resampler::new(from, RATE);
@@ -533,6 +666,15 @@ fn send(
     let mut next = Instant::now();
     while running.load(Ordering::SeqCst) {
         resampler.fill(&mut samples);
+        // Driven to the level the radio wants, whatever the app's own.
+        let peak = samples.iter().fold(0.0_f32, |most, s| most.max(s.abs()));
+        let gain = levels.tx.lock().map_or(1.0, |mut tx| {
+            tx.app_peak(peak, levels.started.elapsed());
+            tx.gain()
+        });
+        for sample in &mut samples {
+            *sample *= gain;
+        }
         if socket.send_to(&packet(stream, count, &samples), to).is_ok() {
             counts.sent.fetch_add(1, Ordering::Relaxed);
         }
@@ -722,6 +864,12 @@ mod tests {
             assert!(Instant::now() < deadline, "no transmit audio went out");
             std::thread::sleep(Duration::from_millis(20));
         }
+        assert!(rx.levels.forward_watts() < crate::flex_levels::ON_AIR_WATTS);
+        assert!(
+            rx.levels
+                .describe()
+                .starts_with("drive -10 dBFS, receive gain")
+        );
         let done = rx.stop();
         assert_eq!(
             done,
@@ -742,6 +890,7 @@ mod tests {
                     "client udpport {}",
                     heard[3].trim_start_matches("client udpport ")
                 ),
+                "sub meter all",
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
                 "stream create type=dax_rx dax_channel=1",
@@ -907,6 +1056,7 @@ mod tests {
             set_up_commands(&moved, 50_000),
             [
                 "client udpport 50000",
+                "sub meter all",
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
                 "stream create type=dax_rx dax_channel=1",
@@ -933,6 +1083,7 @@ mod tests {
             set_up_commands(&already, 50_000),
             [
                 "client udpport 50000",
+                "sub meter all",
                 "client set send_reduced_bw_dax=true",
                 "stream create type=dax_rx dax_channel=1",
                 "stream create type=dax_tx",
