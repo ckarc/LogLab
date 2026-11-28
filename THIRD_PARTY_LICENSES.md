@@ -24,10 +24,12 @@ The Station Agent's crates, compiled into its single executable:
 | toml_parser, toml_datetime, serde_spanned | toml dependencies | MIT OR Apache-2.0                |
 | winnow           | toml dependency (parsing)                 | MIT                              |
 | serialport       | A radio's COM port, for the CI-V driver   | MPL-2.0                          |
+| socket2          | Hearing FlexRadio radios beside SmartSDR (shared UDP port) | MIT OR Apache-2.0 |
 | unescaper        | serialport dependency                     | MIT OR GPL-3.0-only (used under MIT) |
 | scopeguard       | serialport dependency (Linux and macOS)   | MIT OR Apache-2.0                |
 | core-foundation, core-foundation-sys, io-kit-sys, mach2 | serialport dependencies (macOS) | MIT OR Apache-2.0; mach2 BSD-2-Clause OR MIT OR Apache-2.0 |
 | cpal             | Sound devices, for a radio's audio (Windows build only) | Apache-2.0           |
+| usbip-audio      | The Agent's own sound card, "LabLog Radio": a USB audio device served over USB/IP (research; github.com/network-audio/usbip-audio at a pinned commit) | MIT |
 | dasp_sample      | cpal dependency (sample formats)          | MIT OR Apache-2.0                |
 | windows, windows-core, windows-collections, windows-future, windows-numerics, windows-result, windows-strings, windows-threading | cpal dependencies (Windows audio system); windows also for the tray's Yes/No box | MIT OR Apache-2.0 |
 | windows-implement, windows-interface | Build time only (windows dependencies) | MIT OR Apache-2.0  |
@@ -36,7 +38,7 @@ The Station Agent's crates, compiled into its single executable:
 | winapi-i686-pc-windows-gnu, winapi-x86_64-pc-windows-gnu | winapi dependencies, for GNU Windows targets only (not in the shipped MSVC build) | MIT OR Apache-2.0 |
 | winapi-build     | Build time only (native-windows-gui dependency) | MIT                            |
 | nix, libc, bitflags, cfg-if | ctrlc dependencies (Linux and macOS) | MIT (nix); MIT OR Apache-2.0 |
-| windows-sys, windows-link | ctrlc dependencies (Windows)     | MIT OR Apache-2.0                |
+| windows-sys, windows-link | ctrlc and usbip-audio dependencies (Windows) | MIT OR Apache-2.0      |
 | dispatch2, block2, objc2, objc2-encode | ctrlc dependencies (macOS) | MIT                    |
 | serde_derive, syn, proc-macro2, quote | Build time only (serde's derive) | MIT OR Apache-2.0  |
 | cfg_aliases      | Build time only (nix dependency)          | MIT                              |
@@ -48,6 +50,11 @@ library is LGPL-2.1-or-later, its programs GPL-2.0-or-later) to reach a
 radio. Hamlib is installed separately and runs as its own program, which the
 Agent talks to over Hamlib's documented network protocol; none of its code is
 in LabLog, and LabLog does not ship it.
+
+The Agent's own sound card needs the usbip-win2 driver
+(https://github.com/vadimgrn/usbip-win2, BSD-2-Clause) on the Windows
+computer: it plugs the card in. It is installed separately; LabLog's
+research build does not ship it.
 
 The Engine's runtime dependencies:
 

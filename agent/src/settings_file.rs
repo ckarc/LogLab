@@ -97,6 +97,50 @@ pub fn update(
     Ok(Outcome::Changed(changes))
 }
 
+/// Where Windows keeps a program's own copy of `path` (written as
+/// `C:\\Program Files...\\X.ini`) for the user whose local app data folder
+/// is `local`, if `path` is under Program Files: `%LOCALAPPDATA%\\VirtualStore`
+/// plus the path without its drive. An old 32-bit program with no
+/// requested execution level, run without admin rights, writes its
+/// settings there instead of under Program Files, and "read requests are
+/// redirected to the virtualized per-user location first" (Microsoft,
+/// "User Account Control architecture", Virtualization). The Agent, a
+/// 64-bit program, is never redirected and can't write under Program Files
+/// without admin rights, so it edits the copy the program reads.
+#[must_use]
+pub fn virtual_store(local: &Path, path: &str) -> Option<PathBuf> {
+    let bytes = path.as_bytes();
+    let after_drive = (bytes.len() > 3
+        && bytes[0].is_ascii_alphabetic()
+        && bytes[1] == b':'
+        && bytes[2] == b'\\')
+        .then(|| &path[3..])?;
+    let first = after_drive.split('\\').next().unwrap_or_default();
+    if !first.to_ascii_lowercase().starts_with("program files") {
+        return None;
+    }
+    Some(
+        after_drive
+            .split('\\')
+            .filter(|part| !part.is_empty())
+            .fold(local.join("VirtualStore"), |folder, part| folder.join(part)),
+    )
+}
+
+/// The settings file named `file` in the program folder `place`, as the
+/// program reads it: its own copy in the `VirtualStore` first, if Windows
+/// keeps one (see [`virtual_store`]), else the file itself, if either is
+/// there.
+#[cfg(windows)]
+#[must_use]
+pub fn in_place(place: &str, file: &str) -> Option<PathBuf> {
+    let path = format!("{}\\{file}", place.trim_end_matches('\\'));
+    std::env::var_os("LOCALAPPDATA")
+        .and_then(|local| virtual_store(Path::new(&local), &path))
+        .filter(|copy| copy.is_file())
+        .or_else(|| Some(PathBuf::from(&path)).filter(|path| path.is_file()))
+}
+
 /// The copy of `path` as the Agent first found it: the same name with
 /// `.lablog-original` added.
 #[must_use]
@@ -123,7 +167,24 @@ pub fn replace(path: &Path, before: &[u8], after: &[u8]) -> Result<(), String> {
     let temporary = path.with_file_name(name);
     fs::write(&temporary, after)
         .and_then(|()| fs::rename(&temporary, path))
-        .map_err(|error| format!("can't write {}: {error}", path.display()))
+        .map_err(|error| write_failed(path, &error))
+}
+
+/// Why the settings file at `path` couldn't be written, and, where Windows
+/// refused, what lets it be.
+#[must_use]
+pub fn write_failed(path: &Path, error: &std::io::Error) -> String {
+    let protected = error.kind() == std::io::ErrorKind::PermissionDenied;
+    format!(
+        "can't write {}: {error}{}",
+        path.display(),
+        if protected {
+            ". Windows lets only an administrator change files there; reinstalling the \
+             program outside Program Files (in a folder of its own on C:, say) lets it be set up"
+        } else {
+            ""
+        }
+    )
 }
 
 /// Whether a program whose executable is `image` (`WSJT-X.exe`, say) is
@@ -145,7 +206,34 @@ pub fn running(image: &str) -> Result<bool, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Text, original, replace};
+    use super::{Text, original, replace, virtual_store};
+
+    #[test]
+    fn finds_the_copy_windows_keeps_of_a_file_under_program_files() {
+        let local = std::path::Path::new("L");
+        assert_eq!(
+            virtual_store(local, r"C:\Program Files (x86)\VARA\VARA.ini"),
+            Some(
+                local
+                    .join("VirtualStore")
+                    .join("Program Files (x86)")
+                    .join("VARA")
+                    .join("VARA.ini")
+            )
+        );
+        assert_eq!(
+            virtual_store(local, r"c:\PROGRAM FILES\MMSSTV\Mmsstv.ini"),
+            Some(
+                local
+                    .join("VirtualStore")
+                    .join("PROGRAM FILES")
+                    .join("MMSSTV")
+                    .join("Mmsstv.ini")
+            )
+        );
+        assert_eq!(virtual_store(local, r"C:\VARA\VARA.ini"), None);
+        assert_eq!(virtual_store(local, "VARA.ini"), None);
+    }
 
     #[test]
     fn carries_bytes_that_are_not_utf8_over_unchanged() {

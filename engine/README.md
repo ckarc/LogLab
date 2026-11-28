@@ -111,7 +111,14 @@ PIN, and station name, and you can enter QSOs, search the log, edit a QSO
 history. The page loads nothing from the internet (Principle V). The API's
 own reference is at `/api/docs`.
 
-- Every request except `/api/v1/status` needs a signed-in operator; reads need
+- On a computer whose Station Agent is linked, signing in is always at that
+  Agent's station, whatever is typed, so the operator sees that computer's
+  radio: the Engine keeps, in memory only, which station's Agent is
+  speaking from each network address (heard in the last minute), and the
+  sign-in page shows that station, locked (`GET /api/v1/station-here`, no
+  sign-in needed, since signing in needs it, Principle XXI). Elsewhere the
+  page offers the station used last in that browser.
+- Every request except `/api/v1/status` and `/api/v1/station-here` needs a signed-in operator; reads need
   `view` and changes need `log`. Every request body is checked against a
   strict model before it reaches the log (Principle XII).
 - Times go in and come out in UTC (Principle VIII).

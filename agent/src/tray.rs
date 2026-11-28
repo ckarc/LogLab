@@ -20,11 +20,9 @@
 // for its tests.
 #![cfg_attr(not(windows), allow(dead_code))]
 
-/// Where `station`'s output is kept, beside the Agent.
-pub const LOG_NAME: &str = "loglab-agent.log";
-
-/// The log as "Open log" shows it, newest first, in Windows' temp folder.
-pub const LOG_VIEW_NAME: &str = "loglab-agent-newest-first.txt";
+// Where `station`'s output is kept, beside the program, and the file
+// "Open log" shows it in, newest first, in Windows' temp folder: each
+// program's own (`crate::product`).
 
 /// How long a line stays in the log: older lines are dropped each time the
 /// tray starts `station`.
@@ -231,17 +229,23 @@ pub enum Said {
 }
 
 impl Said {
-    /// Whether it tells the operator to do something (`->`), so it is
-    /// worth showing even when nobody asked.
+    /// What a balloon by the clock says about it when nobody asked, if
+    /// anything: only a program starting to use the radio and the radio
+    /// being lost (brian, 2026-10-30: which radio and which program is all
+    /// he needs to see). The rest is in the log; questions get a Yes/No box.
     #[must_use]
-    pub fn needs_a_look(&self) -> bool {
+    pub fn balloon(&self) -> Option<String> {
         match self {
-            Self::Program(text) | Self::Other(text) => {
-                text.lines().any(|line| line.trim_start().starts_with("->"))
-                    || text.contains("Auto mode:")
-                    || text.starts_with("Lab profile:")
+            Self::Program(text) => text
+                .lines()
+                .next()?
+                .strip_prefix("a program connected (")?
+                .split_once("): ")
+                .map(|(_, name)| format!("{} is using the radio.", name.trim())),
+            Self::Other(text) if text.starts_with("Radio lost") => {
+                text.lines().next().map(str::to_owned)
             }
-            _ => false,
+            _ => None,
         }
     }
 }
@@ -318,19 +322,26 @@ pub fn classify(event: &str) -> Said {
 /// name), up to date with one thing `station` said: `a program connected
 /// (127.0.0.1:61551): VarAC.exe` adds one, `a program disconnected (...)`
 /// takes it away. A program the Agent couldn't name is kept as "a program".
-pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) {
+/// Returns the name of a named program that went, for its balloon.
+pub fn track_programs(event: &str, programs: &mut Vec<(String, String)>) -> Option<String> {
     let first = event.lines().next().unwrap_or_default();
     let peer = |rest: &str| rest.split(')').next().unwrap_or_default().to_owned();
     if let Some(rest) = first.strip_prefix("a program connected (") {
         let name = rest
             .split_once("): ")
-            .map_or("a program", |(_, name)| name.trim());
+            .map_or(UNNAMED, |(_, name)| name.trim());
         programs.push((peer(rest), name.to_owned()));
     } else if let Some(rest) = first.strip_prefix("a program disconnected (") {
         let gone = peer(rest);
-        programs.retain(|(from, _)| *from != gone);
+        let at = programs.iter().position(|(from, _)| *from == gone)?;
+        let (_, name) = programs.remove(at);
+        return (name != UNNAMED).then_some(name);
     }
+    None
 }
+
+/// How a program the Agent couldn't name is called.
+const UNNAMED: &str = "a program";
 
 /// What the tray's light says when clicked: the radio, then which
 /// programs are using it, or that none is.
@@ -373,6 +384,9 @@ pub enum Choice {
         /// Send a proposal instead.
         save: bool,
     },
+    /// Standing alone: save the radio's settings as this program's lab
+    /// profile (after a yes).
+    ProfileSave(&'static str),
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -416,6 +430,7 @@ impl Choice {
             Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
             Self::Stock { save: false } => "stock".to_owned(),
             Self::Stock { save: true } => "stock save".to_owned(),
+            Self::ProfileSave(program) => format!("profile save {program}"),
             Self::Answer { number, yes: true } => format!("yes {number}"),
             Self::Answer { yes: false, .. } => "no".to_owned(),
             Self::Quit => "quit".to_owned(),
@@ -647,7 +662,10 @@ mod tests {
             status("", "receiving", &programs),
             "receiving\nConnected: VarAC.exe, a program."
         );
-        track_programs("a program disconnected (127.0.0.1:61551)", &mut programs);
+        assert_eq!(
+            track_programs("a program disconnected (127.0.0.1:61551)", &mut programs),
+            Some("VarAC.exe".to_owned())
+        );
         track_programs("asked to tune to 14.074000 MHz: done", &mut programs);
         assert_eq!(
             programs,
@@ -658,18 +676,35 @@ mod tests {
     }
 
     #[test]
-    fn knows_what_needs_a_look() {
-        let program = classify(
-            "asked to stop transmitting: unkeyed after 5.3 s; peak Po 100%, ALC 92%\n\
-             -> ALC went over a third of its scale.",
+    fn balloons_only_for_a_program_or_a_lost_radio() {
+        assert_eq!(
+            classify("a program connected (127.0.0.1:57447): VarAC.exe").balloon(),
+            Some("VarAC.exe is using the radio.".to_owned())
         );
-        assert!(matches!(program, Said::Program(_)));
-        assert!(program.needs_a_look());
-        assert!(!classify("a program connected (127.0.0.1:57447)").needs_a_look());
-        assert!(classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").needs_a_look());
-        assert!(!classify("Setups: kept on this computer.").needs_a_look());
-        assert!(
-            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").needs_a_look()
+        assert_eq!(
+            classify("a program connected (127.0.0.1:57447)").balloon(),
+            None
+        );
+        assert_eq!(
+            classify(
+                "asked to stop transmitting: unkeyed after 5.3 s; peak Po 100%, ALC 92%\n\
+                 -> ALC went over a third of its scale."
+            )
+            .balloon(),
+            None
+        );
+        assert_eq!(
+            classify("ALC peaked at 70%.\nAuto mode: fixed 1 of 1 setting.").balloon(),
+            None
+        );
+        assert_eq!(
+            classify("Lab profile: VarAC.exe started, so the VARA profile goes on.").balloon(),
+            None
+        );
+        assert_eq!(
+            classify("Radio lost: it hasn't answered for 15 s (unplugged).\n-> Plug it in.")
+                .balloon(),
+            Some("Radio lost: it hasn't answered for 15 s (unplugged).".to_owned())
         );
     }
 
@@ -688,6 +723,7 @@ mod tests {
         assert_eq!(Choice::Enroll(false).typed(), "enroll off");
         assert_eq!(Choice::Stock { save: false }.typed(), "stock");
         assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
+        assert_eq!(Choice::ProfileSave("VARA").typed(), "profile save VARA");
         assert_eq!(
             Choice::Answer {
                 number: 3,

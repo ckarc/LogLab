@@ -227,7 +227,7 @@ pub fn classify(line: &str) -> Line<'_> {
 }
 
 /// The `key=value` words of a status or answer, in order.
-fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
+pub(crate) fn pairs(text: &str) -> impl Iterator<Item = (&str, &str)> {
     text.split([' ', ','])
         .filter_map(|word| word.split_once('='))
 }
@@ -535,38 +535,7 @@ impl Board {
 /// (the API's Metering Protocol page; `AetherSDR`'s reading of it).
 #[must_use]
 pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
-    let word = |at: usize| {
-        packet
-            .get(at..at + 4)
-            .and_then(|b| <[u8; 4]>::try_from(b).ok())
-            .map(u32::from_be_bytes)
-    };
-    let Some(header) = word(0) else {
-        return Vec::new();
-    };
-    let size = usize::try_from(header & 0xFFFF).unwrap_or(usize::MAX) * 4;
-    let has_class = header & 0x0800_0000 != 0;
-    if !has_class || size > packet.len() {
-        return Vec::new();
-    }
-    let packet = &packet[..size];
-    let mut at = 4;
-    if matches!(header >> 28, 1 | 3) {
-        at += 4;
-    }
-    if word(at + 4).map(|w| w & 0xFFFF) != Some(u32::from(METER_CLASS)) {
-        return Vec::new();
-    }
-    at += 8;
-    if header & 0x00C0_0000 != 0 {
-        at += 4;
-    }
-    if header & 0x0030_0000 != 0 {
-        at += 8;
-    }
-    let end = size.saturating_sub(if header & 0x0400_0000 != 0 { 4 } else { 0 });
-    packet
-        .get(at..end)
+    vita_payload(packet, METER_CLASS)
         .unwrap_or_default()
         .chunks_exact(4)
         .map(|pair| {
@@ -576,6 +545,40 @@ pub fn meter_readings(packet: &[u8]) -> Vec<(u16, i16)> {
             )
         })
         .collect()
+}
+
+/// The payload of a whole VITA-49 packet whose packet class code is
+/// `class`, or `None` for any other packet (layout as for
+/// [`meter_readings`]).
+pub(crate) fn vita_payload(packet: &[u8], class: u16) -> Option<&[u8]> {
+    let word = |at: usize| {
+        packet
+            .get(at..at + 4)
+            .and_then(|b| <[u8; 4]>::try_from(b).ok())
+            .map(u32::from_be_bytes)
+    };
+    let header = word(0)?;
+    let size = usize::try_from(header & 0xFFFF).ok()?.checked_mul(4)?;
+    let has_class = header & 0x0800_0000 != 0;
+    if !has_class || size > packet.len() {
+        return None;
+    }
+    let mut at = 4;
+    if matches!(header >> 28, 1 | 3) {
+        at += 4;
+    }
+    if word(at + 4).map(|w| w & 0xFFFF) != Some(u32::from(class)) {
+        return None;
+    }
+    at += 8;
+    if header & 0x00C0_0000 != 0 {
+        at += 4;
+    }
+    if header & 0x0030_0000 != 0 {
+        at += 8;
+    }
+    let end = size.saturating_sub(if header & 0x0400_0000 != 0 { 4 } else { 0 });
+    packet.get(at..end)
 }
 
 /// Forward power in percent of `full_watts`, from a meter's raw dBm

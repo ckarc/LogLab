@@ -233,6 +233,10 @@ pub struct SavedProfile {
     pub saved_by: String,
     /// When, as the Engine says it.
     pub saved_at: String,
+    /// Saved on this computer by an Agent standing alone (`profile save`),
+    /// not in LabLog. The Engine never sends it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub here: bool,
 }
 
 /// What the Engine answers when asked for a model's saved profiles.

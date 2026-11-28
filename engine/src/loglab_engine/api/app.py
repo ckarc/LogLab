@@ -101,7 +101,7 @@ from loglab_engine.lotw import (
 from loglab_engine.lotw import Link as LotwLink
 from loglab_engine.lotw import tables as lotw_tables
 from loglab_engine.onair import OnAir, Report
-from loglab_engine.pairing import LIFETIME, Pairing, PairingDesk, PairingError
+from loglab_engine.pairing import LIFETIME, AgentHosts, Pairing, PairingDesk, PairingError
 from loglab_engine.personal import personal_stats
 from loglab_engine.profile_reads import RadioRead, ReadAsk, ReadDesk, ReadError
 from loglab_engine.reference import (
@@ -1497,6 +1497,12 @@ class OverlaySave(_Strict):
         return value
 
 
+class StationHereOut(BaseModel):
+    """The station whose Agent runs on the asking computer, if one is known."""
+
+    station: str | None
+
+
 class StatusOut(BaseModel):
     """What this Engine is, and where its source is (AGPL-3.0, Licensing)."""
 
@@ -1865,10 +1871,33 @@ def get_status() -> StatusOut:
     )
 
 
+def _station_here(request: Request) -> str | None:
+    """The station whose Agent, holding an approved key, speaks from the asking address."""
+    hosts: AgentHosts = request.app.state.agent_hosts
+    if request.client is None:
+        return None
+    return hosts.station(request.client.host, time.monotonic())
+
+
+@api.get("/station-here")
+def station_here(request: Request) -> StationHereOut:
+    """The station whose Station Agent runs on the computer asking, for the sign-in page.
+
+    No sign-in needed: it is part of signing in (Principle XXI). A browser
+    on FL-1 learns ``fl-1``, and signing in there is at ``fl-1``.
+    """
+    return StationHereOut(station=_station_here(request))
+
+
 @api.post("/sessions", status_code=status.HTTP_201_CREATED)
-def sign_in(body: SignIn, conn: Conn) -> SessionOut:
-    """Sign in at a station. Send the token as ``Authorization: Bearer`` from then on."""
-    session = IdentityStore(conn).sign_in(body.callsign, body.secret, body.station)
+def sign_in(body: SignIn, conn: Conn, request: Request) -> SessionOut:
+    """Sign in at a station. Send the token as ``Authorization: Bearer`` from then on.
+
+    On a computer whose Station Agent is linked, the station is the Agent's,
+    whatever was sent: the operator is sitting at that radio.
+    """
+    station = _station_here(request) or body.station
+    session = IdentityStore(conn).sign_in(body.callsign, body.secret, station)
     out = _session_out(conn, session.actor)
     return out.model_copy(update={"token": session.token, "expires_at": session.expires_at})
 
@@ -2602,7 +2631,9 @@ _KEEPALIVE_SECONDS: Final = 10.0
 _STREAM_POLL_SECONDS: Final = 0.2
 
 
-def _agent_station(conn: Conn, authorization: Annotated[str | None, Header()] = None) -> str:
+def _agent_station(
+    request: Request, conn: Conn, authorization: Annotated[str | None, Header()] = None
+) -> str:
     scheme, _, key = (authorization or "").partition(" ")
     if scheme.lower() != "bearer" or not key.strip():
         raise HTTPException(
@@ -2610,7 +2641,11 @@ def _agent_station(conn: Conn, authorization: Annotated[str | None, Header()] = 
             "send this station's key (Principle XXI)",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return AgentKeyStore(conn).authenticate(key.strip())
+    station = AgentKeyStore(conn).authenticate(key.strip())
+    if request.client is not None:
+        hosts: AgentHosts = request.app.state.agent_hosts
+        hosts.heard(request.client.host, station, time.monotonic())
+    return station
 
 
 AgentStation = Annotated[str, Depends(_agent_station)]
@@ -4528,6 +4563,7 @@ def create_app(  # noqa: PLR0913 - one stand-in for each outside service
     app.state.on_air = OnAir()
     app.state.rig = RigBoard()
     app.state.pairings = PairingDesk()
+    app.state.agent_hosts = AgentHosts()
     app.state.profile_reads = ReadDesk()
     app.state.demo = Demo(database, app.state.on_air, app.state.rig)
     app.include_router(api)

@@ -86,8 +86,12 @@ impl SendsAs {
             .map_or_else(|| "their own call".to_owned(), ToOwned::to_owned);
         let grid = self.grid.as_ref().map_or_else(
             || {
-                "their own grid (none known here: give --grid, or --mqtt for FieldLab's GPS)"
-                    .to_owned()
+                if crate::product::current().standalone {
+                    "their own grid (none known here: give --grid)".to_owned()
+                } else {
+                    "their own grid (none known here: give --grid, or --mqtt for FieldLab's GPS)"
+                        .to_owned()
+                }
             },
             |(grid, from)| {
                 let from = match from {
@@ -330,7 +334,10 @@ impl Whereabouts {
     /// with what the Engine last said kept in the records folder `records`
     /// (see `carrier`).
     #[must_use]
-    pub fn start(stated: Stated, records: PathBuf) -> Self {
+    pub fn start(mut stated: Stated, records: PathBuf) -> Self {
+        if crate::product::current().standalone {
+            from_programs(&mut stated);
+        }
         let fix = Arc::new(Mutex::new(None));
         let stop = Arc::new(AtomicBool::new(false));
         let engine = crate::carrier::last_station(&records);
@@ -361,6 +368,35 @@ impl Whereabouts {
         }));
         Self { stop, threads }
     }
+}
+
+/// Standing alone, with no `--call` or `--grid`: the call and grid WSJT-X
+/// sends, else `JS8Call`'s, as their own settings files say, so the
+/// programs here all send the same with nothing typed (checked as
+/// `--call` and `--grid` are).
+fn from_programs(stated: &mut Stated) {
+    #[cfg(windows)]
+    for app in ["WSJT-X", "JS8Call"] {
+        if stated.call.is_some() && stated.grid.is_some() {
+            break;
+        }
+        let Some(text) = crate::qt_settings::find(app).and_then(|path| {
+            std::fs::read(path)
+                .ok()
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+        }) else {
+            continue;
+        };
+        let (call, grid) = crate::qt_settings::station(&text);
+        if stated.call.is_none() {
+            stated.call = call.as_deref().and_then(checked_call);
+        }
+        if stated.grid.is_none() {
+            stated.grid = grid.as_deref().and_then(checked_grid);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = stated;
 }
 
 /// Waits `time`, or until `stop`; whether to go on.

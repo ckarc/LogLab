@@ -41,7 +41,6 @@ const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// Set in the tray's environment once it runs with no window.
 const HIDDEN: &str = "LABLOG_TRAY_HIDDEN";
 /// The title of the tray's boxes and notices.
-const TITLE: &str = "LabLog Station Agent";
 /// How long `station` may be quiet before what it said is shown.
 const IDLE: Duration = Duration::from_millis(200);
 /// How long after `station` stops on its own before it is started again.
@@ -84,7 +83,7 @@ fn boxed(text: &str, question: bool) -> bool {
         MB_OK | MB_ICONINFORMATION
     } | MB_TOPMOST
         | MB_SETFOREGROUND;
-    let (text, title) = (HSTRING::from(text), HSTRING::from(TITLE));
+    let (text, title) = (HSTRING::from(text), HSTRING::from(title()));
     // A platform interface: Windows' message box has no safe wrapper that
     // keeps it on top of other windows. It takes no owner window and two
     // strings that stay alive, NUL-terminated, until it returns.
@@ -233,7 +232,8 @@ fn open_log(path: &Path) -> Option<File> {
     }
     // Earlier builds moved a long log aside to loglab-agent.log.old.
     let _ = std::fs::remove_file(path.with_extension("log.old"));
-    let _ = std::fs::remove_file(std::env::temp_dir().join(tray::LOG_VIEW_NAME));
+    let _ =
+        std::fs::remove_file(std::env::temp_dir().join(crate::product::current().log_view_name));
     OpenOptions::new().create(true).append(true).open(path).ok()
 }
 
@@ -248,7 +248,10 @@ fn only_tray(folder: &Path) -> Result<File, String> {
         .share_mode(0)
         .open(folder.join("tray.lock"))
         .map_err(|_| {
-            "the Agent's tray is already running: look for its icon by the clock.".to_owned()
+            format!(
+                "{}'s tray is already running: look for its icon by the clock.",
+                title()
+            )
         })
 }
 
@@ -273,6 +276,10 @@ struct Face {
     stock_menu: nwg::Menu,
     stock_put: nwg::MenuItem,
     stock_save: nwg::MenuItem,
+    /// Standing alone: save the radio's settings as a program's lab
+    /// profile, one item per program in [`crate::profiles::PROGRAMS`].
+    profile_menu: nwg::Menu,
+    profile_save: Vec<nwg::MenuItem>,
     log: nwg::MenuItem,
     quit: nwg::MenuItem,
     separators: Vec<nwg::MenuSeparator>,
@@ -280,7 +287,7 @@ struct Face {
 
 /// Writes each light's icon where Windows can load it.
 fn light_files() -> Result<Vec<(Light, PathBuf)>, String> {
-    let folder = std::env::temp_dir().join("lablog-agent-icons");
+    let folder = std::env::temp_dir().join(crate::product::current().icon_folder);
     std::fs::create_dir_all(&folder).map_err(|error| format!("{}: {error}", folder.display()))?;
     Light::ALL
         .iter()
@@ -293,12 +300,17 @@ fn light_files() -> Result<Vec<(Light, PathBuf)>, String> {
         .collect()
 }
 
+/// The program's name, as its tray and boxes show it.
+fn title() -> &'static str {
+    crate::product::current().name
+}
+
 fn built(result: Result<(), nwg::NwgError>) -> Result<(), String> {
     result.map_err(|error| format!("the tray couldn't be made: {error}"))
 }
 
 impl Face {
-    fn build() -> Result<Self, String> {
+    fn build(standalone: bool) -> Result<Self, String> {
         let mut face = Self::default();
         built(nwg::MessageWindow::builder().build(&mut face.window))?;
         built(
@@ -324,7 +336,7 @@ impl Face {
             nwg::TrayNotification::builder()
                 .parent(&face.window)
                 .icon(Some(first))
-                .tip(Some(&format!("{TITLE}: starting")))
+                .tip(Some(&format!("{}: starting", title())))
                 .build(&mut face.icon),
         )?;
         built(
@@ -383,7 +395,10 @@ impl Face {
             &face.lab_menu,
             &mut face.leave_out,
         )?;
-        face.stock_items()?;
+        face.stock_items(standalone)?;
+        if standalone {
+            face.profile_items()?;
+        }
         item("Open log", &face.menu, &mut face.log)?;
         face.separator()?;
         item("Quit", &face.menu, &mut face.quit)?;
@@ -391,8 +406,8 @@ impl Face {
     }
 
     /// The Lab Stock menu: put the model's Lab Stock on, or send the
-    /// radio's settings as a proposal.
-    fn stock_items(&mut self) -> Result<(), String> {
+    /// radio's settings as a proposal (standing alone, save them as it).
+    fn stock_items(&mut self, standalone: bool) -> Result<(), String> {
         built(
             nwg::Menu::builder()
                 .text("Lab Stock")
@@ -405,7 +420,11 @@ impl Face {
                 &mut self.stock_put,
             ),
             (
-                "Send settings as a Lab Stock proposal",
+                if standalone {
+                    "Save settings as Lab Stock (shows what, then asks)"
+                } else {
+                    "Send settings as a Lab Stock proposal"
+                },
                 &mut self.stock_save,
             ),
         ] {
@@ -415,6 +434,28 @@ impl Face {
                     .parent(&self.stock_menu)
                     .build(item),
             )?;
+        }
+        Ok(())
+    }
+
+    /// Standing alone, the menu that saves the radio's settings as one
+    /// program's lab profile.
+    fn profile_items(&mut self) -> Result<(), String> {
+        built(
+            nwg::Menu::builder()
+                .text("Save as lab profile")
+                .parent(&self.menu)
+                .build(&mut self.profile_menu),
+        )?;
+        for program in crate::profiles::PROGRAMS {
+            let mut save = nwg::MenuItem::default();
+            built(
+                nwg::MenuItem::builder()
+                    .text(&format!("{program} (shows what it keeps, then asks)"))
+                    .parent(&self.profile_menu)
+                    .build(&mut save),
+            )?;
+            self.profile_save.push(save);
         }
         Ok(())
     }
@@ -439,7 +480,7 @@ impl Face {
     fn notify(&self, text: &str) {
         self.icon.show(
             text,
-            Some(TITLE),
+            Some(title()),
             Some(nwg::TrayNotificationFlags::INFO_ICON | nwg::TrayNotificationFlags::QUIET),
             None,
         );
@@ -471,6 +512,11 @@ impl Face {
         }
         if handle == self.quit.handle {
             return Some(Choice::Quit);
+        }
+        for (program, item) in crate::profiles::PROGRAMS.iter().zip(&self.profile_save) {
+            if item.handle == handle {
+                return Some(Choice::ProfileSave(program));
+            }
         }
         for (index, name) in MY_SETUPS.iter().enumerate() {
             if self
@@ -525,7 +571,7 @@ impl Tray {
             self.light
         };
         self.face.show_light(light);
-        let mut tip = format!("{TITLE}\n{}{}", self.model, self.radio);
+        let mut tip = format!("{}\n{}{}", title(), self.model, self.radio);
         if tip.chars().count() > TIP_MOST {
             tip = tip.chars().take(TIP_MOST).collect();
         }
@@ -678,8 +724,13 @@ impl Tray {
                 }
             }
             said @ (Said::Program(_) | Said::Other(_)) => {
-                if let Said::Program(text) = &said {
-                    tray::track_programs(text, &mut self.programs);
+                if let Said::Program(text) = &said
+                    && let Some(gone) = tray::track_programs(text, &mut self.programs)
+                {
+                    self.face.notify(&format!(
+                        "{}{gone} is no longer using the radio.",
+                        self.model
+                    ));
                 }
                 let text = match &said {
                     Said::Program(text) | Said::Other(text) => text.clone(),
@@ -693,8 +744,11 @@ impl Tray {
                         std::thread::spawn(move || boxed(&text, false));
                     }
                     Some(_) => self.face.notify(&text),
-                    None if said.needs_a_look() => self.face.notify(&text),
-                    None => {}
+                    None => {
+                        if let Some(balloon) = said.balloon() {
+                            self.face.notify(&format!("{}{balloon}", self.model));
+                        }
+                    }
                 }
             }
         }
@@ -729,7 +783,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
         }
     };
     built(nwg::init())?;
-    let face = Face::build()?;
+    let face = Face::build(crate::product::current().standalone)?;
     let inbox = Inbox {
         queue: Arc::new(Mutex::new(VecDeque::new())),
         wake: face.wake.sender(),
@@ -739,7 +793,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
         inbox,
         exe,
         options: options.to_vec(),
-        log: folder.join(tray::LOG_NAME),
+        log: folder.join(crate::product::current().log_name),
         station: None,
         light: Light::Waiting,
         radio: "starting".to_owned(),
@@ -779,7 +833,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
                     // for every line, so the log is written oldest first and
                     // Open log shows it newest first from Windows' temp
                     // folder, a throwaway view rather than a second log.
-                    let view = std::env::temp_dir().join(tray::LOG_VIEW_NAME);
+                    let view = std::env::temp_dir().join(crate::product::current().log_view_name);
                     let log = std::fs::read_to_string(&tray.log).unwrap_or_default();
                     let shown = if std::fs::write(&view, tray::newest_first(&log)).is_ok() {
                         view

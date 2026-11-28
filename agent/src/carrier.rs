@@ -44,8 +44,10 @@ const LOOK_EVERY: Duration = Duration::from_secs(2);
 const FIND_EVERY: Duration = Duration::from_secs(30);
 /// How long QSOs wait before the Engine is tried again.
 const RETRY: Duration = Duration::from_secs(15);
-/// How often the radio's state is read for the Engine.
-const RIG_EVERY: Duration = Duration::from_secs(2);
+/// How often the radio's state is read for the Engine; it is sent only when
+/// it changed (or every [`RIG_HEARTBEAT`]), so LabLog follows the VFO knob
+/// within about a quarter second without a steady stream.
+const RIG_EVERY: Duration = Duration::from_millis(250);
 /// How long an unchanged radio state goes unsent.
 const RIG_HEARTBEAT: Duration = Duration::from_secs(10);
 /// How often the Agent asks who programs here log as.

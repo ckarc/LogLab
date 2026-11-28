@@ -107,9 +107,15 @@ pub fn setup_for(executable: &str) -> Option<&'static str> {
         .unwrap_or(executable)
         .to_ascii_lowercase();
     let stem = name.strip_suffix(".exe").unwrap_or(&name);
-    // The Agent itself connects to its radio server only from its VARA
-    // proxy, keying for VARA's client (Winlink Express): VARA.
-    if stem.starts_with("varac") || stem == "vara" || stem == "varahf" || stem == "loglab-agent" {
+    // The Agent itself (either build of it) connects to its radio server
+    // only from its VARA proxy, keying for VARA's client (Winlink
+    // Express): VARA.
+    if stem.starts_with("varac")
+        || stem == "vara"
+        || stem == "varahf"
+        || stem == "loglab-agent"
+        || stem == "radioagent"
+    {
         Some("VARA")
     } else if stem == "wsjtx" {
         Some("FT8")
@@ -289,6 +295,8 @@ mod tests {
     fn varac_means_vara() {
         assert_eq!(setup_for(r"C:\VarAC\VarAC.exe"), Some("VARA"));
         assert_eq!(setup_for("varac.EXE"), Some("VARA"));
+        assert_eq!(setup_for(r"C:\RadioAgent\RadioAgent.exe"), Some("VARA"));
+        assert_eq!(setup_for("loglab-agent.exe"), Some("VARA"));
         assert_eq!(setup_for(r"C:\WSJT\wsjtx\bin\wsjtx.exe"), Some("FT8"));
         assert_eq!(setup_for("js8call.exe"), Some("JS8"));
         assert_eq!(setup_for("fldigi.exe"), Some("fldigi"));
