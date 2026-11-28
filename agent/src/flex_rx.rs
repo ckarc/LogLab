@@ -363,6 +363,8 @@ pub struct Levels {
     pub rx: Mutex<flex_levels::RxLevel>,
     /// Forward power last measured, as `f64` bits.
     forward_watts: AtomicU64,
+    /// The most forward power since the last log line, as `f64` bits.
+    most_watts: AtomicU64,
     /// What the transmit drive did, for the log.
     pub steps: Mutex<Vec<Step>>,
     /// Which meters were found.
@@ -376,6 +378,7 @@ impl Levels {
             tx: Mutex::default(),
             rx: Mutex::default(),
             forward_watts: AtomicU64::new(0),
+            most_watts: AtomicU64::new(0),
             steps: Mutex::default(),
             meters,
             started: Instant::now(),
@@ -431,8 +434,9 @@ impl Levels {
             _ => ", no power meter found",
         };
         format!(
-            "{drive}, {rx}, forward {:.1} W, steps [{}]{meters}",
+            "{drive}, {rx}, forward {:.1} W (most since last line {:.1} W), steps [{}]{meters}",
             self.forward_watts(),
+            f64::from_bits(self.most_watts.swap(0, Ordering::Relaxed)),
             steps.join(", ")
         )
     }
@@ -447,6 +451,9 @@ impl Levels {
         };
         self.forward_watts
             .store(forward.to_bits(), Ordering::Relaxed);
+        if forward > f64::from_bits(self.most_watts.load(Ordering::Relaxed)) {
+            self.most_watts.store(forward.to_bits(), Ordering::Relaxed);
+        }
         let alc = find(self.meters.alc).map(flex_levels::db);
         let step = self
             .tx
@@ -911,6 +918,24 @@ mod tests {
             ]
         );
         Ok(())
+    }
+
+    #[test]
+    fn logs_the_most_forward_power_since_the_last_line() {
+        let levels = super::Levels::new(super::MeterIds {
+            forward: Some(8),
+            alc: Some(30),
+        });
+        // 40 dBm (10 W), then 0 dBm (1 mW): raw values are 1/128 dB.
+        levels.meter_readings(&[(8, 40 * 128), (30, -6 * 128)]);
+        levels.meter_readings(&[(8, 0), (30, -60 * 128)]);
+        let line = levels.describe();
+        assert!(
+            line.contains("forward 0.0 W (most since last line 10.0 W)"),
+            "{line}"
+        );
+        let next = levels.describe();
+        assert!(next.contains("(most since last line 0.0 W)"), "{next}");
     }
 
     #[test]
