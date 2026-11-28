@@ -21,7 +21,7 @@ use cpal::{FromSample, SampleFormat, SizedSample};
 use usbip_audio::uac2::{Uac2Device, Uac2Streams};
 use usbip_audio::{MonotonicClock, Server, usbip_exe};
 
-use crate::sound_card::{LineIn, Listener, Loopback, NAME, RATE, config, judge, tone};
+use crate::sound_card::{LineIn, Listener, Loopback, NAME, RATE, config, is_card, judge, tone};
 
 /// How long Windows may take to show the card's output and input.
 const APPEAR_WITHIN: Duration = Duration::from_mins(1);
@@ -34,8 +34,6 @@ const STATUS_EVERY: Duration = Duration::from_mins(1);
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 /// The card's place on its USB/IP server.
 const BUS_ID: &str = "1-1";
-/// How Windows names the card's input once it is a line input.
-const LINE: &str = "Line";
 
 /// Runs `usbip.exe` with `args`, with no console window; its output.
 fn usbip(exe: &Path, args: &[&str]) -> Result<String, String> {
@@ -142,11 +140,11 @@ fn wait_for_card(host: &cpal::Host) -> Result<(cpal::Device, cpal::Device), Stri
         let output = host
             .output_devices()
             .ok()
-            .and_then(|mut devices| devices.find(|d| name_of(d).contains(NAME)));
+            .and_then(|mut devices| devices.find(|d| is_card(&name_of(d))));
         let input = host
             .input_devices()
             .ok()
-            .and_then(|mut devices| devices.find(|d| name_of(d).contains(NAME)));
+            .and_then(|mut devices| devices.find(|d| is_card(&name_of(d))));
         if let (Some(output), Some(input)) = (output, input) {
             println!(
                 "Windows shows {:?} after {:.1} s",
@@ -278,12 +276,10 @@ pub fn run(seconds: u64) -> Result<(), String> {
 
     let host = cpal::default_host();
     let (output, input) = wait_for_card(&host)?;
-    if !name_of(&input).starts_with(LINE) {
-        return Err(format!(
-            "Windows shows the input as {:?}, not a line input: Voice Clarity may filter it",
-            name_of(&input)
-        ));
-    }
+    // That the input is a line input, so Windows' Voice Clarity leaves it
+    // alone, is in what the card tells Windows (`sound_card::as_line_in`,
+    // tested there); the tone coming back whole below shows nothing
+    // filtered it.
     let heard = Arc::new(Mutex::new(Listener::default()));
     let recording = record(&input, Arc::clone(&heard))?;
     let playing = play(&output)?;

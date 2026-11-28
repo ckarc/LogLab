@@ -33,12 +33,22 @@ use crate::flex_find::{LISTEN, discover, here_toward};
 use crate::flex_rx::{FlexRx, pick};
 use crate::programs::Sound;
 use crate::rigctld_server::{Server, Shared, Source};
-use crate::sound_card::{Feed, NAME as CARD};
+use crate::sound_card::{Feed, NAME as CARD, RX, TX};
 use crate::sound_card_windows::Card;
 
-/// How Windows names the card's input and output, as programs show them.
-const INPUT: &str = "Line (LabLog Radio)";
-const OUTPUT: &str = "Speakers (LabLog Radio)";
+/// The card's input and output as Windows names them now, so programs are
+/// set to the names Windows gives (the side's name, `RX` or `TX`, put
+/// together with the card's); the side's name alone if Windows shows none.
+fn card_names() -> (String, String) {
+    let (recording, playing) = crate::audio_windows::device_names();
+    let find = |names: Vec<String>, side: &str| {
+        names
+            .into_iter()
+            .find(|name| name.contains(side))
+            .unwrap_or_else(|| side.to_owned())
+    };
+    (find(recording, RX), find(playing, TX))
+}
 
 /// How often the log hears how the FlexRadio's audio is doing.
 const STATUS_EVERY: Duration = Duration::from_mins(1);
@@ -61,7 +71,7 @@ impl Plugged {
             Ok(card) => {
                 println!(
                     "{CARD}: plugged in (usbip port {}), for the FlexRadio: programs record \
-                     \"{INPUT}\" and play to \"{OUTPUT}\".",
+                     its {RX} side and play to its {TX} side.",
                     card.port().unwrap_or_default()
                 );
                 Some(card)
@@ -72,6 +82,13 @@ impl Plugged {
             }
         };
         Self { feed, card }
+    }
+}
+
+impl Plugged {
+    /// Whether the card is plugged in.
+    pub fn is_plugged_in(&self) -> bool {
+        self.card.is_some()
     }
 }
 
@@ -107,11 +124,13 @@ pub fn run(
         shared,
         heard,
     } = rig;
+    let (input, output) = card_names();
+    println!("FlexRadio: programs record \"{input}\" and play to \"{output}\".");
     let sound = Sound {
-        input: INPUT,
-        output: OUTPUT,
+        input: &input,
+        output: &output,
     };
-    tell_open_programs();
+    tell_open_programs(sound);
     crate::programs::set_up_for(sound, server.address(), crate::winlink::Tuning::Agent);
     crate::station::vara_for(sound);
     let on_air = shared.on_air();
@@ -232,7 +251,7 @@ fn start(plugged: &Plugged, listen: SocketAddr, limit: Duration) -> Option<Rig> 
         radio.ip()
     );
     println!(
-        "FlexRadio: on. Programs record \"{INPUT}\", play to \"{OUTPUT}\", and tune and key \
+        "FlexRadio: on. Programs record {CARD}'s {RX}, play to its {TX}, and tune and key \
          slice {} at {} (WSJT-X: Rig Hamlib NET rigctl, PTT Method CAT): one at a time, for at \
          most {} s at once. Audio streams: receive 0x{:08X}, transmit 0x{:08X} (the slice was \
          on DAX channel {}; transmit DAX was {}).",
@@ -281,8 +300,8 @@ fn status(rx: &FlexRx, feed: &Feed) -> String {
 }
 
 /// Tells the operator about each of WSJT-X and `JS8Call` that is open with
-/// other sound devices than the card's: it keeps them until it closes.
-fn tell_open_programs() {
+/// other sound devices than `sound`: it keeps them until it closes.
+fn tell_open_programs(sound: Sound<'_>) {
     for (app, image) in [("WSJT-X", "wsjtx.exe"), ("JS8Call", "js8call.exe")] {
         let Some(path) = crate::qt_settings::find(app) else {
             continue;
@@ -292,7 +311,7 @@ fn tell_open_programs() {
         }
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let (input, output) = crate::qt_settings::sound_devices(&text);
-        if !uses_card(input.as_deref(), output.as_deref()) {
+        if input.as_deref() != Some(sound.input) || output.as_deref() != Some(sound.output) {
             crate::print_event(&format!(
                 "FlexRadio: {app} is open with other sound devices, and keeps them until it \
                  closes.\n-> Close {app}: the Agent sets it up for the FlexRadio as it closes; \
@@ -300,12 +319,4 @@ fn tell_open_programs() {
             ));
         }
     }
-}
-
-/// Whether a program's sound devices, as its settings name them (perhaps
-/// cut short), are the card's.
-fn uses_card(input: Option<&str>, output: Option<&str>) -> bool {
-    [input, output]
-        .iter()
-        .all(|device| device.is_some_and(|device| device.contains(CARD)))
 }
