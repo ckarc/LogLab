@@ -33,6 +33,17 @@ use usbip_audio::{IsoEndpoint, IsoTiming, Notifier, Setup, Speed, UsbDevice};
 
 /// The card's name, as Windows shows it.
 pub const NAME: &str = "LabLog Radio";
+/// Its input's name: what programs record, the radio's receive audio.
+pub const RX: &str = "LabLog RX";
+/// Its output's name: what programs play, the radio's transmit audio.
+pub const TX: &str = "LabLog TX";
+
+/// Whether a sound device Windows names `name` is the card's input or
+/// output, however Windows puts the card's and the side's names together.
+#[must_use]
+pub fn is_card(name: &str) -> bool {
+    [NAME, RX, TX].iter().any(|ours| name.contains(ours))
+}
 /// Its sample rate.
 pub const RATE: u32 = 48_000;
 /// Its channels, each way.
@@ -61,8 +72,8 @@ pub fn config() -> Uac2Config {
         sample_rate: RATE,
         playback_channels: CHANNELS,
         capture_channels: CHANNELS,
-        playback_name: None,
-        capture_name: None,
+        playback_name: Some(TX.to_owned()),
+        capture_name: Some(RX.to_owned()),
         capture_connector: false,
     }
 }

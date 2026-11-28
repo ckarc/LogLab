@@ -783,7 +783,7 @@ pub fn pick(
 ) -> Result<(SocketAddr, u32, String), String> {
     if heard.is_empty() {
         return Err(
-            "no FlexRadio heard. Is it on, and does Windows Firewall let FlexTest take UDP from the LAN?"
+            "no FlexRadio heard. Is it on, and does Windows Firewall let this program take UDP from the LAN?"
                 .to_owned(),
         );
     }

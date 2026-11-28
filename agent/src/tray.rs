@@ -250,6 +250,20 @@ impl Said {
     }
 }
 
+/// Whether `station`'s `event` says it is now using this computer's
+/// FlexRadio (`Some(true)`), has stopped (`Some(false)`), or neither.
+#[must_use]
+pub fn flex_state(event: &str) -> Option<bool> {
+    let first = event.lines().next()?;
+    if first.starts_with("FlexRadio: on") {
+        Some(true)
+    } else if first.starts_with("FlexRadio: off") {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 /// The question number at the end of `station`'s ask: `(question 3)`.
 fn question_number(line: &str) -> Option<u32> {
     let start = line.rfind("(question ")? + "(question ".len();
@@ -387,6 +401,8 @@ pub enum Choice {
     /// Standing alone: save the radio's settings as this program's lab
     /// profile (after a yes).
     ProfileSave(&'static str),
+    /// Use this computer's FlexRadio, or stop using it.
+    Flex(bool),
     /// Answer question `number`.
     Answer {
         /// The question's number.
@@ -428,6 +444,7 @@ impl Choice {
             Self::Compare => "compare".to_owned(),
             Self::Auto(on) => format!("auto {}", if *on { "on" } else { "off" }),
             Self::Enroll(on) => format!("enroll {}", if *on { "on" } else { "off" }),
+            Self::Flex(on) => format!("flex {}", if *on { "on" } else { "off" }),
             Self::Stock { save: false } => "stock".to_owned(),
             Self::Stock { save: true } => "stock save".to_owned(),
             Self::ProfileSave(program) => format!("profile save {program}"),
@@ -519,8 +536,8 @@ pub fn quoted(option: &str) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        Choice, Grouper, Light, MY_SETUPS, Said, classify, icon_file, log_since, log_tail,
-        newest_first, question_box, quoted, restore_menu, status, track_programs,
+        Choice, Grouper, Light, MY_SETUPS, Said, classify, flex_state, icon_file, log_since,
+        log_tail, newest_first, question_box, quoted, restore_menu, status, track_programs,
     };
 
     /// Every event `lines` make, in order.
@@ -676,6 +693,27 @@ mod tests {
     }
 
     #[test]
+    fn the_flexradio_is_on_or_off_as_station_says() {
+        assert_eq!(
+            flex_state("FlexRadio: on. Programs record \"Line (LabLog Radio)\"..."),
+            Some(true)
+        );
+        assert_eq!(
+            flex_state("FlexRadio: off, lost: its audio stopped.\n-> Open SmartSDR."),
+            Some(false)
+        );
+        assert_eq!(
+            flex_state("FlexRadio: off; its slice is put back as it was."),
+            Some(false)
+        );
+        assert_eq!(
+            flex_state("FlexRadio: looking for the one SmartSDR uses"),
+            None
+        );
+        assert_eq!(flex_state("radio: 14.074000 MHz USB"), None);
+    }
+
+    #[test]
     fn balloons_only_for_a_program_or_a_lost_radio() {
         assert_eq!(
             classify("a program connected (127.0.0.1:57447): VarAC.exe").balloon(),
@@ -721,6 +759,8 @@ mod tests {
         assert_eq!(Choice::Restore("FT8").typed(), "restore FT8");
         assert_eq!(Choice::Auto(true).typed(), "auto on");
         assert_eq!(Choice::Enroll(false).typed(), "enroll off");
+        assert_eq!(Choice::Flex(true).typed(), "flex on");
+        assert_eq!(Choice::Flex(false).typed(), "flex off");
         assert_eq!(Choice::Stock { save: false }.typed(), "stock");
         assert_eq!(Choice::Stock { save: true }.typed(), "stock save");
         assert_eq!(Choice::ProfileSave("VARA").typed(), "profile save VARA");

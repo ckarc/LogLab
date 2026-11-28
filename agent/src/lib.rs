@@ -37,6 +37,8 @@ mod civ_serial;
 #[cfg(any(windows, test))]
 mod com0com;
 #[cfg(any(windows, test))]
+mod default_sound;
+#[cfg(any(windows, test))]
 mod driver;
 mod engine;
 mod engine_link;
@@ -54,6 +56,8 @@ mod flex_levels;
 #[cfg(any(windows, test))]
 mod flex_rx;
 mod flex_settings;
+#[cfg(windows)]
+mod flex_station;
 pub mod flex_test;
 #[cfg(windows)]
 mod flex_test_windows;
