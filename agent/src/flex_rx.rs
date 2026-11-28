@@ -158,6 +158,9 @@ pub struct OurSlice {
     pub letter: String,
     /// The DAX channel it was on before (`0` is none).
     pub dax_before: String,
+    /// Whether the transmitter took its audio from DAX before (`1`), as
+    /// SmartSDR's DAX button in its P/CW panel shows.
+    pub tx_dax_before: String,
 }
 
 /// The one slice `owner` has open among `slices`.
@@ -183,6 +186,7 @@ pub fn our_slice(
                 .cloned()
                 .unwrap_or_else(|| "?".to_owned()),
             dax_before: values.get("dax").cloned().unwrap_or_else(|| "0".to_owned()),
+            tx_dax_before: "1".to_owned(),
         }),
         [] => Err("SmartSDR on this computer has no slice open".to_owned()),
         more => Err(format!(
@@ -203,6 +207,9 @@ pub fn set_up_commands(slice: &OurSlice, port: u16) -> Vec<String> {
     ];
     if slice.dax_before != CHANNEL.to_string() {
         commands.push(format!("slice set {} dax={CHANNEL}", slice.number));
+    }
+    if slice.tx_dax_before != "1" {
+        commands.push("transmit set dax=1".to_owned());
     }
     commands.push(format!("stream create type=dax_rx dax_channel={CHANNEL}"));
     commands.push(TX_STREAM.to_owned());
@@ -225,6 +232,9 @@ pub fn put_back_commands(slice: &OurSlice, streams: Streams) -> Vec<String> {
             "slice set {} dax={}",
             slice.number, slice.dax_before
         ));
+    }
+    if slice.tx_dax_before != "1" {
+        commands.push(format!("transmit set dax={}", slice.tx_dax_before));
     }
     commands
 }
@@ -473,6 +483,8 @@ impl Levels {
 pub struct FlexRx {
     /// The slice heard.
     pub slice: OurSlice,
+    /// SmartSDR's client ID, which the audio connection is bound to.
+    pub client_id: String,
     /// The radio's numbers for the audio streams.
     pub streams: Streams,
     /// Where the receive audio goes, at [`RATE`].
@@ -511,7 +523,17 @@ impl FlexRx {
         control.ask(&format!("client bind client_id={client_id}"))?;
         control.look.bound = Some(owner);
         control.ask("sub slice all")?;
-        let slice = our_slice(&control.look.slices, owner)?;
+        control.ask("sub tx all")?;
+        let mut slice = our_slice(&control.look.slices, owner)?;
+        "0".clone_into(&mut slice.tx_dax_before);
+        if control
+            .look
+            .transmit
+            .get("dax")
+            .is_some_and(|dax| dax == "1")
+        {
+            "1".clone_into(&mut slice.tx_dax_before);
+        }
 
         let socket = UdpSocket::bind((IpAddr::from([0, 0, 0, 0]), 0))
             .map_err(|error| format!("can't open a UDP port for the audio: {error}"))?;
@@ -575,6 +597,7 @@ impl FlexRx {
         };
         Ok(Self {
             slice,
+            client_id,
             streams,
             buffer,
             transmit,
@@ -826,6 +849,9 @@ mod tests {
                             "S0|slice 0 in_use=1 client_handle=0x38F7B742 index_letter=A dax=0"
                         );
                     }
+                    "sub tx all" => {
+                        let _ = writeln!(writer, "S0|transmit rfpower=10 dax=0");
+                    }
                     "stream create type=dax_rx dax_channel=1" => answer = "0x04000008".to_owned(),
                     "stream create type=dax_tx" => answer = "0x84000000".to_owned(),
                     _ => {}
@@ -843,7 +869,7 @@ mod tests {
                         let _ = udp.send_to(&packet(0x0400_0009, &tone), ("127.0.0.1", port));
                     }
                 }
-                if command.starts_with("slice set 0 dax=0") {
+                if command.starts_with("transmit set dax=0") {
                     break;
                 }
             }
@@ -857,6 +883,8 @@ mod tests {
         let (address, radio) = pretend_radio().ok_or("no pretend radio")?;
         let rx = FlexRx::start(address, 0x38F7_B742)?;
         assert_eq!(rx.slice.letter, "A");
+        assert_eq!(rx.client_id, "114C1CFC-0000");
+        assert_eq!(rx.slice.tx_dax_before, "0");
         assert_eq!(
             rx.streams,
             Streams {
@@ -893,7 +921,8 @@ mod tests {
             [
                 "Flex: stream remove 0x84000000",
                 "Flex: stream remove 0x04000008",
-                "Flex: slice set 0 dax=0"
+                "Flex: slice set 0 dax=0",
+                "Flex: transmit set dax=0"
             ]
         );
         let heard = radio.join().map_err(|_| "the pretend radio failed")?;
@@ -903,18 +932,21 @@ mod tests {
                 "sub client all",
                 "client bind client_id=114C1CFC-0000",
                 "sub slice all",
+                "sub tx all",
                 &format!(
                     "client udpport {}",
-                    heard[3].trim_start_matches("client udpport ")
+                    heard[4].trim_start_matches("client udpport ")
                 ),
                 "sub meter all",
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
+                "transmit set dax=1",
                 "stream create type=dax_rx dax_channel=1",
                 "stream create type=dax_tx",
                 "stream remove 0x84000000",
                 "stream remove 0x04000008",
                 "slice set 0 dax=0",
+                "transmit set dax=0",
             ]
         );
         Ok(())
@@ -1070,6 +1102,7 @@ mod tests {
                 number: 0,
                 letter: "A".to_owned(),
                 dax_before: "0".to_owned(),
+                tx_dax_before: "1".to_owned(),
             })
         );
         assert!(our_slice(&all, 0x2222_2222).is_err());
@@ -1086,6 +1119,7 @@ mod tests {
             number: 0,
             letter: "A".to_owned(),
             dax_before: "0".to_owned(),
+            tx_dax_before: "0".to_owned(),
         };
         assert_eq!(
             set_up_commands(&moved, 50_000),
@@ -1094,6 +1128,7 @@ mod tests {
                 "sub meter all",
                 "client set send_reduced_bw_dax=true",
                 "slice set 0 dax=1",
+                "transmit set dax=1",
                 "stream create type=dax_rx dax_channel=1",
                 "stream create type=dax_tx",
             ]
@@ -1107,11 +1142,13 @@ mod tests {
             [
                 "stream remove 0x84000000",
                 "stream remove 0x04000008",
-                "slice set 0 dax=0"
+                "slice set 0 dax=0",
+                "transmit set dax=0"
             ]
         );
         let already = OurSlice {
             dax_before: "1".to_owned(),
+            tx_dax_before: "1".to_owned(),
             ..moved
         };
         assert_eq!(

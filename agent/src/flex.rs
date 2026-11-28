@@ -334,6 +334,8 @@ struct Slice {
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct Board {
     slices: BTreeMap<u8, Slice>,
+    /// The one slice the Agent keeps to, once told ([`FlexRadio::bind_to`]).
+    only: Option<u8>,
     ptt: Option<bool>,
     /// The transmit interlock's state, as it last said it.
     interlock: Option<String>,
@@ -481,6 +483,9 @@ impl Board {
     /// The slice that matters: the transmit slice, else the active one,
     /// else the first.
     fn chosen(&self) -> Option<(&u8, &Slice)> {
+        if let Some(only) = self.only {
+            return self.slices.get_key_value(&only);
+        }
         self.slices
             .iter()
             .find(|(_, s)| s.transmit)
@@ -718,6 +723,36 @@ impl FlexRadio {
         }
         radio.definition = flex_settings::definition(&radio.identity.model);
         Ok(radio)
+    }
+
+    /// Binds this connection to SmartSDR's client `client_id`, and keeps it
+    /// to that client's slice `slice` from now on: it reads, tunes and keys
+    /// only that one, not another computer's.
+    ///
+    /// A FLEX-8400 on 4.3.19 ignores transmit settings and DAX transmit
+    /// audio from a connection that isn't bound, whatever the API's wiki
+    /// says (proven at FL-1, 2026-11-22), so a connection that keys the
+    /// radio for a program binds first. Binding changes nothing on the
+    /// radio.
+    ///
+    /// # Errors
+    ///
+    /// The client ID isn't one, or the radio refused or didn't answer.
+    // Only FlexTest's tray (Windows) binds, for now.
+    #[cfg_attr(not(windows), allow(dead_code))]
+    pub fn bind_to(&mut self, client_id: &str, slice: u8) -> Result<(), RadioError> {
+        if client_id.is_empty()
+            || client_id.len() > 64
+            || !client_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
+            return Err(RadioError(format!("{client_id:?} is not a client ID")));
+        }
+        self.command(&format!("client bind client_id={client_id}"))?;
+        self.board.only = Some(slice);
+        // Bound, the transmitter's values are SmartSDR's: hear them again.
+        self.command(&Ask::Transmitter.command())
     }
 
     /// Send one question; return its number.
@@ -1270,7 +1305,9 @@ mod tests {
                     "info" => format!("R{seq}|0|model=\"{model}\",name=\"Shack\"\n"),
                     "sub slice all" => format!(
                         "S2A3B4C5D|slice 0 in_use=1 RF_frequency=14.205000 mode=USB \
-                         filter_lo=100 filter_hi=2900 index_letter=A tx=1 active=1\nR{seq}|0|\n"
+                         filter_lo=100 filter_hi=2900 index_letter=A tx=1 active=1\n\
+                         S2A3B4C5D|slice 1 in_use=1 RF_frequency=7.074000 mode=DIGU \
+                         filter_lo=100 filter_hi=3100 index_letter=A tx=0 active=0\nR{seq}|0|\n"
                     ),
                     "sub tx all" => format!(
                         "S2A3B4C5D|interlock state=READY\nR{seq}|0|\n\
@@ -1319,6 +1356,33 @@ mod tests {
         assert_eq!(
             seen,
             ["info", "sub slice all", "sub tx all", "sub radio all"]
+        );
+    }
+
+    #[test]
+    fn keeps_to_the_bound_clients_slice() {
+        let Some((address, handle)) = fake_radio("FLEX-8400") else {
+            return;
+        };
+        let Ok(mut radio) = FlexRadio::open(&address) else {
+            unreachable!("the stand-in radio opens");
+        };
+        assert!(radio.bind_to("bad id;", 1).is_err());
+        assert_eq!(radio.bind_to("114C1CFC-0000", 1), Ok(()));
+        // Slice 0 transmits and is active, but it is another computer's.
+        let reading = radio.read();
+        assert_eq!(reading.as_ref().map(|r| r.frequency_hz), Ok(7_074_000));
+        assert_eq!(reading.map(|r| r.mode), Ok(Some(Mode::DataUsb)));
+        assert_eq!(radio.tune(Tuning::Frequency(7_075_000)), Ok(()));
+        drop(radio);
+        let seen = handle.join().unwrap_or_default();
+        assert_eq!(
+            seen[4..],
+            [
+                "client bind client_id=114C1CFC-0000",
+                "sub tx all",
+                "slice tune 1 7.075000"
+            ]
         );
     }
 
