@@ -140,6 +140,20 @@ impl Buffer {
         (peak > 0.0).then(|| 20.0 * f64::from(peak).log10())
     }
 
+    /// Throws away the oldest audio waiting, keeping only the newest
+    /// `span`, and says how many samples went. Not counted as dropped: it
+    /// is for a reader that comes back after a while away, which wants the
+    /// audio of now, not a backlog.
+    pub fn keep_newest(&self, span: Duration) -> usize {
+        let keep = samples_in(span, self.rate);
+        let Ok(mut samples) = self.samples.lock() else {
+            return 0;
+        };
+        let over = samples.len().saturating_sub(keep);
+        samples.drain(..over);
+        over
+    }
+
     /// Throws away everything waiting.
     pub fn clear(&self) {
         if let Ok(mut samples) = self.samples.lock() {

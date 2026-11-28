@@ -167,15 +167,36 @@ impl Uac2Streams for Silence {
 #[cfg(any(windows, test))]
 #[derive(Default)]
 pub struct Feed {
-    source: Mutex<Option<Resampler>>,
+    source: Mutex<Option<Fed>>,
 }
+
+/// What the card's input is connected to.
+#[cfg(any(windows, test))]
+struct Fed {
+    buffer: Arc<Buffer>,
+    resampler: Resampler,
+    /// When Windows last recorded from the card.
+    recorded: Option<std::time::Instant>,
+}
+
+/// Windows records the card only while an app has its input open; the
+/// radio's audio keeps coming meanwhile. An app that opens it after a while
+/// away gets only the newest [`crate::audio::TARGET`] of that, not a
+/// backlog that would make it hear the radio late (seen on FL-1,
+/// 2026-11-28: 2 s waiting). This long without recording is "away".
+#[cfg(any(windows, test))]
+const AWAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 #[cfg(any(windows, test))]
 impl Feed {
     /// From now on the input carries what arrives in `buffer`.
     pub fn connect(&self, buffer: Arc<Buffer>) {
         if let Ok(mut source) = self.source.lock() {
-            *source = Some(Resampler::new(buffer, RATE));
+            *source = Some(Fed {
+                resampler: Resampler::new(Arc::clone(&buffer), RATE),
+                buffer,
+                recorded: None,
+            });
         }
     }
 
@@ -184,6 +205,17 @@ impl Feed {
         if let Ok(mut source) = self.source.lock() {
             *source = None;
         }
+    }
+
+    /// Whether an app recorded the card's input in the last [`AWAY`].
+    #[must_use]
+    pub fn recording(&self) -> bool {
+        self.source.lock().is_ok_and(|source| {
+            source
+                .as_ref()
+                .and_then(|fed| fed.recorded)
+                .is_some_and(|at| at.elapsed() < AWAY)
+        })
     }
 }
 
@@ -207,13 +239,18 @@ impl Uac2Streams for Feed {
             samples.fill(0);
             return;
         };
-        let Some(resampler) = source.as_mut() else {
+        let Some(fed) = source.as_mut() else {
             samples.fill(0);
             return;
         };
+        let now = std::time::Instant::now();
+        if fed.recorded.is_none_or(|at| now - at >= AWAY) {
+            fed.buffer.keep_newest(crate::audio::TARGET);
+        }
+        fed.recorded = Some(now);
         let channels = usize::from(CHANNELS);
         let mut mono = vec![0.0_f32; samples.len() / channels];
-        resampler.fill(&mut mono);
+        fed.resampler.fill(&mut mono);
         for (frame, sample) in samples.chunks_mut(channels).zip(mono) {
             frame.fill(to_card(sample));
         }
@@ -567,9 +604,30 @@ mod tests {
         assert!(recorded[400..].iter().all(|&s| (s - half).abs() < 1 << 16));
         assert!(recorded.chunks(2).all(|frame| frame[0] == frame[1]));
 
+        assert!(feed.recording());
+
         feed.disconnect();
         feed.capture(0, &mut recorded);
         assert!(recorded.iter().all(|&s| s == 0));
+        assert!(!feed.recording());
+    }
+
+    #[test]
+    fn an_app_that_starts_recording_hears_now_not_a_backlog() {
+        let feed = super::Feed::default();
+        let buffer = crate::audio::Buffer::new(24_000);
+        feed.connect(std::sync::Arc::clone(&buffer));
+        // Two seconds came in while nothing recorded.
+        buffer.push(std::iter::repeat_n(0.5, 48_000));
+        let mut recorded = vec![0; 2 * 48];
+        feed.capture(0, &mut recorded);
+        // About a tenth of a second is left, less the millisecond just taken.
+        let left = buffer.level();
+        assert!(
+            left <= crate::audio::TARGET && left > crate::audio::TARGET / 2,
+            "{left:?} left"
+        );
+        assert_eq!(buffer.dropped(), 0);
     }
 
     #[test]

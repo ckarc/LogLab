@@ -392,8 +392,13 @@ impl Tray {
                 .buffer
                 .take_peak_dbfs()
                 .map_or_else(|| "silent".to_owned(), |db| format!("peak {db:.1} dBFS"));
+            let listening = if self.feed.recording() {
+                "an app is recording"
+            } else {
+                "no app recording"
+            };
             let line = format!(
-                "Flex audio: {} packets, {peak}, {} ms waiting, {} dropouts, {} dropped, {} refused",
+                "Flex audio: {listening}; {} packets so far, {peak}, {} ms waiting, {} dropouts, {} dropped, {} refused",
                 rx.counts.packets.load(std::sync::atomic::Ordering::Relaxed),
                 rx.buffer.level().as_millis(),
                 rx.buffer.gaps(),
