@@ -21,9 +21,14 @@
 
 use std::collections::VecDeque;
 use std::process::ExitCode;
+#[cfg(any(windows, test))]
+use std::sync::Arc;
 use std::sync::Mutex;
 
 use usbip_audio::uac2::{Uac2Config, Uac2Streams};
+
+#[cfg(any(windows, test))]
+use crate::audio::{Buffer, Resampler};
 use usbip_audio::{IsoEndpoint, IsoTiming, Notifier, Setup, Speed, UsbDevice};
 
 /// The card's name, as Windows shows it.
@@ -152,6 +157,66 @@ impl Uac2Streams for Silence {
 
     fn capture(&self, _frame: u64, samples: &mut [i32]) {
         samples.fill(0);
+    }
+}
+
+/// Milestone 2's streams: the card's input carries whatever audio
+/// [`Feed::connect`] gives it (the Flex's receive audio), resampled to the
+/// card's rate, on both channels; silence when nothing is connected. What
+/// Windows plays to the card still goes nowhere (transmit is milestone 3).
+#[cfg(any(windows, test))]
+#[derive(Default)]
+pub struct Feed {
+    source: Mutex<Option<Resampler>>,
+}
+
+#[cfg(any(windows, test))]
+impl Feed {
+    /// From now on the input carries what arrives in `buffer`.
+    pub fn connect(&self, buffer: Arc<Buffer>) {
+        if let Ok(mut source) = self.source.lock() {
+            *source = Some(Resampler::new(buffer, RATE));
+        }
+    }
+
+    /// From now on the input is silence again.
+    pub fn disconnect(&self) {
+        if let Ok(mut source) = self.source.lock() {
+            *source = None;
+        }
+    }
+}
+
+/// A sample from -1.0 to 1.0 as the card carries it: 24 bits at the top
+/// of an `i32`.
+#[cfg(any(windows, test))]
+#[must_use]
+pub fn to_card(sample: f32) -> i32 {
+    // Clamped first, so the cast loses nothing that matters.
+    #[allow(clippy::cast_possible_truncation)]
+    let card = (f64::from(sample.clamp(-1.0, 1.0)) * f64::from(i32::MAX)) as i32;
+    card
+}
+
+#[cfg(any(windows, test))]
+impl Uac2Streams for Feed {
+    fn playback(&self, _frame: u64, _samples: &[i32]) {}
+
+    fn capture(&self, _frame: u64, samples: &mut [i32]) {
+        let Ok(mut source) = self.source.lock() else {
+            samples.fill(0);
+            return;
+        };
+        let Some(resampler) = source.as_mut() else {
+            samples.fill(0);
+            return;
+        };
+        let channels = usize::from(CHANNELS);
+        let mut mono = vec![0.0_f32; samples.len() / channels];
+        resampler.fill(&mut mono);
+        for (frame, sample) in samples.chunks_mut(channels).zip(mono) {
+            frame.fill(to_card(sample));
+        }
     }
 }
 
@@ -482,6 +547,37 @@ mod tests {
         };
         assert_eq!(card.control(device, &[]), card.0.control(device, &[]));
         Ok(())
+    }
+
+    #[test]
+    fn the_feed_carries_what_it_is_connected_to_on_both_channels() {
+        let feed = super::Feed::default();
+        let mut recorded = [5; 8];
+        feed.capture(0, &mut recorded);
+        assert_eq!(recorded, [0; 8], "silent until connected");
+
+        // A steady half-scale signal at 24 kHz, more than the resampler's
+        // cushion, comes out at 48 kHz on both channels.
+        let buffer = crate::audio::Buffer::new(24_000);
+        buffer.push(std::iter::repeat_n(0.5, 24_000));
+        feed.connect(std::sync::Arc::clone(&buffer));
+        let mut recorded = vec![0; 2 * 960];
+        feed.capture(0, &mut recorded);
+        let half = super::to_card(0.5);
+        assert!(recorded[400..].iter().all(|&s| (s - half).abs() < 1 << 16));
+        assert!(recorded.chunks(2).all(|frame| frame[0] == frame[1]));
+
+        feed.disconnect();
+        feed.capture(0, &mut recorded);
+        assert!(recorded.iter().all(|&s| s == 0));
+    }
+
+    #[test]
+    fn samples_fill_the_cards_24_bits() {
+        assert_eq!(super::to_card(0.0), 0);
+        assert_eq!(super::to_card(1.0), i32::MAX);
+        assert_eq!(super::to_card(-2.0), -i32::MAX);
+        assert_eq!(super::to_card(f32::NAN), 0);
     }
 
     #[test]
