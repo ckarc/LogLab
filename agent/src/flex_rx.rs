@@ -408,7 +408,17 @@ impl Levels {
         );
         let rx = self.rx.lock().map_or_else(
             |_| "receive gain unknown".to_owned(),
-            |rx| format!("receive gain {:+.1} dB", rx.gain_db()),
+            |rx| {
+                rx.wsjtx_noise_db().map_or_else(
+                    || format!("receive gain {:+.1} dB (measuring the noise)", rx.gain_db()),
+                    |reads| {
+                        format!(
+                            "receive gain {:+.1} dB, band noise reads {reads:.0} dB on WSJT-X's scale",
+                            rx.gain_db()
+                        )
+                    },
+                )
+            },
         );
         let steps: Vec<String> = self
             .steps

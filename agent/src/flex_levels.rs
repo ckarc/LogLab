@@ -16,11 +16,16 @@
 //! limiter pinned at -2.5 dBFS). It never keys the radio and never changes
 //! the radio's power setting; it only scales our own samples.
 //!
-//! **Receive.** [`RxLevel`] slowly holds the receive audio's loudness
-//! (RMS) at the level WSJT-X decoded 55 FT8 signals at on FL-1 on
-//! 2026-11-28 (about -32 dBFS RMS). It moves at most a dB a second and stays
-//! within limits, so it never pumps with signals, and it holds still while
-//! the radio transmits.
+//! **Receive.** [`RxLevel`] holds the band noise where WSJT-X's guide asks
+//! for it: "around 30 dB when no signals are present" on the receive-level
+//! scale at the lower left of its main window (WSJT-X user guide,
+//! transceiver-setup). That scale is `10*log10(mean square)` of the 16-bit
+//! samples WSJT-X records (`lib/symspec.f90`: `pxdb=10*log10(sq/(k-k0))`;
+//! `Audio/soundin.cpp` opens the device at 16 bits), so 30 dB is an RMS of
+//! about 31.6 counts of 32768: -60.3 dBFS. The noise is the quietest
+//! half-second of the last 15 s, which falls in the gap between FT8 slots,
+//! so the signals on the band do not pull the level down. The gain moves
+//! slowly and holds still while the radio transmits.
 //!
 //! Plain arithmetic, tested on every platform. Times are passed in as
 //! time since the audio started, so the tests set them.
@@ -185,31 +190,31 @@ impl TxDrive {
     }
 }
 
-/// The receive loudness (RMS) held: what WSJT-X decoded well at on FL-1.
-pub const RX_TARGET_DBFS: f64 = -32.0;
+/// Full scale on WSJT-X's receive-level scale: `10*log10(32768^2)`.
+pub const WSJTX_FULL_SCALE_DB: f64 = 90.309;
+/// What WSJT-X's guide asks the band noise to read on that scale.
+pub const WSJTX_NOISE_DB: f64 = 30.0;
+/// The same, in dBFS RMS.
+pub const RX_NOISE_DBFS: f64 = WSJTX_NOISE_DB - WSJTX_FULL_SCALE_DB;
 /// The most receive audio is made louder, and quieter.
-const RX_MOST_UP_DB: f64 = 20.0;
-const RX_MOST_DOWN_DB: f64 = 12.0;
+const RX_MOST_DB: f64 = 40.0;
 /// The most the receive gain moves, in dB a second.
-const RX_SLEW_DB_PER_S: f64 = 1.0;
-/// How slowly the measured loudness follows: about 10 s.
-const RX_SMOOTHING_S: f64 = 10.0;
+const RX_SLEW_DB_PER_S: f64 = 2.0;
+/// The noise is measured in stretches this long...
+const RX_WINDOW_S: f64 = 0.5;
+/// ...and is the quietest stretch of this long: a whole FT8 slot and more.
+const RX_LOOK_BACK_S: f64 = 15.0;
 
 /// The receive level: see the module notes.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct RxLevel {
     gain_db: f64,
-    /// The loudness of what arrives, before our gain, smoothed.
-    rms_db: Option<f64>,
-}
-
-impl Default for RxLevel {
-    fn default() -> Self {
-        Self {
-            gain_db: 0.0,
-            rms_db: None,
-        }
-    }
+    /// The stretch being measured: summed power, samples, seconds.
+    power: f64,
+    count: usize,
+    seconds: f64,
+    /// The loudness of each finished stretch, before our gain, newest last.
+    stretches: std::collections::VecDeque<f64>,
 }
 
 impl RxLevel {
@@ -219,27 +224,62 @@ impl RxLevel {
         self.gain_db
     }
 
+    /// The band noise as it arrives, in dBFS RMS, once 15 s are measured.
+    #[must_use]
+    pub fn noise_dbfs(&self) -> Option<f64> {
+        let full = Self::stretches_kept();
+        (self.stretches.len() >= full)
+            .then(|| self.stretches.iter().copied().fold(f64::INFINITY, f64::min))
+    }
+
+    /// What WSJT-X's receive-level scale should read for the noise now.
+    #[must_use]
+    pub fn wsjtx_noise_db(&self) -> Option<f64> {
+        self.noise_dbfs()
+            .map(|noise| noise + self.gain_db + WSJTX_FULL_SCALE_DB)
+    }
+
+    fn stretches_kept() -> usize {
+        // 30: exact.
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let kept = (RX_LOOK_BACK_S / RX_WINDOW_S).round() as usize;
+        kept
+    }
+
     /// Scales `samples` (`seconds` long) by the gain, first taking in how
-    /// loud they were. While `on_air` the gain holds still.
+    /// loud they were. While `on_air` the gain holds still and nothing is
+    /// measured.
     pub fn apply(&mut self, samples: &mut [f32], seconds: f64, on_air: bool) {
-        if !on_air && !samples.is_empty() {
-            let power: f64 = samples.iter().map(|&s| f64::from(s) * f64::from(s)).sum();
-            // A packet holds at most a few hundred samples: exact as f64.
-            #[allow(clippy::cast_precision_loss)]
-            let mean = power / samples.len() as f64;
-            if mean > 0.0 {
-                let now_db = 10.0 * mean.log10();
-                let weight = (seconds / RX_SMOOTHING_S).clamp(0.0, 1.0);
-                let rms = self
-                    .rms_db
-                    .map_or(now_db, |was| was + (now_db - was) * weight);
-                self.rms_db = Some(rms);
-                let wanted = (RX_TARGET_DBFS - rms).clamp(-RX_MOST_DOWN_DB, RX_MOST_UP_DB);
-                let most = RX_SLEW_DB_PER_S * seconds;
-                self.gain_db += (wanted - self.gain_db).clamp(-most, most);
+        if on_air {
+            self.power = 0.0;
+            self.count = 0;
+            self.seconds = 0.0;
+        } else if !samples.is_empty() {
+            self.power += samples
+                .iter()
+                .map(|&s| f64::from(s) * f64::from(s))
+                .sum::<f64>();
+            self.count += samples.len();
+            self.seconds += seconds;
+            if self.seconds >= RX_WINDOW_S {
+                // Some thousands of samples: exact as f64.
+                #[allow(clippy::cast_precision_loss)]
+                let mean = self.power / self.count as f64;
+                self.stretches.push_back(10.0 * mean.max(1e-12).log10());
+                while self.stretches.len() > Self::stretches_kept() {
+                    self.stretches.pop_front();
+                }
+                if let Some(noise) = self.noise_dbfs() {
+                    let wanted = (RX_NOISE_DBFS - noise).clamp(-RX_MOST_DB, RX_MOST_DB);
+                    let most = RX_SLEW_DB_PER_S * self.seconds;
+                    self.gain_db += (wanted - self.gain_db).clamp(-most, most);
+                }
+                self.power = 0.0;
+                self.count = 0;
+                self.seconds = 0.0;
             }
         }
-        // Within -12..=20 dB, so the narrowing only rounds.
+        // Within -40..=40 dB, so the narrowing only rounds.
         #[allow(clippy::cast_possible_truncation)]
         let gain = 10_f64.powf(self.gain_db / 20.0) as f32;
         for sample in samples.iter_mut() {
@@ -298,8 +338,8 @@ impl MeterIds {
 #[cfg(test)]
 mod tests {
     use super::{
-        LEAST_DRIVE_DB, MOST_DRIVE_DB, MeterIds, RX_TARGET_DBFS, RxLevel, START_DRIVE_DB, Step,
-        TxDrive, db, watts,
+        LEAST_DRIVE_DB, MOST_DRIVE_DB, MeterIds, RX_NOISE_DBFS, RxLevel, START_DRIVE_DB, Step,
+        TxDrive, WSJTX_NOISE_DB, db, watts,
     };
     use std::time::Duration;
 
@@ -410,32 +450,59 @@ mod tests {
         assert!(drive.meters(20.0, None, Duration::from_secs(1)).is_some());
     }
 
+    /// FT8-like receive audio: noise at `noise` dBFS RMS all the time, and
+    /// signals 20 dB louder for the first 12.6 s of every 15 s slot.
+    fn band(second: f64, noise: f64) -> f32 {
+        let slot = second % 15.0;
+        let db = if slot < 12.6 { noise + 20.0 } else { noise };
+        // dBFS RMS of a square wave is its amplitude.
+        #[allow(clippy::cast_possible_truncation)]
+        let amplitude = 10_f64.powf(db / 20.0) as f32;
+        amplitude
+    }
+
     #[test]
-    fn receive_is_held_near_the_target_slowly() {
+    fn receive_holds_the_band_noise_at_30_db_on_wsjtx_scale() {
         let mut level = RxLevel::default();
-        // A steady signal at -44 dBFS RMS, 12 dB quiet, in 5 ms packets.
-        let amplitude = 10_f32.powf(-44.0 / 20.0);
         let mut packet = vec![0.0_f32; 120];
-        let mut after_one_second = 0.0;
-        for n in 0..12_000 {
+        // 5 ms packets; the noise arrives 15 dB too quiet (-75.3 dBFS).
+        let mut second = 0.0;
+        let mut gain_at_16_s = 0.0;
+        for n in 0..24_000 {
+            let amplitude = band(second, RX_NOISE_DBFS - 15.0);
             for (i, s) in packet.iter_mut().enumerate() {
                 *s = if i % 2 == 0 { amplitude } else { -amplitude };
             }
             level.apply(&mut packet, 0.005, false);
-            if n == 199 {
-                after_one_second = level.gain_db();
+            second += 0.005;
+            if n == 3200 {
+                gain_at_16_s = level.gain_db();
             }
         }
-        // No more than a dB in the first second...
-        assert!(after_one_second <= 1.0 + 1e-9, "{after_one_second}");
-        // ...and within a dB of the target after a minute.
-        let out_db = 20.0 * f64::from(packet[0].abs()).log10();
-        assert!((out_db - RX_TARGET_DBFS).abs() < 1.0, "{out_db}");
+        // Nothing for the first 15 s, then 1 dB a half second: 3 dB by 16 s...
+        assert!(gain_at_16_s <= 3.0 + 1e-9, "{gain_at_16_s}");
+        // ...and after two minutes the noise reads 30 dB on WSJT-X's scale,
+        // though signals filled most of the time.
+        let reads = level.wsjtx_noise_db().unwrap_or_default();
+        assert!((reads - WSJTX_NOISE_DB).abs() < 0.5, "{reads}");
+        assert!((level.gain_db() - 15.0).abs() < 0.5);
         // While on the air it holds still.
         let held = level.gain_db();
         let mut loud = vec![0.9_f32; 120];
-        level.apply(&mut loud, 5.0, true);
+        for _ in 0..1000 {
+            level.apply(&mut loud, 0.005, true);
+        }
         assert!((level.gain_db() - held).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn wsjtx_scale_matches_its_formula() {
+        // symspec.f90: pxdb = 10*log10(mean of x*x) for 16-bit samples x.
+        let x: f64 = 31.62;
+        let pxdb = 10.0 * (x * x).log10();
+        let dbfs = 20.0 * (x / 32768.0).log10();
+        assert!((pxdb - WSJTX_NOISE_DB).abs() < 0.01);
+        assert!((dbfs - RX_NOISE_DBFS).abs() < 0.01);
     }
 
     #[test]
