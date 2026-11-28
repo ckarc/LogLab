@@ -63,9 +63,14 @@ cpal = { version = "0.18.2", default-features = false }
 native-windows-gui = { version = "1.0.13", default-features = false, features = ["tray-notification", "message-window", "menu", "cursor", "notice"] }
 # Windows' own message box, kept on top until answered (MB_TOPMOST), and
 # which program owns a connection to the virtual radio (GetExtendedTcpTable,
-# QueryFullProcessImageNameW). Already in the build through cpal. MIT OR
-# Apache-2.0.
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_NetworkManagement_IpHelper", "Win32_System_Threading", "Win32_UI_WindowsAndMessaging"] }
+# QueryFullProcessImageNameW), and Windows' default sound devices (Core
+# Audio's IMMDeviceEnumerator; see default_sound). Already in the build
+# through cpal. MIT OR Apache-2.0.
+windows = { version = "0.62.2", features = ["Win32_Devices_FunctionDiscovery", "Win32_Foundation", "Win32_Media_Audio", "Win32_NetworkManagement_IpHelper", "Win32_System_Com", "Win32_System_Com_StructuredStorage", "Win32_System_Threading", "Win32_System_Variant", "Win32_UI_Shell_PropertiesSystem", "Win32_UI_WindowsAndMessaging"] }
+# The COM interface macro `windows::core::interface` names its own crate:
+# `IPolicyConfig`, which puts a default sound device back (default_sound).
+# Already in the build through windows. MIT OR Apache-2.0.
+windows-core = "0.62.2"
 
 [lints.rust]
 # `unsafe` is denied (not forbidden) so a hardware or platform interface that

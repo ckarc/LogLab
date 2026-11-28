@@ -2695,6 +2695,18 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     );
 }
 
+/// Plugs in "LabLog Radio" and, if it went in, keeps it from being one of
+/// Windows' default sound devices: only radio programs use it, and
+/// Windows' own sounds stay on the computer's speakers.
+#[cfg(windows)]
+fn plug_in_card() -> crate::flex_station::Plugged {
+    let card = crate::flex_station::Plugged::plug_in();
+    if card.is_plugged_in() {
+        crate::default_sound::keep_off(records_folder());
+    }
+    card
+}
+
 /// What the station says it sends as, with the message bus it uses:
 /// none with `--no-bus`, else the one given, `LABLOG_MQTT`, or FieldLab's.
 fn with_bus(stated: &crate::sends_as::Stated) -> crate::sends_as::Stated {
@@ -2754,7 +2766,7 @@ pub fn run(
     // "LabLog Radio", plugged in once and kept while the Agent runs, so a
     // program opened before the FlexRadio is used already sees it.
     #[cfg(windows)]
-    let card = crate::flex_station::Plugged::plug_in();
+    let card = plug_in_card();
     loop {
         #[cfg(windows)]
         if typing.flex.load(Ordering::SeqCst) {

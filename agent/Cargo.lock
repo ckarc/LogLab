@@ -540,6 +540,7 @@ dependencies = [
  "ureq",
  "usbip-audio",
  "windows",
+ "windows-core",
 ]
 
 [[package]]

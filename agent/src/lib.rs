@@ -37,6 +37,8 @@ mod civ_serial;
 #[cfg(any(windows, test))]
 mod com0com;
 #[cfg(any(windows, test))]
+mod default_sound;
+#[cfg(any(windows, test))]
 mod driver;
 mod engine;
 mod engine_link;
