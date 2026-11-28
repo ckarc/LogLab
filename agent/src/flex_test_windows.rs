@@ -505,8 +505,8 @@ pub fn run() -> Result<(), String> {
         started: Arc::default(),
     };
     tray.log("FlexTest started.");
+    // Logged with the first look's notice.
     let (card, card_said) = plug_in(&face, &tray.feed);
-    tray.log(&card_said);
     tray.card = card;
     tray.card_said = Some(card_said);
 
