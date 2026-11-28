@@ -35,6 +35,8 @@ pub const CHANNELS: u16 = 2;
 pub const TONE_HZ: f64 = 1000.0;
 /// And how loud, as a fraction of full scale (-12 dBFS).
 pub const TONE_AMPLITUDE: f64 = 0.25;
+/// The longest run `SoundCardTest` takes: 6 hours.
+pub const MOST_SECONDS: u64 = 6 * 60 * 60;
 /// The most audio the loopback holds before it drops the oldest: half a
 /// second.
 const LOOPBACK_MOST_FRAMES: usize = RATE as usize / 2;
@@ -90,6 +92,16 @@ impl Loopback {
     #[must_use]
     pub fn counts(&self) -> Counts {
         self.held.lock().map(|held| held.counts).unwrap_or_default()
+    }
+
+    /// Frames played and not yet recorded: Windows' queue plus any drift
+    /// between its playing and recording clocks.
+    #[must_use]
+    pub fn held_frames(&self) -> usize {
+        self.held
+            .lock()
+            .map(|held| held.samples.len() / usize::from(CHANNELS))
+            .unwrap_or_default()
     }
 }
 
@@ -148,30 +160,78 @@ pub struct Heard {
     /// Its loudest sample, in dB below full scale.
     pub peak_dbfs: f64,
     /// How many samples it had.
-    pub samples: usize,
+    pub samples: u64,
+    /// Dropouts: stretches of a millisecond or more of near-silence, which
+    /// the tone never has.
+    pub gaps: u64,
+}
+
+/// A sample this quiet is near-silence (-40 dBFS).
+const QUIET: f32 = 0.01;
+/// This many near-silent samples in a row are a dropout: 1 ms.
+const GAP_SAMPLES: u32 = RATE / 1000;
+
+/// Measures recorded audio as it arrives, holding none of it, so a run of
+/// hours costs no memory.
+#[derive(Debug, Default, Clone)]
+pub struct Listener {
+    samples: u64,
+    crossings: u64,
+    peak: f32,
+    negative: Option<bool>,
+    quiet_run: u32,
+    gaps: u64,
+}
+
+impl Listener {
+    /// Takes in one sample (one channel, at [`RATE`]).
+    pub fn hear(&mut self, sample: f32) {
+        self.samples += 1;
+        self.peak = self.peak.max(sample.abs());
+        let negative = sample < 0.0;
+        if self.negative.is_some_and(|was| was != negative) {
+            self.crossings += 1;
+        }
+        self.negative = Some(negative);
+        if sample.abs() < QUIET {
+            self.quiet_run += 1;
+            if self.quiet_run == GAP_SAMPLES {
+                self.gaps += 1;
+            }
+        } else {
+            self.quiet_run = 0;
+        }
+    }
+
+    /// What it has heard so far.
+    #[must_use]
+    pub fn heard(&self) -> Heard {
+        // Sample counts within a test run fit an f64's 53 bits exactly.
+        #[allow(clippy::cast_precision_loss)]
+        let seconds = self.samples as f64 / f64::from(RATE);
+        #[allow(clippy::cast_precision_loss)]
+        let hz = if seconds > 0.0 {
+            self.crossings as f64 / 2.0 / seconds
+        } else {
+            0.0
+        };
+        Heard {
+            hz,
+            peak_dbfs: 20.0 * f64::from(self.peak).max(1e-9).log10(),
+            samples: self.samples,
+            gaps: self.gaps,
+        }
+    }
 }
 
 /// Measures `samples` (one channel, at [`RATE`]).
 #[must_use]
 pub fn analyse(samples: &[f32]) -> Heard {
-    let peak = samples.iter().fold(0.0_f32, |most, s| most.max(s.abs()));
-    let crossings = samples
-        .windows(2)
-        .filter(|pair| (pair[0] < 0.0) != (pair[1] < 0.0))
-        .count();
-    #[allow(clippy::cast_precision_loss)]
-    let seconds = samples.len() as f64 / f64::from(RATE);
-    #[allow(clippy::cast_precision_loss)]
-    let hz = if seconds > 0.0 {
-        crossings as f64 / 2.0 / seconds
-    } else {
-        0.0
-    };
-    Heard {
-        hz,
-        peak_dbfs: 20.0 * f64::from(peak).max(1e-9).log10(),
-        samples: samples.len(),
+    let mut listener = Listener::default();
+    for &sample in samples {
+        listener.hear(sample);
     }
+    listener.heard()
 }
 
 /// How far the tone may come back off, in Hz and in dB.
@@ -186,7 +246,7 @@ const DB_OFF_MOST: f64 = 1.0;
 /// The tone came back at the wrong frequency or level, or not at all.
 pub fn judge(heard: &Heard) -> Result<(), String> {
     let wanted_db = 20.0 * TONE_AMPLITUDE.log10();
-    if heard.samples < RATE as usize {
+    if heard.samples < u64::from(RATE) {
         return Err(format!(
             "less than a second was recorded ({} samples)",
             heard.samples
@@ -204,6 +264,13 @@ pub fn judge(heard: &Heard) -> Result<(), String> {
             heard.peak_dbfs
         ));
     }
+    if heard.gaps > 0 {
+        return Err(format!(
+            "the tone dropped out {} time{}",
+            heard.gaps,
+            if heard.gaps == 1 { "" } else { "s" }
+        ));
+    }
     Ok(())
 }
 
@@ -214,9 +281,9 @@ pub fn start(args: &[String]) -> ExitCode {
     let seconds = match args {
         [] => 20,
         [flag, value] if flag == "--seconds" => match value.parse::<u64>() {
-            Ok(seconds) if seconds >= 3 => seconds,
+            Ok(seconds) if (3..=MOST_SECONDS).contains(&seconds) => seconds,
             _ => {
-                println!("SoundCardTest: --seconds needs a whole number, 3 or more");
+                println!("SoundCardTest: --seconds needs a whole number, 3 to {MOST_SECONDS}");
                 return ExitCode::FAILURE;
             }
         },
@@ -301,5 +368,18 @@ mod tests {
         assert!(judge(&analyse(&silent)).is_err());
         let short: Vec<f32> = (0..100).map(tone).collect();
         assert!(judge(&analyse(&short)).is_err_and(|why| why.contains("second")));
+    }
+
+    #[test]
+    fn a_dropout_in_the_tone_is_counted() {
+        let mut samples: Vec<f32> = (0..u64::from(RATE) * 2).map(tone).collect();
+        // 5 ms of silence in the middle.
+        let middle = samples.len() / 2;
+        samples[middle..middle + 240].fill(0.0);
+        let heard = analyse(&samples);
+        assert_eq!(heard.gaps, 1);
+        assert!(judge(&heard).is_err_and(|why| why.contains("dropped out 1 time")));
+        let whole: Vec<f32> = (0..u64::from(RATE) * 2).map(tone).collect();
+        assert_eq!(analyse(&whole).gaps, 0);
     }
 }

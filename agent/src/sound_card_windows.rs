@@ -15,12 +15,14 @@ use cpal::{FromSample, SampleFormat, SizedSample};
 use usbip_audio::uac2::Uac2Device;
 use usbip_audio::{MonotonicClock, Server, usbip_exe};
 
-use crate::sound_card::{Loopback, NAME, RATE, analyse, config, judge, tone};
+use crate::sound_card::{Listener, Loopback, NAME, RATE, config, judge, tone};
 
 /// How long Windows may take to show the card's output and input.
 const APPEAR_WITHIN: Duration = Duration::from_mins(1);
 /// The first second recorded is left out: the streams are still starting.
-const SETTLE: Duration = Duration::from_secs(1);
+const SETTLE_FRAMES: u64 = RATE as u64;
+/// How often a long run says how it's going.
+const STATUS_EVERY: Duration = Duration::from_mins(1);
 
 /// Unplugs the card when dropped, whatever happened.
 struct Plugged {
@@ -98,19 +100,26 @@ where
 fn record_as<T>(
     device: &cpal::Device,
     config: cpal::StreamConfig,
-    heard: Arc<Mutex<Vec<f32>>>,
+    heard: Arc<Mutex<Listener>>,
 ) -> Result<cpal::Stream, String>
 where
     T: SizedSample,
     f32: FromSample<T>,
 {
     let channels = usize::from(config.channels).max(1);
+    let mut frames: u64 = 0;
     device
         .build_input_stream::<T, _, _>(
             config,
             move |data: &[T], _| {
-                if let Ok(mut heard) = heard.lock() {
-                    heard.extend(data.chunks(channels).map(|f| f32::from_sample_(f[0])));
+                let Ok(mut heard) = heard.lock() else {
+                    return;
+                };
+                for frame in data.chunks(channels) {
+                    frames += 1;
+                    if frames > SETTLE_FRAMES {
+                        heard.hear(f32::from_sample_(frame[0]));
+                    }
                 }
             },
             |error| println!("recording: {error}"),
@@ -138,7 +147,7 @@ fn play(device: &cpal::Device) -> Result<cpal::Stream, String> {
     }
 }
 
-fn record(device: &cpal::Device, heard: Arc<Mutex<Vec<f32>>>) -> Result<cpal::Stream, String> {
+fn record(device: &cpal::Device, heard: Arc<Mutex<Listener>>) -> Result<cpal::Stream, String> {
     let supported = device
         .default_input_config()
         .map_err(|error| format!("{NAME}'s input has no format: {error}"))?;
@@ -184,7 +193,7 @@ pub fn run(seconds: u64) -> Result<(), String> {
 
     let host = cpal::default_host();
     let (output, input) = wait_for_card(&host)?;
-    let heard = Arc::new(Mutex::new(Vec::new()));
+    let heard = Arc::new(Mutex::new(Listener::default()));
     let recording = record(&input, Arc::clone(&heard))?;
     let playing = play(&output)?;
     recording
@@ -193,25 +202,45 @@ pub fn run(seconds: u64) -> Result<(), String> {
     playing
         .play()
         .map_err(|error| format!("can't start playing: {error}"))?;
-    std::thread::sleep(Duration::from_secs(seconds));
-    drop(playing);
+    let started = Instant::now();
+    let run_for = Duration::from_secs(seconds);
+    while started.elapsed() < run_for {
+        std::thread::sleep(STATUS_EVERY.min(run_for.saturating_sub(started.elapsed())));
+        let counts = loopback.counts();
+        let so_far = heard.lock().map(|h| h.heard()).ok();
+        println!(
+            "{:>6.0} s: played {}, recorded {}, held {} frames, short {}, dropped {}{}",
+            started.elapsed().as_secs_f64(),
+            counts.played,
+            counts.recorded,
+            loopback.held_frames(),
+            counts.short,
+            counts.dropped,
+            so_far.map_or_else(String::new, |h| format!(
+                "; heard {:.1} Hz at {:.2} dBFS, {} dropouts",
+                h.hz, h.peak_dbfs, h.gaps
+            ))
+        );
+    }
+    // Recording stops first, so no silence after the tone is heard.
     drop(recording);
+    drop(playing);
 
     let counts = loopback.counts();
     println!(
         "the card carried {} frames played, {} recorded, {} short, {} dropped",
         counts.played, counts.recorded, counts.short, counts.dropped
     );
-    let heard = heard.lock().map(|h| h.clone()).unwrap_or_default();
-    let settle = usize::try_from(SETTLE.as_secs()).unwrap_or(1) * RATE as usize;
-    // Leave out the start, and the end, where playing stopped first.
-    let end = heard.len().saturating_sub(RATE as usize / 2);
-    let kept = heard.get(settle..end).unwrap_or_default();
-    let result = analyse(kept);
-    let kept_seconds = f64::from(u32::try_from(kept.len()).unwrap_or(u32::MAX)) / f64::from(RATE);
+    let result = heard
+        .lock()
+        .map(|h| h.heard())
+        .map_err(|_| "the recording was lost")?;
+    // Sample counts within a test run fit an f64's 53 bits exactly.
+    #[allow(clippy::cast_precision_loss)]
+    let heard_seconds = result.samples as f64 / f64::from(RATE);
     println!(
-        "heard {:.1} Hz at {:.2} dBFS over {:.1} s",
-        result.hz, result.peak_dbfs, kept_seconds
+        "heard {:.1} Hz at {:.2} dBFS over {heard_seconds:.1} s, {} dropouts",
+        result.hz, result.peak_dbfs, result.gaps
     );
     judge(&result)
 }

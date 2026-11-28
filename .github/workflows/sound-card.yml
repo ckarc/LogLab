@@ -15,6 +15,10 @@ on:
       - "agent/**"
       - ".github/workflows/sound-card.yml"
   workflow_dispatch:
+    inputs:
+      seconds:
+        description: How long to play the tone, in seconds (3 to 21600)
+        default: "20"
 
 permissions:
   contents: read
@@ -34,7 +38,7 @@ jobs:
   sound-card:
     name: Sound card (Windows)
     runs-on: windows-2025
-    timeout-minutes: 30
+    timeout-minutes: 380
     defaults:
       run:
         shell: pwsh
@@ -90,8 +94,10 @@ jobs:
             }
           }
       - name: Plug in LabLog Radio and play a tone through it
+        env:
+          SECONDS_TO_RUN: ${{ inputs.seconds || '20' }}
         run: |
-          & .\agent\target\release\SoundCardTest.exe --seconds 20
+          & .\agent\target\release\SoundCardTest.exe --seconds $env:SECONDS_TO_RUN
           if ($LASTEXITCODE -ne 0) { throw "SoundCardTest failed ($LASTEXITCODE)" }
       - name: Device details
         if: always()
