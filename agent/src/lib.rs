@@ -54,6 +54,8 @@ mod flex_levels;
 #[cfg(any(windows, test))]
 mod flex_rx;
 mod flex_settings;
+#[cfg(windows)]
+mod flex_station;
 pub mod flex_test;
 #[cfg(windows)]
 mod flex_test_windows;

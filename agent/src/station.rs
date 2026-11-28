@@ -124,9 +124,9 @@ const LOOK_AGAIN: Duration = Duration::from_secs(5);
 /// Agent can start before the radio is turned on (at Windows sign-in, for
 /// example). Says why it isn't found once, and again only when the reason
 /// changes.
-fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
+fn wait_for_radio(port: Option<&str>, running: &AtomicBool, flex: &AtomicBool) -> Option<Found> {
     let mut said = String::new();
-    while running.load(Ordering::SeqCst) {
+    while running.load(Ordering::SeqCst) && !flex.load(Ordering::SeqCst) {
         match find(port, running) {
             Ok(found) => return Some(found),
             Err(why) => {
@@ -140,7 +140,10 @@ fn wait_for_radio(port: Option<&str>, running: &AtomicBool) -> Option<Found> {
             }
         }
         let until = std::time::Instant::now() + LOOK_AGAIN;
-        while running.load(Ordering::SeqCst) && std::time::Instant::now() < until {
+        while running.load(Ordering::SeqCst)
+            && !flex.load(Ordering::SeqCst)
+            && std::time::Instant::now() < until
+        {
             std::thread::sleep(Duration::from_millis(100));
         }
     }
@@ -364,6 +367,9 @@ enum Typed {
     /// Standing alone: show what saving the radio's settings as this
     /// program's lab profile would keep, and wait for a yes.
     ProfileSave(&'static str),
+    /// Use this computer's FlexRadio (SmartSDR's slice) instead of a radio
+    /// on a port, or stop using it. Never kept: the Agent starts without it.
+    Flex(bool),
     /// Say what can be typed.
     Help,
     /// Nothing typed.
@@ -411,6 +417,11 @@ fn typed(line: &str) -> Result<Typed, String> {
             "off" => Ok(Typed::Enroll(Some(false))),
             _ => Err("enroll takes on or off, like enroll on".to_owned()),
         },
+        ("flex", rest) => match rest.to_ascii_lowercase().as_str() {
+            "on" => Ok(Typed::Flex(true)),
+            "off" => Ok(Typed::Flex(false)),
+            _ => Err("flex takes on or off, like flex on".to_owned()),
+        },
         ("stock", rest) => match rest.to_ascii_lowercase().as_str() {
             "" => Ok(Typed::Stock),
             "save" => Ok(Typed::StockSave),
@@ -445,7 +456,8 @@ const TYPE_HELP: &str = "Type keep NAME to keep the radio's settings as a setup 
                          radio as programs start, stock to put the lab's Lab Stock on, stock \
                          save to send the radio's settings as a Lab Stock proposal (standing \
                          alone, to save them as the Lab Stock), profile save VARA (say) to save \
-                         the radio's settings as a lab profile when standing alone, or quit to \
+                         the radio's settings as a lab profile when standing alone, flex on to \
+                         use this computer's FlexRadio instead (flex off stops), or quit to \
                          stop the Agent.";
 
 /// What putting setup `name` back would change, from the radio's settings
@@ -863,6 +875,9 @@ fn restore(shared: &Shared, plan: &crate::restore::Plan, serial: &str) -> String
 #[derive(Clone)]
 struct Typing {
     to_console: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    /// Whether the operator wants this computer's FlexRadio used (flex on).
+    /// Off at every start, and never turned on by the Agent itself.
+    flex: Arc<AtomicBool>,
 }
 
 /// Starts reading what the operator types, until quit or the input
@@ -870,13 +885,19 @@ struct Typing {
 fn start_typing(running: Arc<AtomicBool>) -> Typing {
     let typing = Typing {
         to_console: Arc::new(Mutex::new(None)),
+        flex: Arc::new(AtomicBool::new(false)),
     };
     let slot = Arc::clone(&typing.to_console);
+    let flex = Arc::clone(&typing.flex);
     std::thread::spawn(move || {
         for line in std::io::stdin().lines() {
             let Ok(line) = line else { break };
             if typed(&line) == Ok(Typed::Quit) {
                 break;
+            }
+            if let Ok(Typed::Flex(on)) = typed(&line) {
+                flex_typed(&flex, on);
+                continue;
             }
             let console = slot.lock().ok().and_then(|slot| slot.clone());
             match console {
@@ -886,6 +907,9 @@ fn start_typing(running: Arc<AtomicBool>) -> Typing {
                     }
                 }
                 None if typed(&line) == Ok(Typed::Nothing) => {}
+                None if flex.load(Ordering::SeqCst) => crate::print_event(
+                    "not while the FlexRadio is in use: flex off goes back to a radio on a port.",
+                ),
                 None => crate::print_event(
                     "not yet: the Agent is still finding the radio (quit stops it).",
                 ),
@@ -895,6 +919,26 @@ fn start_typing(running: Arc<AtomicBool>) -> Typing {
         running.store(false, Ordering::SeqCst);
     });
     typing
+}
+
+/// flex on or off typed: says what happens, and (on Windows) turns `flex`
+/// to `on`. The station sees it within a second and changes radio.
+fn flex_typed(flex: &AtomicBool, on: bool) {
+    if !cfg!(windows) {
+        crate::print_event("FlexRadio: off (its audio is carried on Windows only).");
+        return;
+    }
+    let was = flex.swap(on, Ordering::SeqCst);
+    match (was, on) {
+        (false, true) => crate::print_event(
+            "FlexRadio: asked to use it, so the Agent lets go of any radio on a port first.",
+        ),
+        (true, false) => {
+            crate::print_event("FlexRadio: asked to stop using it.");
+        }
+        (true, true) => crate::print_event("FlexRadio: already in use (flex off stops)."),
+        (false, false) => crate::print_event("FlexRadio: off (it isn't in use)."),
+    }
 }
 
 /// Where setups are kept: on the Engine when there is one, otherwise on
@@ -1539,8 +1583,9 @@ fn console(
         }
         let definition = &now_in(checks);
         let said = match typed {
-            // Quit is read, and acted on, where the operator's typing is.
-            Ok(Typed::Nothing | Typed::Quit) => continue,
+            // Quit and flex are read, and acted on, where the operator's
+            // typing is.
+            Ok(Typed::Nothing | Typed::Quit | Typed::Flex(_)) => continue,
             Ok(Typed::Yes(_) | Typed::No) => "nothing is waiting for a yes.".to_owned(),
             Ok(Typed::Restore(name)) => {
                 match read().and_then(|now| {
@@ -1660,6 +1705,20 @@ fn audio(sound: Option<&str>, on_air: Arc<AtomicBool>) -> Option<crate::audio_wi
 /// Points VARA's sound devices at the Agent's cables, if VARA isn't running.
 #[cfg(windows)]
 fn vara(station: &crate::audio_windows::Station) {
+    // Without a transmit cable, VARA plays straight into the radio's own
+    // USB sound device, so it doesn't transmit silence.
+    vara_for(crate::programs::Sound {
+        input: crate::audio::RECEIVE_CABLE_OUT,
+        output: station
+            .transmit_cable
+            .as_deref()
+            .unwrap_or(&station.radio_playing),
+    });
+}
+
+/// Points VARA's sound devices at `sound`, if VARA isn't running.
+#[cfg(windows)]
+pub(crate) fn vara_for(sound: crate::programs::Sound<'_>) {
     use crate::vara::{self, Outcome, Soundcard};
     let Some(path) = vara::find() else {
         println!(
@@ -1686,17 +1745,12 @@ fn vara(station: &crate::audio_windows::Station) {
     let (recording, playing) = crate::audio_windows::device_names();
     let wanted = Soundcard {
         input: Some(vara::as_vara_names_it(
-            crate::audio::RECEIVE_CABLE_OUT,
+            sound.input,
             now.input.as_deref(),
             &recording,
         )),
-        // Without a transmit cable, VARA plays straight into the radio's
-        // own USB sound device, so it doesn't transmit silence.
         output: Some(vara::as_vara_names_it(
-            station
-                .transmit_cable
-                .as_deref()
-                .unwrap_or(&station.radio_playing),
+            sound.output,
             now.output.as_deref(),
             &playing,
         )),
@@ -2396,14 +2450,14 @@ const LOOK_FOR_CLOSED: Duration = Duration::from_secs(5);
 /// Which of the programs the Agent sets up are open, looked at every
 /// [`LOOK_FOR_CLOSED`].
 #[cfg(windows)]
-struct ProgramsOpen {
+pub(crate) struct ProgramsOpen {
     open: HashSet<&'static str>,
     looked: std::time::Instant,
 }
 
 #[cfg(windows)]
 impl ProgramsOpen {
-    fn now() -> Self {
+    pub(crate) fn now() -> Self {
         Self {
             open: open_programs(&tasklist()),
             looked: std::time::Instant::now(),
@@ -2412,7 +2466,7 @@ impl ProgramsOpen {
 
     /// The name of a program that was open when last looked and is closed
     /// now, if one is (and it's time to look again).
-    fn closed_since(&mut self) -> Option<&'static str> {
+    pub(crate) fn closed_since(&mut self) -> Option<&'static str> {
         if self.looked.elapsed() < LOOK_FOR_CLOSED {
             return None;
         }
@@ -2641,6 +2695,28 @@ fn say_how_to_connect(model: &str, address: SocketAddr, limit: Duration) {
     );
 }
 
+/// What the station says it sends as, with the message bus it uses:
+/// none with `--no-bus`, else the one given, `LABLOG_MQTT`, or FieldLab's.
+fn with_bus(stated: &crate::sends_as::Stated) -> crate::sends_as::Stated {
+    let mut stated = stated.clone();
+    if stated.no_bus {
+        stated.mqtt = None;
+    } else if stated.mqtt.is_none() {
+        // FieldLab's broker, as the Engine takes it, else FieldLab's own.
+        stated.mqtt = std::env::var("LABLOG_MQTT")
+            .ok()
+            .filter(|broker| !broker.trim().is_empty())
+            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok())
+            .or_else(|| {
+                Some((
+                    crate::sends_as::FIELDLAB_BROKER.to_owned(),
+                    crate::sends_as::MQTT_PORT,
+                ))
+            });
+    }
+    stated
+}
+
 /// Runs the station until Ctrl-C.
 ///
 /// # Errors
@@ -2663,22 +2739,7 @@ pub fn run(
     ctrlc::set_handler(move || flag.store(false, Ordering::SeqCst))
         .map_err(|error| format!("can't watch for Ctrl-C: {error}"))?;
     let typing = start_typing(Arc::clone(&running));
-    let mut stated = stated.clone();
-    if stated.no_bus {
-        stated.mqtt = None;
-    } else if stated.mqtt.is_none() {
-        // FieldLab's broker, as the Engine takes it, else FieldLab's own.
-        stated.mqtt = std::env::var("LABLOG_MQTT")
-            .ok()
-            .filter(|broker| !broker.trim().is_empty())
-            .and_then(|broker| crate::sends_as::broker(broker.trim()).ok())
-            .or_else(|| {
-                Some((
-                    crate::sends_as::FIELDLAB_BROKER.to_owned(),
-                    crate::sends_as::MQTT_PORT,
-                ))
-            });
-    }
+    let stated = with_bus(stated);
     let _whereabouts = crate::sends_as::Whereabouts::start(stated, records_folder());
     // A radio unplugged, turned off or swapped for another is looked for
     // again, so any radio can be moved to this computer while the Agent runs.
@@ -2690,7 +2751,19 @@ pub fn run(
         )
     });
     let joined = fieldlab.as_ref().map(crate::engine_link::FieldLab::joined);
+    // "LabLog Radio", plugged in once and kept while the Agent runs, so a
+    // program opened before the FlexRadio is used already sees it.
+    #[cfg(windows)]
+    let card = crate::flex_station::Plugged::plug_in();
     loop {
+        #[cfg(windows)]
+        if typing.flex.load(Ordering::SeqCst) {
+            crate::flex_station::run(&card, listen, limit, &running, &typing.flex);
+            if !running.load(Ordering::SeqCst) {
+                break;
+            }
+            continue;
+        }
         let uplink = match engine {
             EngineLink::Given {
                 engine,
@@ -2720,7 +2793,11 @@ pub fn run(
                 kenwood,
             )?
         } else {
-            let Some(found) = wait_for_radio(port, &running) else {
+            let Some(found) = wait_for_radio(port, &running, &typing.flex) else {
+                if running.load(Ordering::SeqCst) {
+                    // flex on: the FlexRadio is used instead.
+                    continue;
+                }
                 break;
             };
             run_found(
@@ -2739,6 +2816,12 @@ pub fn run(
         };
         match ended {
             Ended::Stopped => break,
+            Ended::ForFlex => {
+                crate::print_event(
+                    "Radio let go of, so the Agent can use this computer's FlexRadio instead.",
+                );
+                continue;
+            }
             Ended::Joined => {
                 crate::print_event(
                     "LabLog: joined, so the Agent starts again with the link to LabLog.",
@@ -2788,18 +2871,9 @@ fn station_definition(definition: &Definition, standalone: bool) -> Definition {
     }
 }
 
-/// Runs the station with the radio found, until stopped.
-fn run_found(
-    mut found: Found,
-    listen: SocketAddr,
-    limit: Duration,
-    link: Link<'_>,
-    running: &AtomicBool,
-    typing: &Typing,
-    kenwood: Option<&str>,
-) -> Result<Ended, String> {
-    let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
-    let identity = found.radio.identity().clone();
+/// Says which radio was found, and where.
+fn say_found(found: &Found) {
+    let identity = found.radio.identity();
     println!(
         "Found: {} {} on {}{}, at {} baud.",
         identity.maker,
@@ -2812,6 +2886,21 @@ fn run_found(
             .unwrap_or_default(),
         found.radio.baud()
     );
+}
+
+/// Runs the station with the radio found, until stopped.
+fn run_found(
+    mut found: Found,
+    listen: SocketAddr,
+    limit: Duration,
+    link: Link<'_>,
+    running: &AtomicBool,
+    typing: &Typing,
+    kenwood: Option<&str>,
+) -> Result<Ended, String> {
+    let (uplink, joined, standalone) = (link.uplink, link.joined, link.standalone);
+    let identity = found.radio.identity().clone();
+    say_found(&found);
     let record = check_settings(found.radio.as_mut(), found.serial.as_deref());
     let definition = station_definition(found.radio.definition(), standalone);
     let checks: Checks = Arc::new(RwLock::new(definition.clone()));
@@ -2881,7 +2970,11 @@ fn run_found(
             watching.watch(station, &on_air, server.address());
         }
         relink |= joined.is_some_and(|joined| joined.swap(false, Ordering::SeqCst));
-        if relink || !running.load(Ordering::SeqCst) || lost.now(shared.as_ref()) {
+        if relink
+            || for_flex(typing, &on_air)
+            || !running.load(Ordering::SeqCst)
+            || lost.now(shared.as_ref())
+        {
             serving.store(false, Ordering::SeqCst);
         }
     });
@@ -2898,7 +2991,17 @@ fn run_found(
     if let Ok(mut slot) = typing.to_console.lock() {
         *slot = None;
     }
-    Ok(Ended::after(running, relink))
+    Ok(Ended::after(
+        running,
+        relink,
+        typing.flex.load(Ordering::SeqCst),
+    ))
+}
+
+/// Whether flex on asks the station to let go of its radio: never while
+/// it transmits.
+fn for_flex(typing: &Typing, on_air: &AtomicBool) -> bool {
+    typing.flex.load(Ordering::SeqCst) && !on_air.load(Ordering::SeqCst)
 }
 
 /// How a station run ended.
@@ -2910,16 +3013,20 @@ enum Ended {
     Lost,
     /// FieldLab's Engine let this station in, so it starts again linked.
     Joined,
+    /// flex on: the FlexRadio is used instead.
+    ForFlex,
 }
 
 impl Ended {
     /// Why the station stopped serving the radio: asked to, `relink`ed, or
     /// else the radio was lost.
-    fn after(running: &AtomicBool, relink: bool) -> Self {
+    fn after(running: &AtomicBool, relink: bool, flex: bool) -> Self {
         if !running.load(Ordering::SeqCst) {
             Self::Stopped
         } else if relink {
             Self::Joined
+        } else if flex {
+            Self::ForFlex
         } else {
             Self::Lost
         }
@@ -3256,8 +3363,9 @@ mod tests {
     use std::time::{Duration, UNIX_EPOCH};
 
     use super::{
-        DRIVE_ASK, Desk, DriveTried, LabRadio, Lost, Programs, Typed, compared, compared_all,
-        drive_offer, lab_locked, lab_plan, open_programs, restore_plan, startup_command, typed,
+        DRIVE_ASK, Desk, DriveTried, Ended, LabRadio, Lost, Programs, Typed, compared,
+        compared_all, drive_offer, lab_locked, lab_plan, open_programs, restore_plan,
+        startup_command, typed, wait_for_radio,
     };
     use crate::civ_pretend::PretendCiv;
     use crate::civ_radio::{CivRadio, PretendPort};
@@ -3265,6 +3373,24 @@ mod tests {
     use crate::rigctld_server::{Shared, Source};
     use crate::rigdef;
     use crate::settings_record;
+
+    #[test]
+    fn flex_on_lets_go_of_the_radio_unless_asked_to_stop_or_relink() {
+        let running = AtomicBool::new(true);
+        assert_eq!(Ended::after(&running, false, true), Ended::ForFlex);
+        assert_eq!(Ended::after(&running, true, true), Ended::Joined);
+        assert_eq!(Ended::after(&running, false, false), Ended::Lost);
+        running.store(false, Ordering::SeqCst);
+        assert_eq!(Ended::after(&running, false, true), Ended::Stopped);
+    }
+
+    #[test]
+    fn flex_on_stops_looking_for_a_radio_on_a_port() {
+        let (running, flex) = (AtomicBool::new(true), AtomicBool::new(true));
+        let started = std::time::Instant::now();
+        assert!(wait_for_radio(Some("NO-SUCH-PORT"), &running, &flex).is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
 
     /// What the pretend radio has for the setting `id` now, in hex.
     fn setting_now(shared: &Shared, id: &str) -> Option<String> {
@@ -4153,6 +4279,10 @@ mod tests {
             Ok(Typed::Keep("Field Day SSB".to_owned()))
         );
         assert_eq!(typed("compare"), Ok(Typed::Compare));
+        assert_eq!(typed("flex on"), Ok(Typed::Flex(true)));
+        assert_eq!(typed("FLEX off"), Ok(Typed::Flex(false)));
+        assert!(typed("flex").is_err());
+        assert!(typed("flex maybe").is_err());
         assert_eq!(typed("help"), Ok(Typed::Help));
         assert_eq!(typed("?"), Ok(Typed::Help));
         assert!(typed("keep").is_err());

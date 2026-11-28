@@ -27,6 +27,30 @@ use crate::{fldigi, mmsstv, qt_settings, winlink};
 /// `station` carries; `tuning` says whether Winlink Express tunes the
 /// radio through the Agent's virtual Kenwood.
 pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>) {
+    set_up_for(
+        Sound {
+            input: RECEIVE_CABLE_OUT,
+            output: transmit_to(station),
+        },
+        radio,
+        tuning,
+    );
+}
+
+/// The sound devices programs record the radio from and play to it on, as
+/// Windows names them.
+#[derive(Debug, Clone, Copy)]
+pub struct Sound<'a> {
+    /// What programs record: the radio's receive audio.
+    pub input: &'a str,
+    /// What programs play to: the radio's transmit audio.
+    pub output: &'a str,
+}
+
+/// Sets up every program found, for the radio at `radio` and the sound
+/// devices `sound`; `tuning` says whether Winlink Express tunes the radio
+/// through the Agent's virtual Kenwood.
+pub fn set_up_for(sound: Sound<'_>, radio: SocketAddr, tuning: winlink::Tuning<'_>) {
     let (recording, playing) = device_names();
     let sends = crate::sends_as::current();
     for (app, image) in [("WSJT-X", "wsjtx.exe"), ("JS8Call", "js8call.exe")] {
@@ -39,16 +63,8 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
         let text = std::fs::read_to_string(&path).unwrap_or_default();
         let (input, output) = qt_settings::sound_devices(&text);
         let wanted = qt_settings::Wanted {
-            input: Some(as_vara_names_it(
-                RECEIVE_CABLE_OUT,
-                input.as_deref(),
-                &recording,
-            )),
-            output: Some(as_vara_names_it(
-                transmit_to(station),
-                output.as_deref(),
-                &playing,
-            )),
+            input: Some(as_vara_names_it(sound.input, input.as_deref(), &recording)),
+            output: Some(as_vara_names_it(sound.output, output.as_deref(), &playing)),
             radio,
             call: sends.call.clone(),
             grid: sends.grid().map(str::to_owned),
@@ -59,8 +75,8 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
         && closed("fldigi", "fldigi.exe")
     {
         let wanted = fldigi::Wanted {
-            input: Some(fldigi::mme_name(RECEIVE_CABLE_OUT)),
-            output: Some(fldigi::mme_name(transmit_to(station))),
+            input: Some(fldigi::mme_name(sound.input)),
+            output: Some(fldigi::mme_name(sound.output)),
             radio,
             call: sends.call.clone(),
             grid: sends.grid().map(str::to_owned),
@@ -75,7 +91,7 @@ pub fn set_up(station: &Station, radio: SocketAddr, tuning: winlink::Tuning<'_>)
     if let Some(path) = mmsstv::find()
         && closed("MMSSTV", "Mmsstv.exe")
     {
-        say("MMSSTV", &path, mmsstv::set(&path, RECEIVE_CABLE_OUT));
+        say("MMSSTV", &path, mmsstv::set(&path, sound.input));
         println!(
             "  MMSSTV receives through the Agent; it can't transmit through it yet (it keys \
              a radio only through a COM port)."

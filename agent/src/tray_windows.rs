@@ -270,6 +270,8 @@ struct Face {
     restore: Vec<nwg::MenuItem>,
     compare: nwg::MenuItem,
     auto: nwg::MenuItem,
+    /// "Use FlexRadio", not there standing alone.
+    flex: Option<nwg::MenuItem>,
     lab_menu: nwg::Menu,
     enroll: nwg::MenuItem,
     leave_out: nwg::MenuItem,
@@ -379,6 +381,12 @@ impl Face {
         item("Compare with kept setups", &face.menu, &mut face.compare)?;
         face.separator()?;
         item("Auto mode", &face.menu, &mut face.auto)?;
+        if !standalone {
+            // Unticked at every start: only the operator ticks it.
+            let mut flex = nwg::MenuItem::default();
+            item("Use FlexRadio", &face.menu, &mut flex)?;
+            face.flex = Some(flex);
+        }
         built(
             nwg::Menu::builder()
                 .text("Lab radio")
@@ -488,7 +496,10 @@ impl Face {
 
     /// What the menu item `handle` chooses, if it is one that types a line
     /// at `station`.
-    fn chosen(&self, handle: nwg::ControlHandle, auto_on: bool) -> Option<Choice> {
+    fn chosen(&self, handle: nwg::ControlHandle, auto_on: bool, flex_on: bool) -> Option<Choice> {
+        if self.flex.as_ref().is_some_and(|flex| flex.handle == handle) {
+            return Some(Choice::Flex(!flex_on));
+        }
         if handle == self.fix.handle {
             return Some(Choice::Fix);
         }
@@ -557,6 +568,8 @@ struct Tray {
     awaiting: Option<Choice>,
     quitting: bool,
     said_stopped: String,
+    /// Whether "Use FlexRadio" is ticked: off at every start of `station`.
+    flex: bool,
 }
 
 impl Tray {
@@ -577,6 +590,9 @@ impl Tray {
         }
         self.face.icon.set_tip(&tip);
         self.face.auto.set_checked(Self::auto_on());
+        if let Some(flex) = &self.face.flex {
+            flex.set_checked(self.flex);
+        }
     }
 
     fn type_line(&mut self, line: &str) {
@@ -602,6 +618,9 @@ impl Tray {
             self.face
                 .notify("The Agent isn't running just now; it starts again shortly.");
             return;
+        }
+        if let Choice::Flex(on) = choice {
+            self.flex = on;
         }
         self.type_line(&choice.typed());
         self.awaiting = Some(choice);
@@ -664,6 +683,7 @@ impl Tray {
             }
             Incoming::Stopped(why) => {
                 self.station = None;
+                self.flex = false;
                 self.programs.clear();
                 self.light = Light::Waiting;
                 if self.quitting {
@@ -692,6 +712,16 @@ impl Tray {
     }
 
     fn heard(&mut self, event: &str, pending: &mut Option<(u32, String, String)>) {
+        if event.starts_with("FlexRadio: ") {
+            if let Some(on) = tray::flex_state(event) {
+                self.flex = on;
+            }
+            if matches!(self.awaiting, Some(Choice::Flex(_))) {
+                self.awaiting = None;
+            }
+            self.face.notify(event.lines().next().unwrap_or(event));
+            return;
+        }
         match tray::classify(event) {
             Said::Radio(light, state) => {
                 self.light = light;
@@ -804,6 +834,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
         awaiting: None,
         quitting: false,
         said_stopped: String::new(),
+        flex: false,
     }));
     tray.borrow_mut().start();
     tray.borrow().refresh();
@@ -841,7 +872,7 @@ pub fn run(options: &[String]) -> Result<(), String> {
                         tray.log.clone()
                     };
                     let _ = Command::new("notepad.exe").arg(shown).spawn();
-                } else if let Some(choice) = tray.face.chosen(handle, Tray::auto_on()) {
+                } else if let Some(choice) = tray.face.chosen(handle, Tray::auto_on(), tray.flex) {
                     tray.choose(choice);
                 }
             }
