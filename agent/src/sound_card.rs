@@ -38,6 +38,21 @@ pub const RX: &str = "LabLog RX";
 /// Its output's name: what programs play, the radio's transmit audio.
 pub const TX: &str = "LabLog TX";
 
+/// Which of Windows' sound devices `names` (all inputs, or all outputs) is
+/// the card's, by the side's name (`RX` or `TX`) if Windows shows it, else
+/// by the card's. Windows may name a side by its kind and the card's name
+/// alone: on Windows Server 2025 (CI, 2026-11-28) it showed "Speakers
+/// (LabLog Radio)" and "Line In (LabLog Radio)" though the card names its
+/// sides.
+#[must_use]
+pub fn card_side(names: &[String], side: &str) -> Option<String> {
+    names
+        .iter()
+        .find(|name| name.contains(side))
+        .or_else(|| names.iter().find(|name| name.contains(NAME)))
+        .cloned()
+}
+
 /// Whether a sound device Windows names `name` is the card's input or
 /// output, however Windows puts the card's and the side's names together.
 #[must_use]
@@ -620,6 +635,32 @@ mod tests {
         };
         assert_eq!(card.control(device, &[]), card.0.control(device, &[]));
         Ok(())
+    }
+
+    #[test]
+    fn programs_are_set_to_the_card_by_the_names_windows_shows() {
+        let names = |list: &[&str]| list.iter().map(|&n| n.to_owned()).collect::<Vec<_>>();
+        // As Windows Server 2025 showed it in CI.
+        let inputs = names(&["Microphone (Realtek)", "Line In (LabLog Radio)"]);
+        let outputs = names(&["Speakers (Realtek)", "Speakers (LabLog Radio)"]);
+        assert_eq!(
+            super::card_side(&inputs, super::RX).as_deref(),
+            Some("Line In (LabLog Radio)")
+        );
+        assert_eq!(
+            super::card_side(&outputs, super::TX).as_deref(),
+            Some("Speakers (LabLog Radio)")
+        );
+        // The side's own name first, if Windows shows it.
+        let inputs = names(&["Line (LabLog Radio)", "LabLog RX (LabLog Radio)"]);
+        assert_eq!(
+            super::card_side(&inputs, super::RX).as_deref(),
+            Some("LabLog RX (LabLog Radio)")
+        );
+        assert_eq!(
+            super::card_side(&names(&["Speakers (Realtek)"]), super::TX),
+            None
+        );
     }
 
     #[test]

@@ -33,21 +33,14 @@ use crate::flex_find::{LISTEN, discover, here_toward};
 use crate::flex_rx::{FlexRx, pick};
 use crate::programs::Sound;
 use crate::rigctld_server::{Server, Shared, Source};
-use crate::sound_card::{Feed, NAME as CARD, RX, TX};
+use crate::sound_card::{Feed, NAME as CARD, RX, TX, card_side};
 use crate::sound_card_windows::Card;
 
-/// The card's input and output as Windows names them now, so programs are
-/// set to the names Windows gives (the side's name, `RX` or `TX`, put
-/// together with the card's); the side's name alone if Windows shows none.
-fn card_names() -> (String, String) {
+/// The card's input and output as Windows names them now (see
+/// `sound_card::card_side`), if Windows shows both.
+fn card_names() -> Option<(String, String)> {
     let (recording, playing) = crate::audio_windows::device_names();
-    let find = |names: Vec<String>, side: &str| {
-        names
-            .into_iter()
-            .find(|name| name.contains(side))
-            .unwrap_or_else(|| side.to_owned())
-    };
-    (find(recording, RX), find(playing, TX))
+    Some((card_side(&recording, RX)?, card_side(&playing, TX)?))
 }
 
 /// How often the log hears how the FlexRadio's audio is doing.
@@ -124,15 +117,24 @@ pub fn run(
         shared,
         heard,
     } = rig;
-    let (input, output) = card_names();
-    println!("FlexRadio: programs record \"{input}\" and play to \"{output}\".");
-    let sound = Sound {
-        input: &input,
-        output: &output,
-    };
-    tell_open_programs(sound);
-    crate::programs::set_up_for(sound, server.address(), crate::winlink::Tuning::Agent);
-    crate::station::vara_for(sound);
+    let names = card_names();
+    let sound = names
+        .as_ref()
+        .map(|(input, output)| Sound { input, output });
+    match sound {
+        Some(sound) => {
+            println!(
+                "FlexRadio: programs record \"{}\" and play to \"{}\".",
+                sound.input, sound.output
+            );
+            tell_open_programs(sound);
+            set_up(sound, server.address());
+        }
+        None => crate::print_event(&format!(
+            "FlexRadio: Windows doesn't show {CARD}'s input and output, so programs were \
+             left as they are."
+        )),
+    }
     let on_air = shared.on_air();
     let mut open = crate::station::ProgramsOpen::now();
     let mut told = Instant::now();
@@ -143,9 +145,12 @@ pub fn run(
             crate::print_event(&format!(
                 "{closed} closed, so the Agent sets up the programs that are closed now."
             ));
-            crate::station::vara_for(sound);
-            crate::programs::set_up_for(sound, server.address(), crate::winlink::Tuning::Agent);
-        } else if crate::sends_as::take_changed() {
+            if let Some(sound) = sound {
+                set_up(sound, server.address());
+            }
+        } else if crate::sends_as::take_changed()
+            && let Some(sound) = sound
+        {
             crate::programs::set_up_for(sound, server.address(), crate::winlink::Tuning::Agent);
         }
         if told.elapsed() >= STATUS_EVERY {
@@ -177,6 +182,13 @@ pub fn run(
     } else {
         crate::print_event("FlexRadio: off; its slice is put back as it was.");
     }
+}
+
+/// Sets up the closed programs, VARA among them, for `sound` and rig
+/// control at `radio`.
+fn set_up(sound: Sound<'_>, radio: SocketAddr) {
+    crate::station::vara_for(sound);
+    crate::programs::set_up_for(sound, radio, crate::winlink::Tuning::Agent);
 }
 
 /// The FlexRadio in use: its audio, and programs' rig control of it.
